@@ -87,8 +87,8 @@ export ROOTDIRS-y ROOTDIRS- ROOTDIRS-n
 .PHONY: default
 default: all
 
-.PHONY: config showconfigs
-config showconfigs:
+.PHONY: config showconfigs showversion
+config showconfigs showversion:
 	$(Q)$(MAKE) -f $(RTE_SDK)/mk/rte.sdkconfig.mk $@
 
 .PHONY: test fast_test ring_test mempool_test
