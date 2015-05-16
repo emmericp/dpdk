@@ -103,6 +103,11 @@ extern "C" {
 /* add new TX flags here */
 
 /**
+ * Disable CRC checksum offload
+ */
+#define PKT_TX_NO_CRC_CSUM   (1ULL << 48)
+
+/**
  * Second VLAN insertion (QinQ) flag.
  */
 #define PKT_TX_QINQ_PKT    (1ULL << 49)   /**< TX packet with double VLAN inserted. */
