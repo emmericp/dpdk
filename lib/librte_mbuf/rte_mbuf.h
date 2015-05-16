@@ -371,10 +371,16 @@ extern "C" {
 #define PKT_TX_OUTER_IPV6    (1ULL << 60)
 
 /**
+ * Disable CRC checksum offload
+ */
+#define PKT_TX_NO_CRC_CSUM   (1ULL << 61)
+
+/**
  * Bitmask of all supported packet Tx offload features flags,
  * which can be set for packet.
  */
 #define PKT_TX_OFFLOAD_MASK (    \
+		PKT_TX_NO_CRC_CSUM |	 \
 		PKT_TX_OUTER_IPV6 |	 \
 		PKT_TX_OUTER_IPV4 |	 \
 		PKT_TX_OUTER_IP_CKSUM |  \
