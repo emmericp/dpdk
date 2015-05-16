@@ -392,6 +392,7 @@ rte_get_rx_ol_flag_list(uint64_t mask, char *buf, size_t buflen)
 const char *rte_get_tx_ol_flag_name(uint64_t mask)
 {
 	switch (mask) {
+	case PKT_TX_NO_CRC_CSUM: return "PKT_TX_NO_CRC_CSUM";
 	case PKT_TX_VLAN_PKT: return "PKT_TX_VLAN_PKT";
 	case PKT_TX_IP_CKSUM: return "PKT_TX_IP_CKSUM";
 	case PKT_TX_TCP_CKSUM: return "PKT_TX_TCP_CKSUM";

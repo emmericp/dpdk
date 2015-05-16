@@ -213,6 +213,11 @@ extern "C" {
 /* add new TX TUNNEL type here */
 #define PKT_TX_TUNNEL_MASK    (0xFULL << 45)
 
+/*
+ * Disable CRC checksum offload
+ */
+#define PKT_TX_NO_CRC_CSUM   (1ULL << 48)
+
 /**
  * Second VLAN insertion (QinQ) flag.
  */
