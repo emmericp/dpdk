@@ -77,6 +77,22 @@ EAL_REGISTER_TAILQ(rte_vfio_tailq)
 /* per-process VFIO config */
 static struct vfio_config vfio_cfg;
 
+int
+pci_vfio_read_config(const struct rte_intr_handle *intr_handle,
+		    void *buf, size_t len, off_t offs)
+{
+	return pread64(intr_handle->vfio_dev_fd, buf, len,
+	       VFIO_GET_REGION_ADDR(VFIO_PCI_CONFIG_REGION_INDEX) + offs);
+}
+
+int
+pci_vfio_write_config(const struct rte_intr_handle *intr_handle,
+		    const void *buf, size_t len, off_t offs)
+{
+	return pwrite64(intr_handle->vfio_dev_fd, buf, len,
+	       VFIO_GET_REGION_ADDR(VFIO_PCI_CONFIG_REGION_INDEX) + offs);
+}
+
 /* get PCI BAR number where MSI-X interrupts are */
 static int
 pci_vfio_get_msix_bar(int fd, int *msix_bar, uint32_t *msix_table_offset,
@@ -483,14 +499,15 @@ pci_vfio_get_group_fd(int iommu_group_no)
 }
 
 /* parse IOMMU group number for a PCI device
- * returns -1 for errors, 0 for non-existent group */
+ * returns 1 on success, -1 for errors, 0 for non-existent group
+ */
 static int
-pci_vfio_get_group_no(const char *pci_addr)
+pci_vfio_get_group_no(const char *pci_addr, int *iommu_group_no)
 {
 	char linkname[PATH_MAX];
 	char filename[PATH_MAX];
 	char *tok[16], *group_tok, *end;
-	int ret, iommu_group_no;
+	int ret;
 
 	memset(linkname, 0, sizeof(linkname));
 	memset(filename, 0, sizeof(filename));
@@ -517,13 +534,13 @@ pci_vfio_get_group_no(const char *pci_addr)
 	errno = 0;
 	group_tok = tok[ret - 1];
 	end = group_tok;
-	iommu_group_no = strtol(group_tok, &end, 10);
+	*iommu_group_no = strtol(group_tok, &end, 10);
 	if ((end != group_tok && *end != '\0') || errno != 0) {
 		RTE_LOG(ERR, EAL, "  %s error parsing IOMMU number!\n", pci_addr);
 		return -1;
 	}
 
-	return iommu_group_no;
+	return 1;
 }
 
 static void
@@ -565,16 +582,15 @@ pci_vfio_map_resource(struct rte_pci_device *dev)
 			loc->domain, loc->bus, loc->devid, loc->function);
 
 	/* get group number */
-	iommu_group_no = pci_vfio_get_group_no(pci_addr);
-
-	/* if 0, group doesn't exist */
-	if (iommu_group_no == 0) {
+	ret = pci_vfio_get_group_no(pci_addr, &iommu_group_no);
+	if (ret == 0) {
 		RTE_LOG(WARNING, EAL, "  %s not managed by VFIO driver, skipping\n",
-				pci_addr);
+			pci_addr);
 		return 1;
 	}
+
 	/* if negative, something failed */
-	else if (iommu_group_no < 0)
+	if (ret < 0)
 		return -1;
 
 	/* get the actual group fd */
@@ -728,7 +744,7 @@ pci_vfio_map_resource(struct rte_pci_device *dev)
 		struct vfio_region_info reg = { .argsz = sizeof(reg) };
 		void *bar_addr;
 		struct memreg {
-			uint32_t offset, size;
+			unsigned long offset, size;
 		} memreg[2] = {};
 
 		reg.index = i;
@@ -771,7 +787,7 @@ pci_vfio_map_resource(struct rte_pci_device *dev)
 				RTE_LOG(DEBUG, EAL,
 					"Trying to map BAR %d that contains the MSI-X "
 					"table. Trying offsets: "
-					"%04x:%04x, %04x:%04x\n", i,
+					"0x%04lx:0x%04lx, 0x%04lx:0x%04lx\n", i,
 					memreg[0].offset, memreg[0].size,
 					memreg[1].offset, memreg[1].size);
 			}
@@ -899,7 +915,7 @@ pci_vfio_enable(void)
 	if (vfio_cfg.vfio_container_fd != -1)
 		vfio_cfg.vfio_enabled = 1;
 	else
-		RTE_LOG(INFO, EAL, "VFIO support could not be initialized\n");
+		RTE_LOG(NOTICE, EAL, "VFIO support could not be initialized\n");
 
 	return 0;
 }

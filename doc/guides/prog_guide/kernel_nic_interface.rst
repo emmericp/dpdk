@@ -1,5 +1,5 @@
 ..  BSD LICENSE
-    Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
+    Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -42,15 +42,14 @@ The benefits of using the DPDK KNI are:
 
 *   Allows an interface with the kernel network stack.
 
-The components of an application using the DPDK Kernel NIC Interface are shown in Figure 17.
+The components of an application using the DPDK Kernel NIC Interface are shown in :numref:`figure_kernel_nic_intf`.
 
-.. _pg_figure_17:
+.. _figure_kernel_nic_intf:
 
-**Figure 17. Components of a DPDK KNI Application**
+.. figure:: img/kernel_nic_intf.*
 
-.. image43_png has been renamed
+   Components of a DPDK KNI Application
 
-|kernel_nic_intf|
 
 The DPDK KNI Kernel Module
 --------------------------
@@ -101,8 +100,6 @@ Refer to rte_kni_common.h in the DPDK source code for more details.
 
 The physical addresses will be re-mapped into the kernel address space and stored in separate KNI contexts.
 
-Once KNI interfaces are created, the KNI context information can be queried by calling the rte_kni_info_get() function.
-
 The KNI interfaces can be deleted by a DPDK application dynamically after being created.
 Furthermore, all those KNI interfaces not deleted will be deleted on the release operation
 of the miscellaneous device (when the DPDK application is closed).
@@ -114,15 +111,14 @@ To minimize the amount of DPDK code running in kernel space, the mbuf mempool is
 The kernel module will be aware of mbufs,
 but all mbuf allocation and free operations will be handled by the DPDK application only.
 
-Figure 18 shows a typical scenario with packets sent in both directions.
+:numref:`figure_pkt_flow_kni` shows a typical scenario with packets sent in both directions.
 
-.. _pg_figure_18:
+.. _figure_pkt_flow_kni:
 
-**Figure 18. Packet Flow via mbufs in the DPDK KNI**
+.. figure:: img/pkt_flow_kni.*
 
-.. image44_png has been renamed
+   Packet Flow via mbufs in the DPDK KNI
 
-|pkt_flow_kni|
 
 Use Case: Ingress
 -----------------
@@ -189,13 +185,12 @@ it naturally supports both legacy virtio -net and the DPDK PMD virtio.
 There is a little penalty that comes from the non-polling mode of vhost.
 However, it scales throughput well when using KNI in multi-thread mode.
 
-.. _pg_figure_19:
+.. _figure_vhost_net_arch2:
 
-**Figure 19. vHost-net Architecture Overview**
+.. figure:: img/vhost_net_arch.*
 
-.. image45_png has been renamed
+   vHost-net Architecture Overview
 
-|vhost_net_arch|
 
 Packet Flow
 ~~~~~~~~~~~
@@ -208,13 +203,12 @@ All the packet copying, irrespective of whether it is on the transmit or receive
 happens in the context of vhost kthread.
 Every vhost-net device is exposed to a front end virtio device in the guest.
 
-.. _pg_figure_20:
+.. _figure_kni_traffic_flow:
 
-**Figure 20. KNI Traffic Flow**
+.. figure:: img/kni_traffic_flow.*
 
-.. image46_png  has been renamed
+   KNI Traffic Flow
 
-|kni_traffic_flow|
 
 Sample Usage
 ~~~~~~~~~~~~
@@ -242,7 +236,7 @@ Of course, as a prerequisite, the vhost/vhost-net kernel CONFIG should be chosen
 
     .. code-block:: console
 
-        ./kni -c -0xf0 -n 4 -- -p 0x3 -P -config="(0,4,6),(1,5,7)"
+        examples/kni/build/app/kni -c -0xf0 -n 4 -- -p 0x3 -P --config="(0,4,6),(1,5,7)"
 
     This command runs the kni sample application with two physical ports.
     Each port pins two forwarding cores (ingress/egress) in user space.
@@ -280,11 +274,3 @@ since the kni-vhost does not yet support those features.
 Even if the option is turned on, kni-vhost will ignore the information that the header contains.
 When working with legacy virtio on the guest, it is better to turn off unsupported offload features using ethtool -K.
 Otherwise, there may be problems such as an incorrect L4 checksum error.
-
-.. |kni_traffic_flow| image:: img/kni_traffic_flow.*
-
-.. |vhost_net_arch| image:: img/vhost_net_arch.*
-
-.. |pkt_flow_kni| image:: img/pkt_flow_kni.*
-
-.. |kernel_nic_intf| image:: img/kernel_nic_intf.*

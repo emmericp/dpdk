@@ -65,6 +65,7 @@
 #include <stdarg.h>
 #include <inttypes.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <errno.h>
 #include <termios.h>
 #include <netinet/in.h>
@@ -192,8 +193,10 @@ cmdline_printf(const struct cmdline *cl, const char *fmt, ...)
 	va_start(ap, fmt);
 	ret = vsnprintf(buf, BUFSIZ, fmt, ap);
 	va_end(ap);
-	if (ret < 0)
+	if (ret < 0) {
+		free(buf);
 		return;
+	}
 	if (ret >= BUFSIZ)
 		ret = BUFSIZ - 1;
 	write(cl->s_out, buf, ret);
@@ -244,6 +247,40 @@ cmdline_quit(struct cmdline *cl)
 	if (!cl)
 		return;
 	rdline_quit(&cl->rdl);
+}
+
+int
+cmdline_poll(struct cmdline *cl)
+{
+	struct pollfd pfd;
+	int status;
+	ssize_t read_status;
+	char c;
+
+	if (!cl)
+		return -EINVAL;
+	else if (cl->rdl.status == RDLINE_EXITED)
+		return RDLINE_EXITED;
+
+	pfd.fd = cl->s_in;
+	pfd.events = POLLIN;
+	pfd.revents = 0;
+
+	status = poll(&pfd, 1, 0);
+	if (status < 0)
+		return status;
+	else if (status > 0) {
+		c = -1;
+		read_status = read(cl->s_in, &c, 1);
+		if (read_status < 0)
+			return read_status;
+
+		status = cmdline_in(cl, &c, 1);
+		if (status < 0 && cl->rdl.status != RDLINE_EXITED)
+			return status;
+	}
+
+	return cl->rdl.status;
 }
 
 void

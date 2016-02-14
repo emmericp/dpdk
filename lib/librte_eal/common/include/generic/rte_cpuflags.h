@@ -47,12 +47,16 @@
 /**
  * Enumeration of all CPU features supported
  */
+#ifdef __DOXYGEN__
 enum rte_cpu_flag_t;
+#endif
 
 /**
  * Enumeration of CPU registers
  */
+#ifdef __DOXYGEN__
 enum cpu_register_t;
+#endif
 
 typedef uint32_t cpuid_registers_t[4];
 
@@ -74,8 +78,12 @@ struct feature_entry {
 
 /**
  * An array that holds feature entries
+ *
+ * Defined in arch-specific rte_cpuflags.h.
  */
+#ifdef __DOXYGEN__
 static const struct feature_entry cpu_feature_table[];
+#endif
 
 /**
  * Execute CPUID instruction and get contents of a specific register
@@ -89,15 +97,17 @@ rte_cpu_get_features(uint32_t leaf, uint32_t subleaf, cpuid_registers_t out);
 /**
  * Function for checking a CPU flag availability
  *
- * @param flag
+ * @param feature
  *     CPU flag to query CPU for
  * @return
  *     1 if flag is available
  *     0 if flag is not available
  *     -ENOENT if flag is invalid
  */
+#ifdef __DOXYGEN__
 static inline int
 rte_cpu_get_flag_enabled(enum rte_cpu_flag_t feature);
+#endif
 
 /**
  * This function checks that the currently used CPU supports the CPU features

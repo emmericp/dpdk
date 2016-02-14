@@ -88,7 +88,7 @@ kni_net_open(struct net_device *dev)
 	req.if_up = 1;
 	ret = kni_net_process_request(kni, &req);
 
-	return (ret == 0 ? req.result : ret);
+	return (ret == 0) ? req.result : ret;
 }
 
 static int
@@ -107,7 +107,7 @@ kni_net_release(struct net_device *dev)
 	req.if_up = 0;
 	ret = kni_net_process_request(kni, &req);
 
-	return (ret == 0 ? req.result : ret);
+	return (ret == 0) ? req.result : ret;
 }
 
 /*
@@ -131,7 +131,7 @@ kni_net_rx_normal(struct kni_dev *kni)
 {
 	unsigned ret;
 	uint32_t len;
-	unsigned i, num, num_rq, num_fq;
+	unsigned i, num_rx, num_fq;
 	struct rte_kni_mbuf *kva;
 	struct rte_kni_mbuf *va[MBUF_BURST_SZ];
 	void * data_kva;
@@ -139,27 +139,23 @@ kni_net_rx_normal(struct kni_dev *kni)
 	struct sk_buff *skb;
 	struct net_device *dev = kni->net_dev;
 
-	/* Get the number of entries in rx_q */
-	num_rq = kni_fifo_count(kni->rx_q);
-
 	/* Get the number of free entries in free_q */
 	num_fq = kni_fifo_free_count(kni->free_q);
-
-	/* Calculate the number of entries to dequeue in rx_q */
-	num = min(num_rq, num_fq);
-	num = min(num, (unsigned)MBUF_BURST_SZ);
-
-	/* Return if no entry in rx_q and no free entry in free_q */
-	if (num == 0)
+	if (num_fq == 0) {
+		/* No room on the free_q, bail out */
 		return;
+	}
+
+	/* Calculate the number of entries to dequeue from rx_q */
+	num_rx = min(num_fq, (unsigned)MBUF_BURST_SZ);
 
 	/* Burst dequeue from rx_q */
-	ret = kni_fifo_get(kni->rx_q, (void **)va, num);
-	if (ret == 0)
-		return; /* Failing should not happen */
+	num_rx = kni_fifo_get(kni->rx_q, (void **)va, num_rx);
+	if (num_rx == 0)
+		return;
 
 	/* Transfer received packets to netif */
-	for (i = 0; i < num; i++) {
+	for (i = 0; i < num_rx; i++) {
 		kva = (void *)va[i] - kni->mbuf_va + kni->mbuf_kva;
 		len = kva->data_len;
 		data_kva = kva->buf_addr + kva->data_off - kni->mbuf_va
@@ -189,8 +185,8 @@ kni_net_rx_normal(struct kni_dev *kni)
 	}
 
 	/* Burst enqueue mbufs into free_q */
-	ret = kni_fifo_put(kni->free_q, (void **)va, num);
-	if (ret != num)
+	ret = kni_fifo_put(kni->free_q, (void **)va, num_rx);
+	if (ret != num_rx)
 		/* Failing should not happen */
 		KNI_ERR("Fail to enqueue entries into free_q\n");
 }
@@ -495,6 +491,11 @@ kni_net_ioctl(struct net_device *dev, struct ifreq *rq, int cmd)
 	return 0;
 }
 
+static void
+kni_net_set_rx_mode(struct net_device *dev)
+{
+}
+
 static int
 kni_net_change_mtu(struct net_device *dev, int new_mtu)
 {
@@ -511,7 +512,7 @@ kni_net_change_mtu(struct net_device *dev, int new_mtu)
 	if (ret == 0 && req.result == 0)
 		dev->mtu = new_mtu;
 
-	return (ret == 0 ? req.result : ret);
+	return (ret == 0) ? req.result : ret;
 }
 
 /*
@@ -597,13 +598,14 @@ kni_net_header(struct sk_buff *skb, struct net_device *dev,
 	memcpy(eth->h_dest,   daddr ? daddr : dev->dev_addr, dev->addr_len);
 	eth->h_proto = htons(type);
 
-	return (dev->hard_header_len);
+	return dev->hard_header_len;
 }
 
 
 /*
  * Re-fill the eth header
  */
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 1, 0))
 static int
 kni_net_rebuild_header(struct sk_buff *skb)
 {
@@ -615,6 +617,7 @@ kni_net_rebuild_header(struct sk_buff *skb)
 
 	return 0;
 }
+#endif /* < 4.1.0  */
 
 /**
  * kni_net_set_mac - Change the Ethernet Address of the KNI NIC
@@ -632,9 +635,22 @@ static int kni_net_set_mac(struct net_device *netdev, void *p)
 	return 0;
 }
 
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 9, 0))
+static int kni_net_change_carrier(struct net_device *dev, bool new_carrier)
+{
+	if (new_carrier)
+		netif_carrier_on(dev);
+	else
+		netif_carrier_off(dev);
+	return 0;
+}
+#endif
+
 static const struct header_ops kni_net_header_ops = {
 	.create  = kni_net_header,
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 1, 0))
 	.rebuild = kni_net_rebuild_header,
+#endif /* < 4.1.0  */
 	.cache   = NULL,  /* disable caching */
 };
 
@@ -645,9 +661,13 @@ static const struct net_device_ops kni_net_netdev_ops = {
 	.ndo_start_xmit = kni_net_tx,
 	.ndo_change_mtu = kni_net_change_mtu,
 	.ndo_do_ioctl = kni_net_ioctl,
+	.ndo_set_rx_mode = kni_net_set_rx_mode,
 	.ndo_get_stats = kni_net_stats,
 	.ndo_tx_timeout = kni_net_tx_timeout,
 	.ndo_set_mac_address = kni_net_set_mac,
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 9, 0))
+	.ndo_change_carrier = kni_net_change_carrier,
+#endif
 };
 
 void

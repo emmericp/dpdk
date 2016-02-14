@@ -151,13 +151,6 @@ struct rte_acl_node {
 	/* free list link or pointer to duplicate node during merge */
 	struct rte_acl_node     *prev;
 	/* points to node from which this node was duplicated */
-
-	uint32_t                subtree_id;
-	uint32_t                subtree_ref_count;
-
-};
-enum {
-	RTE_ACL_SUBTREE_NODE = 0x80000000
 };
 
 /*
@@ -235,6 +228,10 @@ rte_acl_classify_sse(const struct rte_acl_ctx *ctx, const uint8_t **data,
 
 int
 rte_acl_classify_avx2(const struct rte_acl_ctx *ctx, const uint8_t **data,
+	uint32_t *results, uint32_t num, uint32_t categories);
+
+int
+rte_acl_classify_neon(const struct rte_acl_ctx *ctx, const uint8_t **data,
 	uint32_t *results, uint32_t num, uint32_t categories);
 
 #ifdef __cplusplus

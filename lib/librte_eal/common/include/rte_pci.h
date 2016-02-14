@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
+ *   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -74,6 +74,7 @@
 extern "C" {
 #endif
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <limits.h>
 #include <errno.h>
@@ -147,6 +148,8 @@ enum rte_kernel_driver {
 	RTE_KDRV_IGB_UIO,
 	RTE_KDRV_VFIO,
 	RTE_KDRV_UIO_GENERIC,
+	RTE_KDRV_NIC_UIO,
+	RTE_KDRV_NONE,
 };
 
 /**
@@ -219,6 +222,34 @@ struct rte_pci_driver {
 /** Device driver supports detaching capability */
 #define RTE_PCI_DRV_DETACHABLE	0x0010
 
+/**
+ * A structure describing a PCI mapping.
+ */
+struct pci_map {
+	void *addr;
+	char *path;
+	uint64_t offset;
+	uint64_t size;
+	uint64_t phaddr;
+};
+
+/**
+ * A structure describing a mapped PCI resource.
+ * For multi-process we need to reproduce all PCI mappings in secondary
+ * processes, so save them in a tailq.
+ */
+struct mapped_pci_resource {
+	TAILQ_ENTRY(mapped_pci_resource) next;
+
+	struct rte_pci_addr pci_addr;
+	char path[PATH_MAX];
+	int nb_maps;
+	struct pci_map maps[PCI_MAX_RESOURCE];
+};
+
+/** mapped pci device list */
+TAILQ_HEAD(mapped_pci_res_list, mapped_pci_resource);
+
 /**< Internal use only - Macro used by pci addr parsing functions **/
 #define GET_PCIADDR_FIELD(in, fd, lim, dlm)                   \
 do {                                                               \
@@ -227,7 +258,7 @@ do {                                                               \
 	errno = 0;                                              \
 	val = strtoul((in), &end, 16);                          \
 	if (errno != 0 || end[0] != (dlm) || val > (lim))       \
-		return (-EINVAL);                               \
+		return -EINVAL;                                 \
 	(fd) = (typeof (fd))val;                                \
 	(in) = end + 1;                                         \
 } while(0)
@@ -238,10 +269,10 @@ do {                                                               \
  * a domain prefix (i.e. domain returned is always 0)
  *
  * @param input
- * 	The input string to be parsed. Should have the format XX:XX.X
+ *	The input string to be parsed. Should have the format XX:XX.X
  * @param dev_addr
- * 	The PCI Bus-Device-Function address to be returned. Domain will always be
- * 	returned as 0
+ *	The PCI Bus-Device-Function address to be returned. Domain will always be
+ *	returned as 0
  * @return
  *  0 on success, negative on error.
  */
@@ -252,7 +283,7 @@ eal_parse_pci_BDF(const char *input, struct rte_pci_addr *dev_addr)
 	GET_PCIADDR_FIELD(input, dev_addr->bus, UINT8_MAX, ':');
 	GET_PCIADDR_FIELD(input, dev_addr->devid, UINT8_MAX, '.');
 	GET_PCIADDR_FIELD(input, dev_addr->function, UINT8_MAX, 0);
-	return (0);
+	return 0;
 }
 
 /**
@@ -261,9 +292,9 @@ eal_parse_pci_BDF(const char *input, struct rte_pci_addr *dev_addr)
  * a domain prefix.
  *
  * @param input
- * 	The input string to be parsed. Should have the format XXXX:XX:XX.X
+ *	The input string to be parsed. Should have the format XXXX:XX:XX.X
  * @param dev_addr
- * 	The PCI Bus-Device-Function address to be returned
+ *	The PCI Bus-Device-Function address to be returned
  * @return
  *  0 on success, negative on error.
  */
@@ -274,7 +305,7 @@ eal_parse_pci_DomBDF(const char *input, struct rte_pci_addr *dev_addr)
 	GET_PCIADDR_FIELD(input, dev_addr->bus, UINT8_MAX, ':');
 	GET_PCIADDR_FIELD(input, dev_addr->devid, UINT8_MAX, '.');
 	GET_PCIADDR_FIELD(input, dev_addr->function, UINT8_MAX, 0);
-	return (0);
+	return 0;
 }
 #undef GET_PCIADDR_FIELD
 
@@ -335,7 +366,38 @@ int rte_eal_pci_scan(void);
  */
 int rte_eal_pci_probe(void);
 
-#ifdef RTE_LIBRTE_EAL_HOTPLUG
+/**
+ * @internal
+ * Map a particular resource from a file.
+ *
+ * @param requested_addr
+ *      The starting address for the new mapping range.
+ * @param fd
+ *      The file descriptor.
+ * @param offset
+ *      The offset for the mapping range.
+ * @param size
+ *      The size for the mapping range.
+ * @param additional_flags
+ *      The additional flags for the mapping range.
+ * @return
+ *   - On success, the function returns a pointer to the mapped area.
+ *   - On error, the value MAP_FAILED is returned.
+ */
+void *pci_map_resource(void *requested_addr, int fd, off_t offset,
+		size_t size, int additional_flags);
+
+/**
+ * @internal
+ * Unmap a particular resource.
+ *
+ * @param requested_addr
+ *      The address for the unmapping range.
+ * @param size
+ *      The size for the unmapping range.
+ */
+void pci_unmap_resource(void *requested_addr, size_t size);
+
 /**
  * Probe the single PCI device.
  *
@@ -355,7 +417,7 @@ int rte_eal_pci_probe_one(const struct rte_pci_addr *addr);
  * Close the single PCI device.
  *
  * Scan the content of the PCI bus, and find the pci device specified by pci
- * address, then call the close() function for registered driver that has a
+ * address, then call the devuninit() function for registered driver that has a
  * matching entry in its id_table for discovered device.
  *
  * @param addr
@@ -364,8 +426,7 @@ int rte_eal_pci_probe_one(const struct rte_pci_addr *addr);
  *   - 0 on success.
  *   - Negative on error.
  */
-int rte_eal_pci_close_one(const struct rte_pci_addr *addr);
-#endif /* RTE_LIBRTE_EAL_HOTPLUG */
+int rte_eal_pci_detach(const struct rte_pci_addr *addr);
 
 /**
  * Dump the content of the PCI bus.
@@ -392,6 +453,49 @@ void rte_eal_pci_register(struct rte_pci_driver *driver);
  *   to be unregistered.
  */
 void rte_eal_pci_unregister(struct rte_pci_driver *driver);
+
+/**
+ * Read PCI config space.
+ *
+ * @param device
+ *   A pointer to a rte_pci_device structure describing the device
+ *   to use
+ * @param buf
+ *   A data buffer where the bytes should be read into
+ * @param len
+ *   The length of the data buffer.
+ * @param offset
+ *   The offset into PCI config space
+ */
+int rte_eal_pci_read_config(const struct rte_pci_device *device,
+			    void *buf, size_t len, off_t offset);
+
+/**
+ * Write PCI config space.
+ *
+ * @param device
+ *   A pointer to a rte_pci_device structure describing the device
+ *   to use
+ * @param buf
+ *   A data buffer containing the bytes should be written
+ * @param len
+ *   The length of the data buffer.
+ * @param offset
+ *   The offset into PCI config space
+ */
+int rte_eal_pci_write_config(const struct rte_pci_device *device,
+			     const void *buf, size_t len, off_t offset);
+
+#ifdef RTE_PCI_CONFIG
+/**
+ * Set special config space registers for performance purpose.
+ *
+ * @param dev
+ *   A pointer to a rte_pci_device structure describing the device
+ *   to use
+ */
+void pci_config_space_set(struct rte_pci_device *dev);
+#endif /* RTE_PCI_CONFIG */
 
 #ifdef __cplusplus
 }

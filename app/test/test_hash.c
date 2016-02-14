@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
+ *   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -66,6 +66,7 @@
 static rte_hash_function hashtest_funcs[] = {rte_jhash, rte_hash_crc};
 static uint32_t hashtest_initvals[] = {0};
 static uint32_t hashtest_key_lens[] = {0, 2, 4, 5, 6, 7, 8, 10, 11, 15, 16, 21, 31, 32, 33, 63, 64};
+#define MAX_KEYSIZE 64
 /******************************************************************************/
 #define LOCAL_FBK_HASH_ENTRIES_MAX (1 << 15)
 
@@ -169,7 +170,6 @@ static struct flow_key keys[5] = { {
 /* Parameters used for hash table in unit test functions. Name set later. */
 static struct rte_hash_parameters ut_params = {
 	.entries = 64,
-	.bucket_entries = 4,
 	.key_len = sizeof(struct flow_key), /* 13 */
 	.hash_func = rte_jhash,
 	.hash_func_init_val = 0,
@@ -190,7 +190,7 @@ test_crc32_hash_alg_equiv(void)
 	unsigned i, j;
 	size_t data_len;
 
-	printf("# CRC32 implementations equivalence test\n");
+	printf("\n# CRC32 implementations equivalence test\n");
 	for (i = 0; i < CRC32_ITERATIONS; i++) {
 		/* Randomizing data_len of data set */
 		data_len = (size_t) ((rte_rand() % sizeof(data64)) + 1);
@@ -217,6 +217,13 @@ test_crc32_hash_alg_equiv(void)
 			printf("Failed checking CRC32_SW against CRC32_SSE42_x64\n");
 			break;
 		}
+
+		/* Check against 8-byte-operand ARM64 CRC32 if available */
+		rte_hash_crc_set_alg(CRC32_ARM64);
+		if (hash_val != rte_hash_crc(data64, data_len, init_val)) {
+			printf("Failed checking CRC32_SW against CRC32_ARM64\n");
+			break;
+		}
 	}
 
 	/* Resetting to best available algorithm */
@@ -239,7 +246,7 @@ test_crc32_hash_alg_equiv(void)
 static void run_hash_func_test(rte_hash_function f, uint32_t init_val,
 		uint32_t key_len)
 {
-	static uint8_t key[RTE_HASH_KEY_LENGTH_MAX];
+	static uint8_t key[MAX_KEYSIZE];
 	unsigned i;
 
 
@@ -516,8 +523,17 @@ static int test_five_keys(void)
 		pos[i] = rte_hash_lookup(handle, &keys[i]);
 		print_key_info("Lkp", &keys[i], pos[i]);
 		RETURN_IF_ERROR(pos[i] != -ENOENT,
-				"failed to find key (pos[%u]=%d)", i, pos[i]);
+				"found non-existent key (pos[%u]=%d)", i, pos[i]);
 	}
+
+	/* Lookup multi */
+	ret = rte_hash_lookup_multi(handle, &key_array[0], 5, (int32_t *)pos);
+	if (ret == 0)
+		for (i = 0; i < 5; i++) {
+			print_key_info("Lkp", key_array[i], pos[i]);
+			RETURN_IF_ERROR(pos[i] != -ENOENT,
+					"found not-existent key (pos[%u]=%d)", i, pos[i]);
+		}
 
 	rte_hash_free(handle);
 
@@ -527,21 +543,18 @@ static int test_five_keys(void)
 /*
  * Add keys to the same bucket until bucket full.
  *	- add 5 keys to the same bucket (hash created with 4 keys per bucket):
- *	  first 4 successful, 5th unsuccessful
- *	- lookup the 5 keys: 4 hits, 1 miss
- *	- add the 5 keys again: 4 OK, one error as bucket is full
- *	- lookup the 5 keys: 4 hits (updated data), 1 miss
- *	- delete the 5 keys: 5 OK (even if the 5th is not in the table)
+ *	  first 4 successful, 5th successful, pushing existing item in bucket
+ *	- lookup the 5 keys: 5 hits
+ *	- add the 5 keys again: 5 OK
+ *	- lookup the 5 keys: 5 hits (updated data)
+ *	- delete the 5 keys: 5 OK
  *	- lookup the 5 keys: 5 misses
- *	- add the 5th key: OK
- *	- lookup the 5th key: hit
  */
 static int test_full_bucket(void)
 {
 	struct rte_hash_parameters params_pseudo_hash = {
 		.name = "test4",
 		.entries = 64,
-		.bucket_entries = 4,
 		.key_len = sizeof(struct flow_key), /* 13 */
 		.hash_func = pseudo_hash,
 		.hash_func_init_val = 0,
@@ -555,7 +568,7 @@ static int test_full_bucket(void)
 	handle = rte_hash_create(&params_pseudo_hash);
 	RETURN_IF_ERROR(handle == NULL, "hash creation failed");
 
-	/* Fill bucket*/
+	/* Fill bucket */
 	for (i = 0; i < 4; i++) {
 		pos[i] = rte_hash_add_key(handle, &keys[i]);
 		print_key_info("Add", &keys[i], pos[i]);
@@ -563,47 +576,39 @@ static int test_full_bucket(void)
 			"failed to add key (pos[%u]=%d)", i, pos[i]);
 		expected_pos[i] = pos[i];
 	}
-	/* This shouldn't work because the bucket is full */
+	/*
+	 * This should work and will push one of the items
+	 * in the bucket because it is full
+	 */
 	pos[4] = rte_hash_add_key(handle, &keys[4]);
 	print_key_info("Add", &keys[4], pos[4]);
-	RETURN_IF_ERROR(pos[4] != -ENOSPC,
-			"fail: added key to full bucket (pos[4]=%d)", pos[4]);
+	RETURN_IF_ERROR(pos[4] < 0,
+			"failed to add key (pos[4]=%d)", pos[4]);
+	expected_pos[4] = pos[4];
 
 	/* Lookup */
-	for (i = 0; i < 4; i++) {
+	for (i = 0; i < 5; i++) {
 		pos[i] = rte_hash_lookup(handle, &keys[i]);
 		print_key_info("Lkp", &keys[i], pos[i]);
 		RETURN_IF_ERROR(pos[i] != expected_pos[i],
 			"failed to find key (pos[%u]=%d)", i, pos[i]);
 	}
-	pos[4] = rte_hash_lookup(handle, &keys[4]);
-	print_key_info("Lkp", &keys[4], pos[4]);
-	RETURN_IF_ERROR(pos[4] != -ENOENT,
-			"fail: found non-existent key (pos[4]=%d)", pos[4]);
 
 	/* Add - update */
-	for (i = 0; i < 4; i++) {
+	for (i = 0; i < 5; i++) {
 		pos[i] = rte_hash_add_key(handle, &keys[i]);
 		print_key_info("Add", &keys[i], pos[i]);
 		RETURN_IF_ERROR(pos[i] != expected_pos[i],
 			"failed to add key (pos[%u]=%d)", i, pos[i]);
 	}
-	pos[4] = rte_hash_add_key(handle, &keys[4]);
-	print_key_info("Add", &keys[4], pos[4]);
-	RETURN_IF_ERROR(pos[4] != -ENOSPC,
-			"fail: added key to full bucket (pos[4]=%d)", pos[4]);
 
 	/* Lookup */
-	for (i = 0; i < 4; i++) {
+	for (i = 0; i < 5; i++) {
 		pos[i] = rte_hash_lookup(handle, &keys[i]);
 		print_key_info("Lkp", &keys[i], pos[i]);
 		RETURN_IF_ERROR(pos[i] != expected_pos[i],
 			"failed to find key (pos[%u]=%d)", i, pos[i]);
 	}
-	pos[4] = rte_hash_lookup(handle, &keys[4]);
-	print_key_info("Lkp", &keys[4], pos[4]);
-	RETURN_IF_ERROR(pos[4] != -ENOENT,
-			"fail: found non-existent key (pos[4]=%d)", pos[4]);
 
 	/* Delete 1 key, check other keys are still found */
 	pos[1] = rte_hash_del_key(handle, &keys[1]);
@@ -623,34 +628,20 @@ static int test_full_bucket(void)
 	RETURN_IF_ERROR(pos[1] < 0, "failed to add key (pos[1]=%d)", pos[1]);
 
 	/* Delete */
-	for (i = 0; i < 4; i++) {
+	for (i = 0; i < 5; i++) {
 		pos[i] = rte_hash_del_key(handle, &keys[i]);
 		print_key_info("Del", &keys[i], pos[i]);
 		RETURN_IF_ERROR(pos[i] != expected_pos[i],
 			"failed to delete key (pos[%u]=%d)", i, pos[i]);
 	}
-	pos[4] = rte_hash_del_key(handle, &keys[4]);
-	print_key_info("Del", &keys[4], pos[4]);
-	RETURN_IF_ERROR(pos[4] != -ENOENT,
-			"fail: deleted non-existent key (pos[4]=%d)", pos[4]);
 
 	/* Lookup */
-	for (i = 0; i < 4; i++) {
+	for (i = 0; i < 5; i++) {
 		pos[i] = rte_hash_lookup(handle, &keys[i]);
 		print_key_info("Lkp", &keys[i], pos[i]);
 		RETURN_IF_ERROR(pos[i] != -ENOENT,
 			"fail: found non-existent key (pos[%u]=%d)", i, pos[i]);
 	}
-
-	/* Add and lookup the 5th key */
-	pos[4] = rte_hash_add_key(handle, &keys[4]);
-	print_key_info("Add", &keys[4], pos[4]);
-	RETURN_IF_ERROR(pos[4] < 0, "failed to add key (pos[4]=%d)", pos[4]);
-	expected_pos[4] = pos[4];
-	pos[4] = rte_hash_lookup(handle, &keys[4]);
-	print_key_info("Lkp", &keys[4], pos[4]);
-	RETURN_IF_ERROR(pos[4] != expected_pos[4],
-			"failed to find key (pos[4]=%d)", pos[4]);
 
 	rte_hash_free(handle);
 
@@ -785,7 +776,7 @@ fbk_hash_unit_test(void)
 
 	/* Try creating hashes with invalid parameters */
 	printf("# Testing hash creation with invalid parameters "
-			"- expert error msgs\n");
+			"- expect error msgs\n");
 	handle = rte_fbk_hash_create(&invalid_params_1);
 	RETURN_IF_ERROR_FBK(handle != NULL, "fbk hash creation should have failed");
 
@@ -991,6 +982,7 @@ static int test_fbk_hash_find_existing(void)
 	return 0;
 }
 
+#define BUCKET_ENTRIES 4
 /*
  * Do tests for hash creation with bad parameters.
  */
@@ -1017,18 +1009,8 @@ static int test_hash_creation_with_bad_parameters(void)
 	}
 
 	memcpy(&params, &ut_params, sizeof(params));
-	params.name = "creation_with_bad_parameters_1";
-	params.bucket_entries = RTE_HASH_BUCKET_ENTRIES_MAX + 1;
-	handle = rte_hash_create(&params);
-	if (handle != NULL) {
-		rte_hash_free(handle);
-		printf("Impossible creating hash sucessfully with bucket_entries in parameter exceeded\n");
-		return -1;
-	}
-
-	memcpy(&params, &ut_params, sizeof(params));
 	params.name = "creation_with_bad_parameters_2";
-	params.entries = params.bucket_entries - 1;
+	params.entries = BUCKET_ENTRIES - 1;
 	handle = rte_hash_create(&params);
 	if (handle != NULL) {
 		rte_hash_free(handle);
@@ -1038,26 +1020,6 @@ static int test_hash_creation_with_bad_parameters(void)
 
 	memcpy(&params, &ut_params, sizeof(params));
 	params.name = "creation_with_bad_parameters_3";
-	params.entries = params.entries - 1;
-	handle = rte_hash_create(&params);
-	if (handle != NULL) {
-		rte_hash_free(handle);
-		printf("Impossible creating hash sucessfully if entries in parameter is not power of 2\n");
-		return -1;
-	}
-
-	memcpy(&params, &ut_params, sizeof(params));
-	params.name = "creation_with_bad_parameters_4";
-	params.bucket_entries = params.bucket_entries - 1;
-	handle = rte_hash_create(&params);
-	if (handle != NULL) {
-		rte_hash_free(handle);
-		printf("Impossible creating hash sucessfully if bucket_entries in parameter is not power of 2\n");
-		return -1;
-	}
-
-	memcpy(&params, &ut_params, sizeof(params));
-	params.name = "creation_with_bad_parameters_5";
 	params.key_len = 0;
 	handle = rte_hash_create(&params);
 	if (handle != NULL) {
@@ -1067,17 +1029,7 @@ static int test_hash_creation_with_bad_parameters(void)
 	}
 
 	memcpy(&params, &ut_params, sizeof(params));
-	params.name = "creation_with_bad_parameters_6";
-	params.key_len = RTE_HASH_KEY_LENGTH_MAX + 1;
-	handle = rte_hash_create(&params);
-	if (handle != NULL) {
-		rte_hash_free(handle);
-		printf("Impossible creating hash sucessfully if key_len is greater than the maximum\n");
-		return -1;
-	}
-
-	memcpy(&params, &ut_params, sizeof(params));
-	params.name = "creation_with_bad_parameters_7";
+	params.name = "creation_with_bad_parameters_4";
 	params.socket_id = RTE_MAX_NUMA_NODES + 1;
 	handle = rte_hash_create(&params);
 	if (handle != NULL) {
@@ -1087,6 +1039,7 @@ static int test_hash_creation_with_bad_parameters(void)
 	}
 
 	rte_hash_free(handle);
+	printf("# Test successful. No more errors expected\n");
 
 	return 0;
 }
@@ -1108,10 +1061,6 @@ test_hash_creation_with_good_parameters(void)
 	handle = rte_hash_create(&params);
 	if (handle == NULL) {
 		printf("Creating hash with null hash_func failed\n");
-		return -1;
-	}
-	if (handle->hash_func == NULL) {
-		printf("Hash function should have been DEFAULT_HASH_FUNC\n");
 		return -1;
 	}
 
@@ -1151,6 +1100,127 @@ test_hash_creation_with_good_parameters(void)
 	return 0;
 }
 
+#define ITERATIONS 50
+/*
+ * Test to see the average table utilization (entries added/max entries)
+ * before hitting a random entry that cannot be added
+ */
+static int test_average_table_utilization(void)
+{
+	struct rte_hash *handle;
+	uint8_t simple_key[MAX_KEYSIZE];
+	unsigned i, j;
+	unsigned added_keys, average_keys_added = 0;
+	int ret;
+
+	printf("\n# Running test to determine average utilization"
+	       "\n  before adding elements begins to fail\n");
+	printf("Measuring performance, please wait");
+	fflush(stdout);
+	ut_params.entries = 1 << 20;
+	ut_params.name = "test_average_utilization";
+	ut_params.hash_func = rte_jhash;
+	handle = rte_hash_create(&ut_params);
+	RETURN_IF_ERROR(handle == NULL, "hash creation failed");
+
+	for (j = 0; j < ITERATIONS; j++) {
+		ret = 0;
+		/* Add random entries until key cannot be added */
+		for (added_keys = 0; ret >= 0; added_keys++) {
+			for (i = 0; i < ut_params.key_len; i++)
+				simple_key[i] = rte_rand() % 255;
+			ret = rte_hash_add_key(handle, simple_key);
+		}
+		if (ret != -ENOSPC) {
+			printf("Unexpected error when adding keys\n");
+			rte_hash_free(handle);
+			return -1;
+		}
+
+		average_keys_added += added_keys;
+
+		/* Reset the table */
+		rte_hash_reset(handle);
+
+		/* Print a dot to show progress on operations */
+		printf(".");
+		fflush(stdout);
+	}
+
+	average_keys_added /= ITERATIONS;
+
+	printf("\nAverage table utilization = %.2f%% (%u/%u)\n",
+		((double) average_keys_added / ut_params.entries * 100),
+		average_keys_added, ut_params.entries);
+	rte_hash_free(handle);
+
+	return 0;
+}
+
+#define NUM_ENTRIES 1024
+static int test_hash_iteration(void)
+{
+	struct rte_hash *handle;
+	unsigned i;
+	uint8_t keys[NUM_ENTRIES][MAX_KEYSIZE];
+	const void *next_key;
+	void *next_data;
+	void *data[NUM_ENTRIES];
+	unsigned added_keys;
+	uint32_t iter = 0;
+	int ret = 0;
+
+	ut_params.entries = NUM_ENTRIES;
+	ut_params.name = "test_hash_iteration";
+	ut_params.hash_func = rte_jhash;
+	ut_params.key_len = 16;
+	handle = rte_hash_create(&ut_params);
+	RETURN_IF_ERROR(handle == NULL, "hash creation failed");
+
+	/* Add random entries until key cannot be added */
+	for (added_keys = 0; added_keys < NUM_ENTRIES; added_keys++) {
+		data[added_keys] = (void *) ((uintptr_t) rte_rand());
+		for (i = 0; i < ut_params.key_len; i++)
+			keys[added_keys][i] = rte_rand() % 255;
+		ret = rte_hash_add_key_data(handle, keys[added_keys], data[added_keys]);
+		if (ret < 0)
+			break;
+	}
+
+	/* Iterate through the hash table */
+	while (rte_hash_iterate(handle, &next_key, &next_data, &iter) >= 0) {
+		/* Search for the key in the list of keys added */
+		for (i = 0; i < NUM_ENTRIES; i++) {
+			if (memcmp(next_key, keys[i], ut_params.key_len) == 0) {
+				if (next_data != data[i]) {
+					printf("Data found in the hash table is"
+					       "not the data added with the key\n");
+					goto err;
+				}
+				added_keys--;
+				break;
+			}
+		}
+		if (i == NUM_ENTRIES) {
+			printf("Key found in the hash table was not added\n");
+			goto err;
+		}
+	}
+
+	/* Check if all keys have been iterated */
+	if (added_keys != 0) {
+		printf("There were still %u keys to iterate\n", added_keys);
+		goto err;
+	}
+
+	rte_hash_free(handle);
+	return 0;
+
+err:
+	rte_hash_free(handle);
+	return -1;
+}
+
 static uint8_t key[16] = {0x00, 0x01, 0x02, 0x03,
 			0x04, 0x05, 0x06, 0x07,
 			0x08, 0x09, 0x0a, 0x0b,
@@ -1158,7 +1228,6 @@ static uint8_t key[16] = {0x00, 0x01, 0x02, 0x03,
 static struct rte_hash_parameters hash_params_ex = {
 	.name = NULL,
 	.entries = 64,
-	.bucket_entries = 4,
 	.key_len = 0,
 	.hash_func = NULL,
 	.hash_func_init_val = 0,
@@ -1177,7 +1246,7 @@ test_hash_add_delete_jhash2(void)
 
 	hash_params_ex.name = "hash_test_jhash2";
 	hash_params_ex.key_len = 4;
-	hash_params_ex.hash_func = (rte_hash_function)rte_jhash2;
+	hash_params_ex.hash_func = (rte_hash_function)rte_jhash_32b;
 
 	handle = rte_hash_create(&hash_params_ex);
 	if (handle == NULL) {
@@ -1216,7 +1285,7 @@ test_hash_add_delete_2_jhash2(void)
 
 	hash_params_ex.name = "hash_test_2_jhash2";
 	hash_params_ex.key_len = 8;
-	hash_params_ex.hash_func = (rte_hash_function)rte_jhash2;
+	hash_params_ex.hash_func = (rte_hash_function)rte_jhash_32b;
 
 	handle = rte_hash_create(&hash_params_ex);
 	if (handle == NULL)
@@ -1408,6 +1477,10 @@ test_hash(void)
 	if (test_hash_creation_with_bad_parameters() < 0)
 		return -1;
 	if (test_hash_creation_with_good_parameters() < 0)
+		return -1;
+	if (test_average_table_utilization() < 0)
+		return -1;
+	if (test_hash_iteration() < 0)
 		return -1;
 
 	run_hash_func_tests();

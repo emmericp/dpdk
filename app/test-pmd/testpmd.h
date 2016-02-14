@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
+ *   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -133,6 +133,8 @@ struct fwd_stream {
 #define TESTPMD_TX_OFFLOAD_PARSE_TUNNEL      0x0020
 /** Insert VLAN header in forward engine */
 #define TESTPMD_TX_OFFLOAD_INSERT_VLAN       0x0040
+/** Insert double VLAN header in forward engine */
+#define TESTPMD_TX_OFFLOAD_INSERT_QINQ       0x0080
 
 /**
  * The data structure associated with each port.
@@ -149,7 +151,8 @@ struct rte_port {
 	unsigned int            socket_id;  /**< For NUMA support */
 	uint16_t                tx_ol_flags;/**< TX Offload Flags (TESTPMD_TX_OFFLOAD...). */
 	uint16_t                tso_segsz;  /**< MSS for segmentation offload. */
-	uint16_t                tx_vlan_id; /**< Tag Id. in TX VLAN packets. */
+	uint16_t                tx_vlan_id;/**< The tag ID */
+	uint16_t                tx_vlan_id_outer;/**< The outer tag ID */
 	void                    *fwd_ctx;   /**< Forwarding mode context */
 	uint64_t                rx_bad_ip_csum; /**< rx pkts with bad ip checksum  */
 	uint64_t                rx_bad_l4_csum; /**< rx pkts with bad l4 checksum */
@@ -159,9 +162,12 @@ struct rte_port {
 	uint8_t                 need_reconfig;  /**< need reconfiguring port or not */
 	uint8_t                 need_reconfig_queues; /**< need reconfiguring queues or not */
 	uint8_t                 rss_flag;   /**< enable rss or not */
-	uint8_t			dcb_flag;   /**< enable dcb */
+	uint8_t                 dcb_flag;   /**< enable dcb */
 	struct rte_eth_rxconf   rx_conf;    /**< rx configuration */
 	struct rte_eth_txconf   tx_conf;    /**< tx configuration */
+	struct ether_addr       *mc_addr_pool; /**< pool of multicast addrs */
+	uint32_t                mc_addr_nb; /**< nb. of addr. in mc_addr_pool */
+	uint8_t                 slave_flag; /**< bonding slave port */
 };
 
 extern portid_t __rte_unused
@@ -249,25 +255,6 @@ enum dcb_mode_enable
 	DCB_ENABLED
 };
 
-/*
- * DCB general config info
- */
-struct dcb_config {
-	enum dcb_mode_enable dcb_mode;
-	uint8_t vt_en;
-	enum rte_eth_nb_tcs num_tcs;
-	uint8_t pfc_en;
-};
-
-/*
- * In DCB io FWD mode, 128 RX queue to 128 TX queue mapping
- */
-enum dcb_queue_mapping_mode {
-	DCB_VT_Q_MAPPING = 0,
-	DCB_4_TCS_Q_MAPPING,
-	DCB_8_TCS_Q_MAPPING
-};
-
 #define MAX_TX_QUEUE_STATS_MAPPINGS 1024 /* MAX_PORT of 32 @ 32 tx_queues/port */
 #define MAX_RX_QUEUE_STATS_MAPPINGS 4096 /* MAX_PORT of 32 @ 128 rx_queues/port */
 
@@ -302,8 +289,6 @@ extern volatile int test_done; /* stop packet forwarding when set to 1. */
 extern uint32_t bypass_timeout; /**< Store the NIC bypass watchdog timeout */
 #endif
 
-#define MAX_SOCKET 2 /*MAX SOCKET:currently, it is 2 */
-
 /*
  * Store specified sockets on which memory pool to be used by ports
  * is allocated.
@@ -332,6 +317,7 @@ extern lcoreid_t nb_lcores; /**< Number of logical cores probed at init time. */
 extern lcoreid_t nb_cfg_lcores; /**< Number of configured logical cores. */
 extern lcoreid_t nb_fwd_lcores; /**< Number of forwarding logical cores. */
 extern unsigned int fwd_lcores_cpuids[RTE_MAX_LCORE];
+extern unsigned max_socket;
 
 /*
  * Configuration of Ethernet ports:
@@ -374,6 +360,14 @@ extern struct rte_fdir_conf fdir_conf;
 extern uint16_t tx_pkt_length; /**< Length of TXONLY packet */
 extern uint16_t tx_pkt_seg_lengths[RTE_MAX_SEGS_PER_PKT]; /**< Seg. lengths */
 extern uint8_t  tx_pkt_nb_segs; /**< Number of segments in TX packets */
+
+enum tx_pkt_split {
+	TX_PKT_SPLIT_OFF,
+	TX_PKT_SPLIT_ON,
+	TX_PKT_SPLIT_RND,
+};
+
+extern enum tx_pkt_split tx_pkt_split;
 
 extern uint16_t nb_pkt_per_burst;
 extern uint16_t mb_mempool_cache;
@@ -474,6 +468,8 @@ void nic_xstats_display(portid_t port_id);
 void nic_xstats_clear(portid_t port_id);
 void nic_stats_mapping_display(portid_t port_id);
 void port_infos_display(portid_t port_id);
+void rx_queue_infos_display(portid_t port_idi, uint16_t queue_id);
+void tx_queue_infos_display(portid_t port_idi, uint16_t queue_id);
 void fwd_lcores_config_display(void);
 void fwd_config_display(void);
 void rxtx_config_display(void);
@@ -513,6 +509,7 @@ int rx_vft_set(portid_t port_id, uint16_t vlan_id, int on);
 void vlan_extend_set(portid_t port_id, int on);
 void vlan_tpid_set(portid_t port_id, uint16_t tp_id);
 void tx_vlan_set(portid_t port_id, uint16_t vlan_id);
+void tx_qinq_set(portid_t port_id, uint16_t vlan_id, uint16_t vlan_id_outer);
 void tx_vlan_reset(portid_t port_id);
 void tx_vlan_pvid_set(portid_t port_id, uint16_t vlan_id, int on);
 
@@ -520,6 +517,8 @@ void set_qmap(portid_t port_id, uint8_t is_rx, uint16_t queue_id, uint8_t map_va
 
 void set_verbose_level(uint16_t vb_level);
 void set_tx_pkt_segments(unsigned *seg_lengths, unsigned nb_segs);
+void show_tx_pkt_segments(void);
+void set_tx_pkt_split(const char *name);
 void set_nb_pkt_per_burst(uint16_t pkt_burst);
 char *list_pkt_forwarding_modes(void);
 void set_pkt_forwarding_mode(const char *fwd_mode);
@@ -528,7 +527,11 @@ void stop_packet_forwarding(void);
 void dev_set_link_up(portid_t pid);
 void dev_set_link_down(portid_t pid);
 void init_port_config(void);
-int init_port_dcb_config(portid_t pid,struct dcb_config *dcb_conf);
+void set_port_slave_flag(portid_t slave_pid);
+void clear_port_slave_flag(portid_t slave_pid);
+int init_port_dcb_config(portid_t pid, enum dcb_mode_enable dcb_mode,
+		     enum rte_eth_nb_tcs num_tcs,
+		     uint8_t pfc_en);
 int start_port(portid_t pid);
 void stop_port(portid_t pid);
 void close_port(portid_t pid);
@@ -554,14 +557,21 @@ int set_queue_rate_limit(portid_t port_id, uint16_t queue_idx, uint16_t rate);
 int set_vf_rate_limit(portid_t port_id, uint16_t vf, uint16_t rate,
 				uint64_t q_msk);
 
-void port_rss_hash_conf_show(portid_t port_id, int show_rss_key);
-void port_rss_hash_key_update(portid_t port_id, uint8_t *hash_key);
+void port_rss_hash_conf_show(portid_t port_id, char rss_info[],
+			     int show_rss_key);
+void port_rss_hash_key_update(portid_t port_id, char rss_type[],
+			      uint8_t *hash_key, uint hash_key_len);
 void get_syn_filter(uint8_t port_id);
 void get_ethertype_filter(uint8_t port_id, uint16_t index);
 void get_2tuple_filter(uint8_t port_id, uint16_t index);
 void get_5tuple_filter(uint8_t port_id, uint16_t index);
 int rx_queue_id_is_invalid(queueid_t rxq_id);
 int tx_queue_id_is_invalid(queueid_t txq_id);
+
+/* Functions to manage the set of filtered Multicast MAC addresses */
+void mcast_addr_add(uint8_t port_id, struct ether_addr *mc_addr);
+void mcast_addr_remove(uint8_t port_id, struct ether_addr *mc_addr);
+void port_dcb_info_display(uint8_t port_id);
 
 enum print_warning {
 	ENABLED_WARN = 0,

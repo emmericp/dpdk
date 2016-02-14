@@ -33,6 +33,7 @@
 
 #include <stdint.h>
 #include <sys/queue.h>
+#include <sys/socket.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
@@ -705,7 +706,7 @@ cmdline_parse_ctx_t main_ctx[] = {
 };
 
 /* prompt function, called from main on MASTER lcore */
-static void *prompt(__attribute__((unused)) void *arg1)
+static void prompt(__attribute__((unused)) void *arg1)
 {
 	struct cmdline *cl;
 

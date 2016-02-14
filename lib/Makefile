@@ -1,6 +1,6 @@
 #   BSD LICENSE
 #
-#   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
+#   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
 #   All rights reserved.
 #
 #   Redistribution and use in source and binary forms, with or without
@@ -33,29 +33,16 @@ include $(RTE_SDK)/mk/rte.vars.mk
 
 DIRS-y += librte_compat
 DIRS-$(CONFIG_RTE_LIBRTE_EAL) += librte_eal
-DIRS-$(CONFIG_RTE_LIBRTE_MALLOC) += librte_malloc
 DIRS-$(CONFIG_RTE_LIBRTE_RING) += librte_ring
 DIRS-$(CONFIG_RTE_LIBRTE_MEMPOOL) += librte_mempool
 DIRS-$(CONFIG_RTE_LIBRTE_MBUF) += librte_mbuf
+DIRS-$(CONFIG_RTE_LIBRTE_MBUF_OFFLOAD) += librte_mbuf_offload
 DIRS-$(CONFIG_RTE_LIBRTE_TIMER) += librte_timer
 DIRS-$(CONFIG_RTE_LIBRTE_CFGFILE) += librte_cfgfile
 DIRS-$(CONFIG_RTE_LIBRTE_CMDLINE) += librte_cmdline
 DIRS-$(CONFIG_RTE_LIBRTE_ETHER) += librte_ether
-DIRS-$(CONFIG_RTE_LIBRTE_E1000_PMD) += librte_pmd_e1000
-DIRS-$(CONFIG_RTE_LIBRTE_IXGBE_PMD) += librte_pmd_ixgbe
-DIRS-$(CONFIG_RTE_LIBRTE_I40E_PMD) += librte_pmd_i40e
-DIRS-$(CONFIG_RTE_LIBRTE_FM10K_PMD) += librte_pmd_fm10k
-DIRS-$(CONFIG_RTE_LIBRTE_MLX4_PMD) += librte_pmd_mlx4
-DIRS-$(CONFIG_RTE_LIBRTE_ENIC_PMD) += librte_pmd_enic
-DIRS-$(CONFIG_RTE_LIBRTE_PMD_BOND) += librte_pmd_bond
-DIRS-$(CONFIG_RTE_LIBRTE_PMD_RING) += librte_pmd_ring
-DIRS-$(CONFIG_RTE_LIBRTE_PMD_PCAP) += librte_pmd_pcap
-DIRS-$(CONFIG_RTE_LIBRTE_PMD_AF_PACKET) += librte_pmd_af_packet
-DIRS-$(CONFIG_RTE_LIBRTE_VIRTIO_PMD) += librte_pmd_virtio
-DIRS-$(CONFIG_RTE_LIBRTE_VMXNET3_PMD) += librte_pmd_vmxnet3
-DIRS-$(CONFIG_RTE_LIBRTE_PMD_XENVIRT) += librte_pmd_xenvirt
+DIRS-$(CONFIG_RTE_LIBRTE_CRYPTODEV) += librte_cryptodev
 DIRS-$(CONFIG_RTE_LIBRTE_VHOST) += librte_vhost
-DIRS-$(CONFIG_RTE_LIBRTE_PMD_NULL) += librte_pmd_null
 DIRS-$(CONFIG_RTE_LIBRTE_HASH) += librte_hash
 DIRS-$(CONFIG_RTE_LIBRTE_LPM) += librte_lpm
 DIRS-$(CONFIG_RTE_LIBRTE_ACL) += librte_acl

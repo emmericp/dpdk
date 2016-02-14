@@ -48,6 +48,17 @@
 
 #define RTE_TABLE_INVALID                                 UINT32_MAX
 
+#ifdef RTE_PIPELINE_STATS_COLLECT
+#define RTE_PIPELINE_STATS_ADD(counter, val) \
+	({ (counter) += (val); })
+
+#define RTE_PIPELINE_STATS_ADD_M(counter, mask) \
+	({ (counter) += __builtin_popcountll(mask); })
+#else
+#define RTE_PIPELINE_STATS_ADD(counter, val)
+#define RTE_PIPELINE_STATS_ADD_M(counter, mask)
+#endif
+
 struct rte_port_in {
 	/* Input parameters */
 	struct rte_port_in_ops ops;
@@ -63,6 +74,8 @@ struct rte_port_in {
 
 	/* List of enabled ports */
 	struct rte_port_in *next;
+
+	uint64_t n_pkts_dropped_by_ah;
 };
 
 struct rte_port_out {
@@ -74,6 +87,8 @@ struct rte_port_out {
 
 	/* Handle to low-level port */
 	void *h_port;
+
+	uint64_t n_pkts_dropped_by_ah;
 };
 
 struct rte_table {
@@ -90,6 +105,12 @@ struct rte_table {
 
 	/* Handle to the low-level table object */
 	void *h_table;
+
+	/* Stats for this table. */
+	uint64_t n_pkts_dropped_by_lkp_hit_ah;
+	uint64_t n_pkts_dropped_by_lkp_miss_ah;
+	uint64_t n_pkts_dropped_lkp_hit;
+	uint64_t n_pkts_dropped_lkp_miss;
 };
 
 #define RTE_PIPELINE_MAX_NAME_SZ                           124
@@ -171,14 +192,6 @@ rte_pipeline_check_params(struct rte_pipeline_params *params)
 	    (params->socket_id >= RTE_MAX_NUMA_NODES)) {
 		RTE_LOG(ERR, PIPELINE,
 			"%s: Incorrect value for parameter socket_id\n",
-			__func__);
-		return -EINVAL;
-	}
-
-	/* offset_port_id */
-	if (params->offset_port_id & 0x3) {
-		RTE_LOG(ERR, PIPELINE,
-			"%s: Incorrect value for parameter offset_port_id\n",
 			__func__);
 		return -EINVAL;
 	}
@@ -572,6 +585,112 @@ rte_pipeline_table_entry_delete(struct rte_pipeline *p,
 	}
 
 	return (table->ops.f_delete)(table->h_table, key, key_found, entry);
+}
+
+int rte_pipeline_table_entry_add_bulk(struct rte_pipeline *p,
+	uint32_t table_id,
+	void **keys,
+	struct rte_pipeline_table_entry **entries,
+	uint32_t n_keys,
+	int *key_found,
+	struct rte_pipeline_table_entry **entries_ptr)
+{
+	struct rte_table *table;
+	uint32_t i;
+
+	/* Check input arguments */
+	if (p == NULL) {
+		RTE_LOG(ERR, PIPELINE, "%s: pipeline parameter is NULL\n",
+			__func__);
+		return -EINVAL;
+	}
+
+	if (keys == NULL) {
+		RTE_LOG(ERR, PIPELINE, "%s: keys parameter is NULL\n", __func__);
+		return -EINVAL;
+	}
+
+	if (entries == NULL) {
+		RTE_LOG(ERR, PIPELINE, "%s: entries parameter is NULL\n",
+			__func__);
+		return -EINVAL;
+	}
+
+	if (table_id >= p->num_tables) {
+		RTE_LOG(ERR, PIPELINE,
+			"%s: table_id %d out of range\n", __func__, table_id);
+		return -EINVAL;
+	}
+
+	table = &p->tables[table_id];
+
+	if (table->ops.f_add_bulk == NULL) {
+		RTE_LOG(ERR, PIPELINE, "%s: f_add_bulk function pointer NULL\n",
+			__func__);
+		return -EINVAL;
+	}
+
+	for (i = 0; i < n_keys; i++) {
+		if ((entries[i]->action == RTE_PIPELINE_ACTION_TABLE) &&
+			table->table_next_id_valid &&
+			(entries[i]->table_id != table->table_next_id)) {
+			RTE_LOG(ERR, PIPELINE,
+				"%s: Tree-like topologies not allowed\n", __func__);
+			return -EINVAL;
+		}
+	}
+
+	/* Add entry */
+	for (i = 0; i < n_keys; i++) {
+		if ((entries[i]->action == RTE_PIPELINE_ACTION_TABLE) &&
+			(table->table_next_id_valid == 0)) {
+			table->table_next_id = entries[i]->table_id;
+			table->table_next_id_valid = 1;
+		}
+	}
+
+	return (table->ops.f_add_bulk)(table->h_table, keys, (void **) entries,
+		n_keys, key_found, (void **) entries_ptr);
+}
+
+int rte_pipeline_table_entry_delete_bulk(struct rte_pipeline *p,
+	uint32_t table_id,
+	void **keys,
+	uint32_t n_keys,
+	int *key_found,
+	struct rte_pipeline_table_entry **entries)
+{
+	struct rte_table *table;
+
+	/* Check input arguments */
+	if (p == NULL) {
+		RTE_LOG(ERR, PIPELINE, "%s: pipeline parameter NULL\n",
+			__func__);
+		return -EINVAL;
+	}
+
+	if (keys == NULL) {
+		RTE_LOG(ERR, PIPELINE, "%s: key parameter is NULL\n",
+			__func__);
+		return -EINVAL;
+	}
+
+	if (table_id >= p->num_tables) {
+		RTE_LOG(ERR, PIPELINE,
+			"%s: table_id %d out of range\n", __func__, table_id);
+		return -EINVAL;
+	}
+
+	table = &p->tables[table_id];
+
+	if (table->ops.f_delete_bulk == NULL) {
+		RTE_LOG(ERR, PIPELINE,
+			"%s: f_delete function pointer NULL\n", __func__);
+		return -EINVAL;
+	}
+
+	return (table->ops.f_delete_bulk)(table->h_table, keys, n_keys, key_found,
+			(void **) entries);
 }
 
 /*
@@ -1040,6 +1159,8 @@ rte_pipeline_action_handler_port_bulk(struct rte_pipeline *p,
 
 		port_out->f_action_bulk(p->pkts, &pkts_mask, port_out->arg_ah);
 		p->action_mask0[RTE_PIPELINE_ACTION_DROP] |= pkts_mask ^  mask;
+		RTE_PIPELINE_STATS_ADD_M(port_out->n_pkts_dropped_by_ah,
+				pkts_mask ^  mask);
 	}
 
 	/* Output port TX */
@@ -1070,6 +1191,9 @@ rte_pipeline_action_handler_port(struct rte_pipeline *p, uint64_t pkts_mask)
 					port_out->arg_ah);
 				p->action_mask0[RTE_PIPELINE_ACTION_DROP] |=
 					(pkt_mask ^ 1LLU) << i;
+
+				RTE_PIPELINE_STATS_ADD(port_out->n_pkts_dropped_by_ah,
+						pkt_mask ^ 1LLU);
 
 				/* Output port TX */
 				if (pkt_mask != 0)
@@ -1103,6 +1227,9 @@ rte_pipeline_action_handler_port(struct rte_pipeline *p, uint64_t pkts_mask)
 					port_out->arg_ah);
 				p->action_mask0[RTE_PIPELINE_ACTION_DROP] |=
 					(pkt_mask ^ 1LLU) << i;
+
+				RTE_PIPELINE_STATS_ADD(port_out->n_pkts_dropped_by_ah,
+						pkt_mask ^ 1LLU);
 
 				/* Output port TX */
 				if (pkt_mask != 0)
@@ -1140,6 +1267,9 @@ rte_pipeline_action_handler_port_meta(struct rte_pipeline *p,
 				p->action_mask0[RTE_PIPELINE_ACTION_DROP] |=
 					(pkt_mask ^ 1LLU) << i;
 
+				RTE_PIPELINE_STATS_ADD(port_out->n_pkts_dropped_by_ah,
+						pkt_mask ^ 1ULL);
+
 				/* Output port TX */
 				if (pkt_mask != 0)
 					port_out->ops.f_tx(port_out->h_port,
@@ -1173,6 +1303,9 @@ rte_pipeline_action_handler_port_meta(struct rte_pipeline *p,
 					port_out->arg_ah);
 				p->action_mask0[RTE_PIPELINE_ACTION_DROP] |=
 					(pkt_mask ^ 1LLU) << i;
+
+				RTE_PIPELINE_STATS_ADD(port_out->n_pkts_dropped_by_ah,
+						pkt_mask ^ 1ULL);
 
 				/* Output port TX */
 				if (pkt_mask != 0)
@@ -1232,10 +1365,10 @@ rte_pipeline_run(struct rte_pipeline *p)
 		if (port_in->f_action != NULL) {
 			uint64_t mask = pkts_mask;
 
-			port_in->f_action(p->pkts, n_pkts, &pkts_mask,
-				port_in->arg_ah);
-			p->action_mask0[RTE_PIPELINE_ACTION_DROP] |=
-				pkts_mask ^ mask;
+			port_in->f_action(p->pkts, n_pkts, &pkts_mask, port_in->arg_ah);
+			mask ^= pkts_mask;
+			p->action_mask0[RTE_PIPELINE_ACTION_DROP] |= mask;
+			RTE_PIPELINE_STATS_ADD_M(port_in->n_pkts_dropped_by_ah, mask);
 		}
 
 		/* Table */
@@ -1261,9 +1394,10 @@ rte_pipeline_run(struct rte_pipeline *p)
 					table->f_action_miss(p->pkts,
 						&lookup_miss_mask,
 						default_entry, table->arg_ah);
-					p->action_mask0[
-						RTE_PIPELINE_ACTION_DROP] |=
-						lookup_miss_mask ^ mask;
+					mask ^= lookup_miss_mask;
+					p->action_mask0[RTE_PIPELINE_ACTION_DROP] |= mask;
+					RTE_PIPELINE_STATS_ADD_M(
+						table->n_pkts_dropped_by_lkp_miss_ah, mask);
 				}
 
 				/* Table reserved actions */
@@ -1277,6 +1411,10 @@ rte_pipeline_run(struct rte_pipeline *p)
 					uint32_t pos = default_entry->action;
 
 					p->action_mask0[pos] = lookup_miss_mask;
+					if (pos == RTE_PIPELINE_ACTION_DROP) {
+						RTE_PIPELINE_STATS_ADD_M(table->n_pkts_dropped_lkp_miss,
+							lookup_miss_mask);
+					}
 				}
 			}
 
@@ -1289,9 +1427,10 @@ rte_pipeline_run(struct rte_pipeline *p)
 					table->f_action_hit(p->pkts,
 						&lookup_hit_mask,
 						p->entries, table->arg_ah);
-					p->action_mask0[
-						RTE_PIPELINE_ACTION_DROP] |=
-						lookup_hit_mask ^ mask;
+					mask ^= lookup_hit_mask;
+					p->action_mask0[RTE_PIPELINE_ACTION_DROP] |= mask;
+					RTE_PIPELINE_STATS_ADD_M(
+						table->n_pkts_dropped_by_lkp_hit_ah, mask);
 				}
 
 				/* Table reserved actions */
@@ -1308,6 +1447,9 @@ rte_pipeline_run(struct rte_pipeline *p)
 				p->action_mask0[RTE_PIPELINE_ACTION_TABLE] |=
 					p->action_mask1[
 						RTE_PIPELINE_ACTION_TABLE];
+
+				RTE_PIPELINE_STATS_ADD_M(table->n_pkts_dropped_lkp_hit,
+						p->action_mask1[RTE_PIPELINE_ACTION_DROP]);
 			}
 
 			/* Prepare for next iteration */
@@ -1370,8 +1512,126 @@ rte_pipeline_port_out_packet_insert(struct rte_pipeline *p,
 
 		if (pkt_mask != 0) /* Output port TX */
 			port_out->ops.f_tx(port_out->h_port, pkt);
-		else
+		else {
 			rte_pktmbuf_free(pkt);
+			RTE_PIPELINE_STATS_ADD(port_out->n_pkts_dropped_by_ah, 1);
+		}
+	}
+
+	return 0;
+}
+
+int rte_pipeline_port_in_stats_read(struct rte_pipeline *p, uint32_t port_id,
+	struct rte_pipeline_port_in_stats *stats, int clear)
+{
+	struct rte_port_in *port;
+	int retval;
+
+	if (p == NULL) {
+		RTE_LOG(ERR, PIPELINE, "%s: pipeline parameter NULL\n",
+			__func__);
+		return -EINVAL;
+	}
+
+	if (port_id >= p->num_ports_in) {
+		RTE_LOG(ERR, PIPELINE,
+			"%s: port IN ID %u is out of range\n",
+			__func__, port_id);
+		return -EINVAL;
+	}
+
+	port = &p->ports_in[port_id];
+
+	if (port->ops.f_stats != NULL) {
+		retval = port->ops.f_stats(port->h_port, &stats->stats, clear);
+		if (retval)
+			return retval;
+	} else if (stats != NULL)
+		memset(&stats->stats, 0, sizeof(stats->stats));
+
+	if (stats != NULL)
+		stats->n_pkts_dropped_by_ah = port->n_pkts_dropped_by_ah;
+
+	if (clear != 0)
+		port->n_pkts_dropped_by_ah = 0;
+
+	return 0;
+}
+
+int rte_pipeline_port_out_stats_read(struct rte_pipeline *p, uint32_t port_id,
+	struct rte_pipeline_port_out_stats *stats, int clear)
+{
+	struct rte_port_out *port;
+	int retval;
+
+	if (p == NULL) {
+		RTE_LOG(ERR, PIPELINE, "%s: pipeline parameter NULL\n", __func__);
+		return -EINVAL;
+	}
+
+	if (port_id >= p->num_ports_out) {
+		RTE_LOG(ERR, PIPELINE,
+			"%s: port OUT ID %u is out of range\n", __func__, port_id);
+		return -EINVAL;
+	}
+
+	port = &p->ports_out[port_id];
+	if (port->ops.f_stats != NULL) {
+		retval = port->ops.f_stats(port->h_port, &stats->stats, clear);
+		if (retval != 0)
+			return retval;
+	} else if (stats != NULL)
+		memset(&stats->stats, 0, sizeof(stats->stats));
+
+	if (stats != NULL)
+		stats->n_pkts_dropped_by_ah = port->n_pkts_dropped_by_ah;
+
+	if (clear != 0)
+		port->n_pkts_dropped_by_ah = 0;
+
+	return 0;
+}
+
+int rte_pipeline_table_stats_read(struct rte_pipeline *p, uint32_t table_id,
+	struct rte_pipeline_table_stats *stats, int clear)
+{
+	struct rte_table *table;
+	int retval;
+
+	if (p == NULL) {
+		RTE_LOG(ERR, PIPELINE, "%s: pipeline parameter NULL\n",
+			__func__);
+		return -EINVAL;
+	}
+
+	if (table_id >= p->num_tables) {
+		RTE_LOG(ERR, PIPELINE,
+				"%s: table %u is out of range\n", __func__, table_id);
+		return -EINVAL;
+	}
+
+	table = &p->tables[table_id];
+	if (table->ops.f_stats != NULL) {
+		retval = table->ops.f_stats(table->h_table, &stats->stats, clear);
+		if (retval != 0)
+			return retval;
+	} else if (stats != NULL)
+		memset(&stats->stats, 0, sizeof(stats->stats));
+
+	if (stats != NULL) {
+		stats->n_pkts_dropped_by_lkp_hit_ah =
+			table->n_pkts_dropped_by_lkp_hit_ah;
+		stats->n_pkts_dropped_by_lkp_miss_ah =
+			table->n_pkts_dropped_by_lkp_miss_ah;
+		stats->n_pkts_dropped_lkp_hit = table->n_pkts_dropped_lkp_hit;
+		stats->n_pkts_dropped_lkp_miss = table->n_pkts_dropped_lkp_miss;
+	}
+
+	if (clear != 0) {
+		table->n_pkts_dropped_by_lkp_hit_ah = 0;
+		table->n_pkts_dropped_by_lkp_miss_ah = 0;
+		table->n_pkts_dropped_lkp_hit = 0;
+		table->n_pkts_dropped_lkp_miss = 0;
 	}
 
 	return 0;

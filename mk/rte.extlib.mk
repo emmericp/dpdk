@@ -31,6 +31,8 @@
 
 MAKEFLAGS += --no-print-directory
 
+EXTLIB_BUILD := y
+
 # we must create the output dir first and recall the same Makefile
 # from this directory
 ifeq ($(NOT_FIRST_CALL),)
@@ -50,4 +52,3 @@ all:
 else
 include $(RTE_SDK)/mk/rte.lib.mk
 endif
-

@@ -35,6 +35,7 @@
 #define _EAL_PRIVATE_H_
 
 #include <stdio.h>
+#include <rte_pci.h>
 
 /**
  * Initialize the memzone subsystem (private to eal).
@@ -154,30 +155,97 @@ struct rte_pci_driver;
 struct rte_pci_device;
 
 /**
- * Mmap memory for single PCI device
+ * Unbind kernel driver for this device
  *
  * This function is private to EAL.
  *
  * @return
  *   0 on success, negative on error
  */
-int rte_eal_pci_probe_one_driver(struct rte_pci_driver *dr,
-		struct rte_pci_device *dev);
+int pci_unbind_kernel_driver(struct rte_pci_device *dev);
 
 /**
- * Munmap memory for single PCI device
+ * Map this device
  *
  * This function is private to EAL.
  *
- * @param	dr
- *  The pointer to the pci driver structure
- * @param	dev
- *  The pointer to the pci device structure
+ * @return
+ *   0 on success, negative on error and positive if no driver
+ *   is found for the device.
+ */
+int pci_map_device(struct rte_pci_device *dev);
+
+/**
+ * Unmap this device
+ *
+ * This function is private to EAL.
+ */
+void pci_unmap_device(struct rte_pci_device *dev);
+
+/**
+ * Map the PCI resource of a PCI device in virtual memory
+ *
+ * This function is private to EAL.
+ *
  * @return
  *   0 on success, negative on error
  */
-int rte_eal_pci_close_one_driver(struct rte_pci_driver *dr,
-		struct rte_pci_device *dev);
+int pci_uio_map_resource(struct rte_pci_device *dev);
+
+/**
+ * Unmap the PCI resource of a PCI device
+ *
+ * This function is private to EAL.
+ */
+void pci_uio_unmap_resource(struct rte_pci_device *dev);
+
+/**
+ * Allocate uio resource for PCI device
+ *
+ * This function is private to EAL.
+ *
+ * @param dev
+ *   PCI device to allocate uio resource
+ * @param uio_res
+ *   Pointer to uio resource.
+ *   If the function returns 0, the pointer will be filled.
+ * @return
+ *   0 on success, negative on error
+ */
+int pci_uio_alloc_resource(struct rte_pci_device *dev,
+		struct mapped_pci_resource **uio_res);
+
+/**
+ * Free uio resource for PCI device
+ *
+ * This function is private to EAL.
+ *
+ * @param dev
+ *   PCI device to free uio resource
+ * @param uio_res
+ *   Pointer to uio resource.
+ */
+void pci_uio_free_resource(struct rte_pci_device *dev,
+		struct mapped_pci_resource *uio_res);
+
+/**
+ * Map device memory to uio resource
+ *
+ * This function is private to EAL.
+ *
+ * @param dev
+ *   PCI device that has memory information.
+ * @param res_idx
+ *   Memory resource index of the PCI device.
+ * @param uio_res
+ *  uio resource that will keep mapping information.
+ * @param map_idx
+ *   Mapping information index of the uio resource.
+ * @return
+ *   0 on success, negative on error
+ */
+int pci_uio_map_resource_by_index(struct rte_pci_device *dev, int res_idx,
+		struct mapped_pci_resource *uio_res, int map_idx);
 
 /**
  * Init tail queues for non-EAL library structures. This is to allow
@@ -231,5 +299,51 @@ int rte_eal_dev_init(void);
  *	1  means the module loaded
  */
 int rte_eal_check_module(const char *module_name);
+
+/**
+ * Get cpu core_id.
+ *
+ * This function is private to the EAL.
+ */
+unsigned eal_cpu_core_id(unsigned lcore_id);
+
+/**
+ * Check if cpu is present.
+ *
+ * This function is private to the EAL.
+ */
+int eal_cpu_detected(unsigned lcore_id);
+
+/**
+ * Set TSC frequency from precise value or estimation
+ *
+ * This function is private to the EAL.
+ */
+void set_tsc_freq(void);
+
+/**
+ * Get precise TSC frequency from system
+ *
+ * This function is private to the EAL.
+ */
+uint64_t get_tsc_freq(void);
+
+/**
+ * Prepare physical memory mapping
+ * i.e. hugepages on Linux and
+ *      contigmem on BSD.
+ *
+ * This function is private to the EAL.
+ */
+int rte_eal_hugepage_init(void);
+
+/**
+ * Creates memory mapping in secondary process
+ * i.e. hugepages on Linux and
+ *      contigmem on BSD.
+ *
+ * This function is private to the EAL.
+ */
+int rte_eal_hugepage_attach(void);
 
 #endif /* _EAL_PRIVATE_H_ */

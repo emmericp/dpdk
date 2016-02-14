@@ -31,16 +31,11 @@
 Testpmd Application User Guide
 ==============================
 
-|today|
-
-**Contents**
-
 .. toctree::
     :maxdepth: 3
     :numbered:
 
     intro
-    overview
     build_app
     run_app
     testpmd_funcs

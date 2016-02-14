@@ -74,12 +74,14 @@
 #include <rte_string_fns.h>
 #include <rte_timer.h>
 #include <rte_power.h>
+#include <rte_eal.h>
+#include <rte_spinlock.h>
 
 #define RTE_LOGTYPE_L3FWD_POWER RTE_LOGTYPE_USER1
 
 #define MAX_PKT_BURST 32
 
-#define MIN_ZERO_POLL_COUNT 5
+#define MIN_ZERO_POLL_COUNT 10
 
 /* around 100ms at 2 Ghz */
 #define TIMER_RESOLUTION_CYCLES           200000000ULL
@@ -153,6 +155,9 @@ static uint16_t nb_txd = RTE_TEST_TX_DESC_DEFAULT;
 /* ethernet addresses of ports */
 static struct ether_addr ports_eth_addr[RTE_MAX_ETHPORTS];
 
+/* ethernet addresses of ports */
+static rte_spinlock_t locks[RTE_MAX_ETHPORTS];
+
 /* mask of enabled ports */
 static uint32_t enabled_port_mask = 0;
 /* Ports set in promiscuous mode off by default. */
@@ -185,6 +190,9 @@ struct lcore_rx_queue {
 #define MAX_TX_QUEUE_PER_PORT RTE_MAX_ETHPORTS
 #define MAX_RX_QUEUE_PER_PORT 128
 
+#define MAX_RX_QUEUE_INTERRUPT_PER_PORT 16
+
+
 #define MAX_LCORE_PARAMS 1024
 struct lcore_params {
 	uint8_t port_id;
@@ -211,7 +219,7 @@ static uint16_t nb_lcore_params = sizeof(lcore_params_array_default) /
 
 static struct rte_eth_conf port_conf = {
 	.rxmode = {
-		.mq_mode	= ETH_MQ_RX_RSS,
+		.mq_mode        = ETH_MQ_RX_RSS,
 		.max_rx_pkt_len = ETHER_MAX_LEN,
 		.split_hdr_size = 0,
 		.header_split   = 0, /**< Header Split disabled */
@@ -223,11 +231,15 @@ static struct rte_eth_conf port_conf = {
 	.rx_adv_conf = {
 		.rss_conf = {
 			.rss_key = NULL,
-			.rss_hf = ETH_RSS_IP,
+			.rss_hf = ETH_RSS_UDP,
 		},
 	},
 	.txmode = {
-		.mq_mode = ETH_DCB_NONE,
+		.mq_mode = ETH_MQ_TX_NONE,
+	},
+	.intr_conf = {
+		.lsc = 1,
+		.rxq = 1,
 	},
 };
 
@@ -399,19 +411,22 @@ power_timer_cb(__attribute__((unused)) struct rte_timer *tim,
 	/* accumulate total execution time in us when callback is invoked */
 	sleep_time_ratio = (float)(stats[lcore_id].sleep_time) /
 					(float)SCALING_PERIOD;
-
 	/**
 	 * check whether need to scale down frequency a step if it sleep a lot.
 	 */
-	if (sleep_time_ratio >= SCALING_DOWN_TIME_RATIO_THRESHOLD)
-		rte_power_freq_down(lcore_id);
+	if (sleep_time_ratio >= SCALING_DOWN_TIME_RATIO_THRESHOLD) {
+		if (rte_power_freq_down)
+			rte_power_freq_down(lcore_id);
+	}
 	else if ( (unsigned)(stats[lcore_id].nb_rx_processed /
-		stats[lcore_id].nb_iteration_looped) < MAX_PKT_BURST)
+		stats[lcore_id].nb_iteration_looped) < MAX_PKT_BURST) {
 		/**
 		 * scale down a step if average packet per iteration less
 		 * than expectation.
 		 */
-		rte_power_freq_down(lcore_id);
+		if (rte_power_freq_down)
+			rte_power_freq_down(lcore_id);
+	}
 
 	/**
 	 * initialize another timer according to current frequency to ensure
@@ -635,11 +650,11 @@ l3fwd_simple_forward(struct rte_mbuf *m, uint8_t portid,
 
 	eth_hdr = rte_pktmbuf_mtod(m, struct ether_hdr *);
 
-	if (m->ol_flags & PKT_RX_IPV4_HDR) {
+	if (RTE_ETH_IS_IPV4_HDR(m->packet_type)) {
 		/* Handle IPv4 headers.*/
 		ipv4_hdr =
-			(struct ipv4_hdr *)(rte_pktmbuf_mtod(m, unsigned char*)
-						+ sizeof(struct ether_hdr));
+			rte_pktmbuf_mtod_offset(m, struct ipv4_hdr *,
+						sizeof(struct ether_hdr));
 
 #ifdef DO_RFC_1812_CHECKS
 		/* Check to make sure the packet is valid (RFC1812) */
@@ -670,15 +685,14 @@ l3fwd_simple_forward(struct rte_mbuf *m, uint8_t portid,
 		ether_addr_copy(&ports_eth_addr[dst_port], &eth_hdr->s_addr);
 
 		send_single_packet(m, dst_port);
-	}
-	else {
+	} else if (RTE_ETH_IS_IPV6_HDR(m->packet_type)) {
 		/* Handle IPv6 headers.*/
 #if (APP_LOOKUP_METHOD == APP_LOOKUP_EXACT_MATCH)
 		struct ipv6_hdr *ipv6_hdr;
 
 		ipv6_hdr =
-			(struct ipv6_hdr *)(rte_pktmbuf_mtod(m, unsigned char*)
-						+ sizeof(struct ether_hdr));
+			rte_pktmbuf_mtod_offset(m, struct ipv6_hdr *,
+						sizeof(struct ether_hdr));
 
 		dst_port = get_ipv6_dst_port(ipv6_hdr, portid,
 					qconf->ipv6_lookup_struct);
@@ -704,22 +718,20 @@ l3fwd_simple_forward(struct rte_mbuf *m, uint8_t portid,
 
 }
 
-#define SLEEP_GEAR1_THRESHOLD            100
-#define SLEEP_GEAR2_THRESHOLD            1000
+#define MINIMUM_SLEEP_TIME         1
+#define SUSPEND_THRESHOLD          300
 
 static inline uint32_t
 power_idle_heuristic(uint32_t zero_rx_packet_count)
 {
-	/* If zero count is less than 100, use it as the sleep time in us */
-	if (zero_rx_packet_count < SLEEP_GEAR1_THRESHOLD)
-		return zero_rx_packet_count;
-	/* If zero count is less than 1000, sleep time should be 100 us */
-	else if ((zero_rx_packet_count >= SLEEP_GEAR1_THRESHOLD) &&
-			(zero_rx_packet_count < SLEEP_GEAR2_THRESHOLD))
-		return SLEEP_GEAR1_THRESHOLD;
-	/* If zero count is greater than 1000, sleep time should be 1000 us */
-	else if (zero_rx_packet_count >= SLEEP_GEAR2_THRESHOLD)
-		return SLEEP_GEAR2_THRESHOLD;
+	/* If zero count is less than 100,  sleep 1us */
+	if (zero_rx_packet_count < SUSPEND_THRESHOLD)
+		return MINIMUM_SLEEP_TIME;
+	/* If zero count is less than 1000, sleep 100 us which is the
+		minimum latency switching from C3/C6 to C0
+	*/
+	else
+		return SUSPEND_THRESHOLD;
 
 	return 0;
 }
@@ -759,6 +771,85 @@ power_freq_scaleup_heuristic(unsigned lcore_id,
 	return FREQ_CURRENT;
 }
 
+/**
+ * force polling thread sleep until one-shot rx interrupt triggers
+ * @param port_id
+ *  Port id.
+ * @param queue_id
+ *  Rx queue id.
+ * @return
+ *  0 on success
+ */
+static int
+sleep_until_rx_interrupt(int num)
+{
+	struct rte_epoll_event event[num];
+	int n, i;
+	uint8_t port_id, queue_id;
+	void *data;
+
+	RTE_LOG(INFO, L3FWD_POWER,
+		"lcore %u sleeps until interrupt triggers\n",
+		rte_lcore_id());
+
+	n = rte_epoll_wait(RTE_EPOLL_PER_THREAD, event, num, -1);
+	for (i = 0; i < n; i++) {
+		data = event[i].epdata.data;
+		port_id = ((uintptr_t)data) >> CHAR_BIT;
+		queue_id = ((uintptr_t)data) &
+			RTE_LEN2MASK(CHAR_BIT, uint8_t);
+		rte_eth_dev_rx_intr_disable(port_id, queue_id);
+		RTE_LOG(INFO, L3FWD_POWER,
+			"lcore %u is waked up from rx interrupt on"
+			" port %d queue %d\n",
+			rte_lcore_id(), port_id, queue_id);
+	}
+
+	return 0;
+}
+
+static void turn_on_intr(struct lcore_conf *qconf)
+{
+	int i;
+	struct lcore_rx_queue *rx_queue;
+	uint8_t port_id, queue_id;
+
+	for (i = 0; i < qconf->n_rx_queue; ++i) {
+		rx_queue = &(qconf->rx_queue_list[i]);
+		port_id = rx_queue->port_id;
+		queue_id = rx_queue->queue_id;
+
+		rte_spinlock_lock(&(locks[port_id]));
+		rte_eth_dev_rx_intr_enable(port_id, queue_id);
+		rte_spinlock_unlock(&(locks[port_id]));
+	}
+}
+
+static int event_register(struct lcore_conf *qconf)
+{
+	struct lcore_rx_queue *rx_queue;
+	uint8_t portid, queueid;
+	uint32_t data;
+	int ret;
+	int i;
+
+	for (i = 0; i < qconf->n_rx_queue; ++i) {
+		rx_queue = &(qconf->rx_queue_list[i]);
+		portid = rx_queue->port_id;
+		queueid = rx_queue->queue_id;
+		data = portid << CHAR_BIT | queueid;
+
+		ret = rte_eth_dev_rx_intr_ctl_q(portid, queueid,
+						RTE_EPOLL_PER_THREAD,
+						RTE_INTR_EVENT_ADD,
+						(void *)((uintptr_t)data));
+		if (ret)
+			return ret;
+	}
+
+	return 0;
+}
+
 /* main processing loop */
 static int
 main_loop(__attribute__((unused)) void *dummy)
@@ -772,9 +863,9 @@ main_loop(__attribute__((unused)) void *dummy)
 	struct lcore_conf *qconf;
 	struct lcore_rx_queue *rx_queue;
 	enum freq_scale_hint_t lcore_scaleup_hint;
-
 	uint32_t lcore_rx_idle_count = 0;
 	uint32_t lcore_idle_hint = 0;
+	int intr_en = 0;
 
 	const uint64_t drain_tsc = (rte_get_tsc_hz() + US_PER_S - 1) / US_PER_S * BURST_TX_DRAIN_US;
 
@@ -791,12 +882,17 @@ main_loop(__attribute__((unused)) void *dummy)
 	RTE_LOG(INFO, L3FWD_POWER, "entering main loop on lcore %u\n", lcore_id);
 
 	for (i = 0; i < qconf->n_rx_queue; i++) {
-
 		portid = qconf->rx_queue_list[i].port_id;
 		queueid = qconf->rx_queue_list[i].queue_id;
 		RTE_LOG(INFO, L3FWD_POWER, " -- lcoreid=%u portid=%hhu "
 			"rxqueueid=%hhu\n", lcore_id, portid, queueid);
 	}
+
+	/* add into event wait list */
+	if (event_register(qconf) == 0)
+		intr_en = 1;
+	else
+		RTE_LOG(INFO, L3FWD_POWER, "RX interrupt won't enable.\n");
 
 	while (1) {
 		stats[lcore_id].nb_iteration_looped++;
@@ -832,6 +928,7 @@ main_loop(__attribute__((unused)) void *dummy)
 			prev_tsc_power = cur_tsc_power;
 		}
 
+start_rx:
 		/*
 		 * Read packet from RX queues
 		 */
@@ -845,6 +942,7 @@ main_loop(__attribute__((unused)) void *dummy)
 
 			nb_rx = rte_eth_rx_burst(portid, queueid, pkts_burst,
 								MAX_PKT_BURST);
+
 			stats[lcore_id].nb_rx_processed += nb_rx;
 			if (unlikely(nb_rx == 0)) {
 				/**
@@ -873,7 +971,7 @@ main_loop(__attribute__((unused)) void *dummy)
 				rx_queue->freq_up_hint =
 					power_freq_scaleup_heuristic(lcore_id,
 							portid, queueid);
- 			}
+			}
 
 			/* Prefetch first packets */
 			for (j = 0; j < PREFETCH_OFFSET && j < nb_rx; j++) {
@@ -907,16 +1005,19 @@ main_loop(__attribute__((unused)) void *dummy)
 						rx_queue->freq_up_hint;
 			}
 
-			if (lcore_scaleup_hint == FREQ_HIGHEST)
-				rte_power_freq_max(lcore_id);
-			else if (lcore_scaleup_hint == FREQ_HIGHER)
-				rte_power_freq_up(lcore_id);
+			if (lcore_scaleup_hint == FREQ_HIGHEST) {
+				if (rte_power_freq_max)
+					rte_power_freq_max(lcore_id);
+			} else if (lcore_scaleup_hint == FREQ_HIGHER) {
+				if (rte_power_freq_up)
+					rte_power_freq_up(lcore_id);
+			}
 		} else {
 			/**
 			 * All Rx queues empty in recent consecutive polls,
 			 * sleep in a conservative manner, meaning sleep as
- 			 * less as possible.
- 			 */
+			 * less as possible.
+			 */
 			for (i = 1, lcore_idle_hint =
 				qconf->rx_queue_list[0].idle_hint;
 					i < qconf->n_rx_queue; ++i) {
@@ -925,16 +1026,23 @@ main_loop(__attribute__((unused)) void *dummy)
 					lcore_idle_hint = rx_queue->idle_hint;
 			}
 
-			if ( lcore_idle_hint < SLEEP_GEAR1_THRESHOLD)
+			if (lcore_idle_hint < SUSPEND_THRESHOLD)
 				/**
 				 * execute "pause" instruction to avoid context
-				 * switch for short sleep.
- 				 */
+				 * switch which generally take hundred of
+				 * microseconds for short sleep.
+				 */
 				rte_delay_us(lcore_idle_hint);
-			else
-				/* long sleep force runing thread to suspend */
-				usleep(lcore_idle_hint);
-
+			else {
+				/* suspend until rx interrupt trigges */
+				if (intr_en) {
+					turn_on_intr(qconf);
+					sleep_until_rx_interrupt(
+						qconf->n_rx_queue);
+				}
+				/* start receiving packets immediately */
+				goto start_rx;
+			}
 			stats[lcore_id].sleep_time += lcore_idle_hint;
 		}
 	}
@@ -1247,7 +1355,6 @@ setup_hash(int socketid)
 	struct rte_hash_parameters ipv4_l3fwd_hash_params = {
 		.name = NULL,
 		.entries = L3FWD_HASH_ENTRIES,
-		.bucket_entries = 4,
 		.key_len = sizeof(struct ipv4_5tuple),
 		.hash_func = DEFAULT_HASH_FUNC,
 		.hash_func_init_val = 0,
@@ -1256,7 +1363,6 @@ setup_hash(int socketid)
 	struct rte_hash_parameters ipv6_l3fwd_hash_params = {
 		.name = NULL,
 		.entries = L3FWD_HASH_ENTRIES,
-		.bucket_entries = 4,
 		.key_len = sizeof(struct ipv6_5tuple),
 		.hash_func = DEFAULT_HASH_FUNC,
 		.hash_func_init_val = 0,
@@ -1471,6 +1577,7 @@ main(int argc, char **argv)
 	unsigned lcore_id;
 	uint64_t hz;
 	uint32_t n_tx_queue, nb_lcores;
+	uint32_t dev_rxq_num, dev_txq_num;
 	uint8_t portid, nb_rx_queue, queue, socketid;
 
 	/* catch SIGINT and restore cpufreq governor to ondemand */
@@ -1520,10 +1627,19 @@ main(int argc, char **argv)
 		printf("Initializing port %d ... ", portid );
 		fflush(stdout);
 
+		rte_eth_dev_info_get(portid, &dev_info);
+		dev_rxq_num = dev_info.max_rx_queues;
+		dev_txq_num = dev_info.max_tx_queues;
+
 		nb_rx_queue = get_port_n_rx_queues(portid);
+		if (nb_rx_queue > dev_rxq_num)
+			rte_exit(EXIT_FAILURE,
+				"Cannot configure not existed rxq: "
+				"port=%d\n", portid);
+
 		n_tx_queue = nb_lcores;
-		if (n_tx_queue > MAX_TX_QUEUE_PER_PORT)
-			n_tx_queue = MAX_TX_QUEUE_PER_PORT;
+		if (n_tx_queue > dev_txq_num)
+			n_tx_queue = dev_txq_num;
 		printf("Creating queues: nb_rxq=%d nb_txq=%u... ",
 			nb_rx_queue, (unsigned)n_tx_queue );
 		ret = rte_eth_dev_configure(portid, nb_rx_queue,
@@ -1545,6 +1661,9 @@ main(int argc, char **argv)
 		queueid = 0;
 		for (lcore_id = 0; lcore_id < RTE_MAX_LCORE; lcore_id++) {
 			if (rte_lcore_is_enabled(lcore_id) == 0)
+				continue;
+
+			if (queueid >= dev_txq_num)
 				continue;
 
 			if (numa_on)
@@ -1581,8 +1700,8 @@ main(int argc, char **argv)
 		/* init power management library */
 		ret = rte_power_init(lcore_id);
 		if (ret)
-			rte_exit(EXIT_FAILURE, "Power management library "
-				"initialization failed on core%u\n", lcore_id);
+			RTE_LOG(ERR, POWER,
+				"Library initialization failed on core %u\n", lcore_id);
 
 		/* init timer structures for each enabled lcore */
 		rte_timer_init(&power_timers[lcore_id]);
@@ -1630,7 +1749,6 @@ main(int argc, char **argv)
 		if (ret < 0)
 			rte_exit(EXIT_FAILURE, "rte_eth_dev_start: err=%d, "
 						"port=%d\n", ret, portid);
-
 		/*
 		 * If enabled, put device in promiscuous mode.
 		 * This allows IO forwarding mode to forward packets
@@ -1639,6 +1757,8 @@ main(int argc, char **argv)
 		 */
 		if (promiscuous_on)
 			rte_eth_promiscuous_enable(portid);
+		/* initialize spinlock for each port */
+		rte_spinlock_init(&(locks[portid]));
 	}
 
 	check_all_ports_link_status((uint8_t)nb_ports, enabled_port_mask);

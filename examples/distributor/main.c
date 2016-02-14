@@ -57,7 +57,7 @@
 #ifdef DEBUG
 #define LOG_LEVEL RTE_LOG_DEBUG
 #define LOG_DEBUG(log_type, fmt, args...) do {	\
-	RTE_LOG(DEBUG, log_type, fmt, ##args)		\
+	RTE_LOG(DEBUG, log_type, fmt, ##args);		\
 } while (0)
 #else
 #define LOG_LEVEL RTE_LOG_INFO
@@ -335,13 +335,13 @@ lcore_tx(struct rte_ring *in_r)
 
 			/* for traffic we receive, queue it up for transmit */
 			uint16_t i;
-			_mm_prefetch(bufs[0], 0);
-			_mm_prefetch(bufs[1], 0);
-			_mm_prefetch(bufs[2], 0);
+			_mm_prefetch((void *)bufs[0], 0);
+			_mm_prefetch((void *)bufs[1], 0);
+			_mm_prefetch((void *)bufs[2], 0);
 			for (i = 0; i < nb_rx; i++) {
 				struct output_buffer *outbuf;
 				uint8_t outp;
-				_mm_prefetch(bufs[i + 3], 0);
+				_mm_prefetch((void *)bufs[i + 3], 0);
 				/*
 				 * workers should update in_port to hold the
 				 * output port value

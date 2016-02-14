@@ -251,7 +251,6 @@ static lookup_struct_t *l3fwd_lookup_struct[NB_SOCKETS];
 struct rte_hash_parameters l3fwd_hash_params = {
 	.name = "l3fwd_hash_0",
 	.entries = L3FWD_HASH_ENTRIES,
-	.bucket_entries = 4,
 	.key_len = sizeof(struct ipv4_5tuple),
 	.hash_func = DEFAULT_HASH_FUNC,
 	.hash_func_init_val = 0,
@@ -459,8 +458,8 @@ l3fwd_simple_forward(struct rte_mbuf *m, uint8_t portid, lookup_struct_t * l3fwd
 
 	eth_hdr = rte_pktmbuf_mtod(m, struct ether_hdr *);
 
-	ipv4_hdr = (struct ipv4_hdr *)(rte_pktmbuf_mtod(m, unsigned char *) +
-				sizeof(struct ether_hdr));
+	ipv4_hdr = rte_pktmbuf_mtod_offset(m, struct ipv4_hdr *,
+					   sizeof(struct ether_hdr));
 
 #ifdef DO_RFC_1812_CHECKS
 	/* Check to make sure the packet is valid (RFC1812) */

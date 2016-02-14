@@ -1,5 +1,5 @@
 ..  BSD LICENSE
-    Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
+    Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -28,12 +28,10 @@
     (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
     OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+.. _linux_gsg:
+
 Getting Started Guide for Linux
 ===============================
-
-|today|
-
-Contents
 
 .. toctree::
     :maxdepth: 2
@@ -45,3 +43,4 @@ Contents
     build_sample_apps
     enable_func
     quick_start
+    nic_perf_intel_platform

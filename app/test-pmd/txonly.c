@@ -110,7 +110,7 @@ copy_buf_to_pkt_segs(void* buf, unsigned len, struct rte_mbuf *pkt,
 		seg = seg->next;
 	}
 	copy_len = seg->data_len - offset;
-	seg_buf = (rte_pktmbuf_mtod(seg, char *) + offset);
+	seg_buf = rte_pktmbuf_mtod_offset(seg, char *, offset);
 	while (len > copy_len) {
 		rte_memcpy(seg_buf, buf, (size_t) copy_len);
 		len -= copy_len;
@@ -125,7 +125,7 @@ static inline void
 copy_buf_to_pkt(void* buf, unsigned len, struct rte_mbuf *pkt, unsigned offset)
 {
 	if (offset + len <= pkt->data_len) {
-		rte_memcpy((rte_pktmbuf_mtod(pkt, char *) + offset),
+		rte_memcpy(rte_pktmbuf_mtod_offset(pkt, char *, offset),
 			buf, (size_t) len);
 		return;
 	}
@@ -167,7 +167,7 @@ setup_pkt_udp_ip_headers(struct ipv4_hdr *ip_hdr,
 	/*
 	 * Compute IP header checksum.
 	 */
-	ptr16 = (uint16_t*) ip_hdr;
+	ptr16 = (unaligned_uint16_t*) ip_hdr;
 	ip_cksum = 0;
 	ip_cksum += ptr16[0]; ip_cksum += ptr16[1];
 	ip_cksum += ptr16[2]; ip_cksum += ptr16[3];
@@ -202,7 +202,7 @@ pkt_burst_transmit(struct fwd_stream *fs)
 	struct ether_hdr eth_hdr;
 	uint16_t nb_tx;
 	uint16_t nb_pkt;
-	uint16_t vlan_tci;
+	uint16_t vlan_tci, vlan_tci_outer;
 	uint64_t ol_flags = 0;
 	uint8_t  i;
 #ifdef RTE_TEST_PMD_RECORD_CORE_CYCLES
@@ -210,6 +210,7 @@ pkt_burst_transmit(struct fwd_stream *fs)
 	uint64_t end_tsc;
 	uint64_t core_cycles;
 #endif
+	uint32_t nb_segs, pkt_len;
 
 #ifdef RTE_TEST_PMD_RECORD_CORE_CYCLES
 	start_tsc = rte_rdtsc();
@@ -218,8 +219,11 @@ pkt_burst_transmit(struct fwd_stream *fs)
 	mbp = current_fwd_lcore()->mbp;
 	txp = &ports[fs->tx_port];
 	vlan_tci = txp->tx_vlan_id;
+	vlan_tci_outer = txp->tx_vlan_id_outer;
 	if (txp->tx_ol_flags & TESTPMD_TX_OFFLOAD_INSERT_VLAN)
 		ol_flags = PKT_TX_VLAN_PKT;
+	if (txp->tx_ol_flags & TESTPMD_TX_OFFLOAD_INSERT_QINQ)
+		ol_flags |= PKT_TX_QINQ_PKT;
 	for (nb_pkt = 0; nb_pkt < nb_pkt_per_burst; nb_pkt++) {
 		pkt = tx_mbuf_alloc(mbp);
 		if (pkt == NULL) {
@@ -230,7 +234,12 @@ pkt_burst_transmit(struct fwd_stream *fs)
 		}
 		pkt->data_len = tx_pkt_seg_lengths[0];
 		pkt_seg = pkt;
-		for (i = 1; i < tx_pkt_nb_segs; i++) {
+		if (tx_pkt_split == TX_PKT_SPLIT_RND)
+			nb_segs = random() % tx_pkt_nb_segs + 1;
+		else
+			nb_segs = tx_pkt_nb_segs;
+		pkt_len = pkt->data_len;
+		for (i = 1; i < nb_segs; i++) {
 			pkt_seg->next = tx_mbuf_alloc(mbp);
 			if (pkt_seg->next == NULL) {
 				pkt->nb_segs = i;
@@ -239,6 +248,7 @@ pkt_burst_transmit(struct fwd_stream *fs)
 			}
 			pkt_seg = pkt_seg->next;
 			pkt_seg->data_len = tx_pkt_seg_lengths[i];
+			pkt_len += pkt_seg->data_len;
 		}
 		pkt_seg->next = NULL; /* Last segment of packet. */
 
@@ -263,10 +273,11 @@ pkt_burst_transmit(struct fwd_stream *fs)
 		 * Complete first mbuf of packet and append it to the
 		 * burst of packets to be transmitted.
 		 */
-		pkt->nb_segs = tx_pkt_nb_segs;
-		pkt->pkt_len = tx_pkt_length;
+		pkt->nb_segs = nb_segs;
+		pkt->pkt_len = pkt_len;
 		pkt->ol_flags = ol_flags;
-		pkt->vlan_tci  = vlan_tci;
+		pkt->vlan_tci = vlan_tci;
+		pkt->vlan_tci_outer = vlan_tci_outer;
 		pkt->l2_len = sizeof(struct ether_hdr);
 		pkt->l3_len = sizeof(struct ipv4_hdr);
 		pkts_burst[nb_pkt] = pkt;

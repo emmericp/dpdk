@@ -59,7 +59,7 @@ copy_buf_to_pkt_segs(void *buf, unsigned len, struct rte_mbuf *pkt,
 		seg = seg->next;
 	}
 	copy_len = seg->data_len - offset;
-	seg_buf = rte_pktmbuf_mtod(seg, char *) + offset;
+	seg_buf = rte_pktmbuf_mtod_offset(seg, char *, offset);
 	while (len > copy_len) {
 		rte_memcpy(seg_buf, buf, (size_t) copy_len);
 		len -= copy_len;
@@ -74,7 +74,8 @@ static inline void
 copy_buf_to_pkt(void *buf, unsigned len, struct rte_mbuf *pkt, unsigned offset)
 {
 	if (offset + len <= pkt->data_len) {
-		rte_memcpy(rte_pktmbuf_mtod(pkt, char *) + offset, buf, (size_t) len);
+		rte_memcpy(rte_pktmbuf_mtod_offset(pkt, char *, offset), buf,
+			   (size_t) len);
 		return;
 	}
 	copy_buf_to_pkt_segs(buf, len, pkt, offset);
@@ -154,7 +155,7 @@ initialize_ipv4_header(struct ipv4_hdr *ip_hdr, uint32_t src_addr,
 		uint32_t dst_addr, uint16_t pkt_data_len)
 {
 	uint16_t pkt_len;
-	uint16_t *ptr16;
+	unaligned_uint16_t *ptr16;
 	uint32_t ip_cksum;
 
 	/*
@@ -175,7 +176,7 @@ initialize_ipv4_header(struct ipv4_hdr *ip_hdr, uint32_t src_addr,
 	/*
 	 * Compute IP header checksum.
 	 */
-	ptr16 = (uint16_t *)ip_hdr;
+	ptr16 = (unaligned_uint16_t *)ip_hdr;
 	ip_cksum = 0;
 	ip_cksum += ptr16[0]; ip_cksum += ptr16[1];
 	ip_cksum += ptr16[2]; ip_cksum += ptr16[3];
@@ -272,19 +273,9 @@ nomore_mbuf:
 		if (ipv4) {
 			pkt->vlan_tci  = ETHER_TYPE_IPv4;
 			pkt->l3_len = sizeof(struct ipv4_hdr);
-
-			if (vlan_enabled)
-				pkt->ol_flags = PKT_RX_IPV4_HDR | PKT_RX_VLAN_PKT;
-			else
-				pkt->ol_flags = PKT_RX_IPV4_HDR;
 		} else {
 			pkt->vlan_tci  = ETHER_TYPE_IPv6;
 			pkt->l3_len = sizeof(struct ipv6_hdr);
-
-			if (vlan_enabled)
-				pkt->ol_flags = PKT_RX_IPV6_HDR | PKT_RX_VLAN_PKT;
-			else
-				pkt->ol_flags = PKT_RX_IPV6_HDR;
 		}
 
 		pkts_burst[nb_pkt] = pkt;

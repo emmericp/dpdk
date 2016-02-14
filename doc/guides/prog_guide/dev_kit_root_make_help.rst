@@ -107,22 +107,17 @@ Install Targets
 
 *   Install
 
-    Build the DPDK binary.
-    Actually, this builds each supported target in a separate directory.
-    The name of each directory is the name of the target.
-    The name of the targets to install can be optionally specified using T=mytarget.
-    The target name can contain wildcard \* characters.
     The list of available targets are in $(RTE_SDK)/config (remove the defconfig\_ prefix).
+
+    The GNU standards variables may be used:
+    http://gnu.org/prep/standards/html_node/Directory-Variables.html and
+    http://gnu.org/prep/standards/html_node/DESTDIR.html
 
     Example:
 
     .. code-block:: console
 
-        make install T=x86_64-*
-
-*   Uninstall
-
-    Remove installed target directories.
+        make install DESTDIR=myinstall prefix=/usr
 
 Test Targets
 ------------
@@ -138,25 +133,12 @@ Test Targets
 
         make test O=mybuild
 
-*   testall
-
-    Launch automatic tests for all installed target directories (after a make install).
-    The name of the targets to test can be optionally specified using T=mytarget.
-    The target name can contain wildcard (\*) characters.
-    The list of available targets are in $(RTE_SDK)/config (remove the defconfig\_  prefix).
-
-    Examples:
-
-    .. code-block:: console
-
-        make testall, make testall T=x86_64-*
-
 Documentation Targets
 ---------------------
 
 *   doc
 
-    Generate the Doxygen documentation (API, html and pdf).
+    Generate the documentation (API and guides).
 
 *   doc-api-html
 
@@ -203,7 +185,7 @@ Misc Targets
 
 *   help
 
-    Show this help.
+    Show a quick help.
 
 Other Useful Command-line Variables
 -----------------------------------
@@ -259,10 +241,3 @@ the EXTRA_CFLAGS environment variable should be set before compiling as follows:
 .. code-block:: console
 
     export EXTRA_CFLAGS='-O0 -g'
-
-The DPDK and any user or sample applications can then be compiled in the usual way.
-For example:
-
-.. code-block:: console
-
-    make install T=x86_64-native-linuxapp-gcc make -C examples/<theapp>

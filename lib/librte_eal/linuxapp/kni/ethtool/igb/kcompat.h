@@ -707,6 +707,9 @@ struct _kc_ethtool_pauseparam {
        (LINUX_VERSION_CODE < KERNEL_VERSION(3,1,0)))
 /* SLES11 SP3 is at least 3.0.61+ based */
 #define SLE_VERSION_CODE SLE_VERSION(11,3,0)
+#elif ( LINUX_VERSION_CODE >= KERNEL_VERSION(3,12,28) )
+/* SLES12 is at least 3.12.28+ based */
+#define SLE_VERSION_CODE SLE_VERSION(12,0,0)
 #endif /* LINUX_VERSION_CODE == KERNEL_VERSION(x,y,z) */
 #endif /* CONFIG_SUSE_KERNEL */
 #ifndef SLE_VERSION_CODE
@@ -1184,7 +1187,7 @@ static inline struct device *pci_dev_to_dev(struct pci_dev *pdev)
 	return (struct device *) pdev;
 }
 
-#define pdev_printk(lvl, pdev, fmt, args...) 	\
+#define pdev_printk(lvl, pdev, fmt, args...)	\
 	printk("%s %s: " fmt, lvl, pci_name(pdev), ## args)
 #define dev_err(dev, fmt, args...)            \
 	pdev_printk(KERN_ERR, to_pci_dev(dev), fmt, ## args)
@@ -3807,7 +3810,7 @@ static inline bool is_link_local_ether_addr(const u8 *addr)
 	     pos = hlist_entry_safe((pos)->member.next, typeof(*(pos)), member))
 
 #undef hlist_for_each_entry_safe
-#define hlist_for_each_entry_safe(pos, n, head, member) 		    \
+#define hlist_for_each_entry_safe(pos, n, head, member)		    \
 	for (pos = hlist_entry_safe((head)->first, typeof(*pos), member);   \
 	     pos && ({ n = pos->member.next; 1; });			    \
 	     pos = hlist_entry_safe(n, typeof(*pos), member))
@@ -3861,9 +3864,10 @@ static inline struct sk_buff *__kc__vlan_hwaccel_put_tag(struct sk_buff *skb,
 
 #if ( LINUX_VERSION_CODE < KERNEL_VERSION(3,14,0) )
 #if (!(RHEL_RELEASE_CODE && RHEL_RELEASE_CODE >= RHEL_RELEASE_VERSION(6,6)))
-#if (!(UBUNTU_KERNEL_CODE >= UBUNTU_KERNEL_VERSION(3,13,0,30,54) \
+#if (!(UBUNTU_KERNEL_CODE >= UBUNTU_KERNEL_VERSION(3,13,0,30,0) \
     && (UBUNTU_RELEASE_CODE == UBUNTU_RELEASE_VERSION(12,4) \
      || UBUNTU_RELEASE_CODE == UBUNTU_RELEASE_VERSION(14,4))))
+#if (!(SLE_VERSION_CODE == SLE_VERSION(12,0,0)))
 #ifdef NETIF_F_RXHASH
 #define PKT_HASH_TYPE_L3 0
 static inline void
@@ -3872,23 +3876,43 @@ skb_set_hash(struct sk_buff *skb, __u32 hash, __always_unused int type)
 	skb->rxhash = hash;
 }
 #endif /* NETIF_F_RXHASH */
+#endif /* < SLES12 */
 #endif /* < 3.13.0-30.54 (Ubuntu 14.04) */
 #endif /* < RHEL7 */
 #endif /* < 3.14.0 */
 
-#if ( LINUX_VERSION_CODE >= KERNEL_VERSION(3,16,0) )
+#if (( LINUX_VERSION_CODE >= KERNEL_VERSION(3,16,0) ) \
+    || ( RHEL_RELEASE_CODE >= RHEL_RELEASE_VERSION(7,2) ))
+#undef SET_ETHTOOL_OPS
 #define SET_ETHTOOL_OPS(netdev, ops) ((netdev)->ethtool_ops = (ops))
 #define HAVE_VF_MIN_MAX_TXRATE 1
 #endif /* >= 3.16.0 */
 
-#if ( LINUX_VERSION_CODE >= KERNEL_VERSION(3,19,0) )
+#if (( LINUX_VERSION_CODE >= KERNEL_VERSION(3,19,0) ) \
+    || ( RHEL_RELEASE_CODE >= RHEL_RELEASE_VERSION(7,2) ))
+#define HAVE_NDO_DFLT_BRIDGE_ADD_MASK
+#if (!( RHEL_RELEASE_CODE >= RHEL_RELEASE_VERSION(7,2) ))
 #define HAVE_NDO_FDB_ADD_VID
+#endif /* !RHEL 7.2 */
 #endif /* >= 3.19.0 */
 
-#if ( LINUX_VERSION_CODE >= KERNEL_VERSION(4,0,0) )
+#if (( LINUX_VERSION_CODE >= KERNEL_VERSION(4,0,0) ) \
+    || ( RHEL_RELEASE_CODE >= RHEL_RELEASE_VERSION(7,2) ))
 /* vlan_tx_xx functions got renamed to skb_vlan */
 #define vlan_tx_tag_get skb_vlan_tag_get
 #define vlan_tx_tag_present skb_vlan_tag_present
+#if (!( RHEL_RELEASE_CODE >= RHEL_RELEASE_VERSION(7,2) ))
 #define HAVE_NDO_BRIDGE_SET_DEL_LINK_FLAGS
+#endif /* !RHEL 7.2 */
 #endif /* 4.0.0 */
+
+#if ( LINUX_VERSION_CODE >= KERNEL_VERSION(4,1,0) )
+/* ndo_bridge_getlink adds new nlflags parameter */
+#define HAVE_NDO_BRIDGE_GETLINK_NLFLAGS
+#endif /* >= 4.1.0 */
+
+#if ( LINUX_VERSION_CODE >= KERNEL_VERSION(4,2,0) )
+/* ndo_bridge_getlink adds new filter_mask and vlan_fill parameters */
+#define HAVE_NDO_BRIDGE_GETLINK_FILTER_MASK_VLAN_FILL
+#endif /* >= 4.2.0 */
 #endif /* _KCOMPAT_H_ */

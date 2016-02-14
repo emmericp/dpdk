@@ -163,8 +163,8 @@ app_main_loop_worker_pipeline_hash(void) {
 			.n_buckets_ext = 1 << 21,
 			.f_hash = test_hash,
 			.seed = 0,
-			.signature_offset = 0,
-			.key_offset = 32,
+			.signature_offset = APP_METADATA_OFFSET(0),
+			.key_offset = APP_METADATA_OFFSET(32),
 		};
 
 		struct rte_pipeline_table_params table_params = {
@@ -214,8 +214,9 @@ app_main_loop_worker_pipeline_hash(void) {
 		struct rte_table_hash_key8_ext_params table_hash_params = {
 			.n_entries = 1 << 24,
 			.n_entries_ext = 1 << 23,
-			.signature_offset = 0,
-			.key_offset = 32,
+			.signature_offset = APP_METADATA_OFFSET(0),
+			.key_offset = APP_METADATA_OFFSET(32),
+			.key_mask = NULL,
 			.f_hash = test_hash,
 			.seed = 0,
 		};
@@ -238,8 +239,9 @@ app_main_loop_worker_pipeline_hash(void) {
 	{
 		struct rte_table_hash_key8_lru_params table_hash_params = {
 			.n_entries = 1 << 24,
-			.signature_offset = 0,
-			.key_offset = 32,
+			.signature_offset = APP_METADATA_OFFSET(0),
+			.key_offset = APP_METADATA_OFFSET(32),
+			.key_mask = NULL,
 			.f_hash = test_hash,
 			.seed = 0,
 		};
@@ -263,10 +265,11 @@ app_main_loop_worker_pipeline_hash(void) {
 		struct rte_table_hash_key16_ext_params table_hash_params = {
 			.n_entries = 1 << 24,
 			.n_entries_ext = 1 << 23,
-			.signature_offset = 0,
-			.key_offset = 32,
+			.signature_offset = APP_METADATA_OFFSET(0),
+			.key_offset = APP_METADATA_OFFSET(32),
 			.f_hash = test_hash,
 			.seed = 0,
+			.key_mask = NULL,
 		};
 
 		struct rte_pipeline_table_params table_params = {
@@ -287,10 +290,11 @@ app_main_loop_worker_pipeline_hash(void) {
 	{
 		struct rte_table_hash_key16_lru_params table_hash_params = {
 			.n_entries = 1 << 24,
-			.signature_offset = 0,
-			.key_offset = 32,
+			.signature_offset = APP_METADATA_OFFSET(0),
+			.key_offset = APP_METADATA_OFFSET(32),
 			.f_hash = test_hash,
 			.seed = 0,
+			.key_mask = NULL,
 		};
 
 		struct rte_pipeline_table_params table_params = {
@@ -312,8 +316,8 @@ app_main_loop_worker_pipeline_hash(void) {
 		struct rte_table_hash_key32_ext_params table_hash_params = {
 			.n_entries = 1 << 24,
 			.n_entries_ext = 1 << 23,
-			.signature_offset = 0,
-			.key_offset = 32,
+			.signature_offset = APP_METADATA_OFFSET(0),
+			.key_offset = APP_METADATA_OFFSET(32),
 			.f_hash = test_hash,
 			.seed = 0,
 		};
@@ -337,8 +341,8 @@ app_main_loop_worker_pipeline_hash(void) {
 	{
 		struct rte_table_hash_key32_lru_params table_hash_params = {
 			.n_entries = 1 << 24,
-			.signature_offset = 0,
-			.key_offset = 32,
+			.signature_offset = APP_METADATA_OFFSET(0),
+			.key_offset = APP_METADATA_OFFSET(32),
 			.f_hash = test_hash,
 			.seed = 0,
 		};
@@ -456,23 +460,26 @@ app_main_loop_rx_metadata(void) {
 
 			m = app.mbuf_rx.array[j];
 			m_data = rte_pktmbuf_mtod(m, uint8_t *);
-			signature = RTE_MBUF_METADATA_UINT32_PTR(m, 0);
-			key = RTE_MBUF_METADATA_UINT8_PTR(m, 32);
+			signature = RTE_MBUF_METADATA_UINT32_PTR(m,
+					APP_METADATA_OFFSET(0));
+			key = RTE_MBUF_METADATA_UINT8_PTR(m,
+					APP_METADATA_OFFSET(32));
 
-			if (m->ol_flags & PKT_RX_IPV4_HDR) {
+			if (RTE_ETH_IS_IPV4_HDR(m->packet_type)) {
 				ip_hdr = (struct ipv4_hdr *)
 					&m_data[sizeof(struct ether_hdr)];
 				ip_dst = ip_hdr->dst_addr;
 
 				k32 = (uint32_t *) key;
 				k32[0] = ip_dst & 0xFFFFFF00;
-			} else {
+			} else if (RTE_ETH_IS_IPV6_HDR(m->packet_type)) {
 				ipv6_hdr = (struct ipv6_hdr *)
 					&m_data[sizeof(struct ether_hdr)];
 				ipv6_dst = ipv6_hdr->dst_addr;
 
 				memcpy(key, ipv6_dst, 16);
-			}
+			} else
+				continue;
 
 			*signature = test_hash(key, 0, 0);
 		}

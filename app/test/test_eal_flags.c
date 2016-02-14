@@ -571,11 +571,16 @@ test_missing_c_flag(void)
 				 "-n", "3", "--lcores",
 				 "0-1,2@(5-7),(3-5)@(0,2),(0,6),7"};
 
+	if (launch_proc(argv2) != 0) {
+		printf("Error - "
+		       "process did not run ok when missing -c flag\n");
+		return -1;
+	}
+
 	if (launch_proc(argv1) == 0
-			|| launch_proc(argv2) == 0
 			|| launch_proc(argv3) == 0) {
 		printf("Error - "
-		       "process ran without error when missing -c flag\n");
+		       "process ran without error with invalid -c flag\n");
 		return -1;
 	}
 	if (launch_proc(argv4) != 0) {
@@ -669,13 +674,13 @@ test_master_lcore_flag(void)
 }
 
 /*
- * Test that the app doesn't run without the -n flag. In all cases
- * should give an error and fail to run.
+ * Test that the app doesn't run with invalid -n flag option.
+ * Final test ensures it does run with valid options as sanity check
  * Since -n is not compulsory for MP, we instead use --no-huge and --no-shconf
  * flags.
  */
 static int
-test_missing_n_flag(void)
+test_invalid_n_flag(void)
 {
 #ifdef RTE_EXEC_ENV_BSDAPP
 	/* BSD target doesn't support prefixes at this point */
@@ -691,26 +696,31 @@ test_missing_n_flag(void)
 
 	/* -n flag but no value */
 	const char *argv1[] = { prgname, prefix, no_huge, no_shconf, "-c", "1", "-n"};
-	/* No -n flag at all */
-	const char *argv2[] = { prgname, prefix, no_huge, no_shconf, "-c", "1"};
 	/* bad numeric value */
-	const char *argv3[] = { prgname, prefix, no_huge, no_shconf, "-c", "1", "-n", "e" };
+	const char *argv2[] = { prgname, prefix, no_huge, no_shconf, "-c", "1", "-n", "e" };
 	/* out-of-range value */
-	const char *argv4[] = { prgname, prefix, no_huge, no_shconf, "-c", "1", "-n", "9" };
+	const char *argv3[] = { prgname, prefix, no_huge, no_shconf, "-c", "1", "-n", "9" };
 	/* sanity test - check with good value */
-	const char *argv5[] = { prgname, prefix, no_huge, no_shconf, "-c", "1", "-n", "2" };
+	const char *argv4[] = { prgname, prefix, no_huge, no_shconf, "-c", "1", "-n", "2" };
+	/* sanity test - check with no -n flag */
+	const char *argv5[] = { prgname, prefix, no_huge, no_shconf, "-c", "1"};
 
 	if (launch_proc(argv1) == 0
 			|| launch_proc(argv2) == 0
-			|| launch_proc(argv3) == 0
-			|| launch_proc(argv4) == 0) {
-		printf("Error - process ran without error when missing -n flag\n");
+			|| launch_proc(argv3) == 0) {
+		printf("Error - process ran without error when"
+		       "invalid -n flag\n");
 		return -1;
 	}
-	if (launch_proc(argv5) != 0) {
+	if (launch_proc(argv4) != 0) {
 		printf("Error - process did not run ok with valid num-channel value\n");
 		return -1;
 	}
+	if (launch_proc(argv5) != 0) {
+		printf("Error - process did not run ok without -n flag\n");
+		return -1;
+	}
+
 	return 0;
 }
 
@@ -748,8 +758,8 @@ test_no_hpet_flag(void)
 }
 
 /*
- * Test that the app runs with --no-huge and doesn't run when either
- * -m or --socket-mem are specified with --no-huge.
+ * Test that the app runs with --no-huge and doesn't run when --socket-mem are
+ * specified with --no-huge.
  */
 static int
 test_no_huge_flag(void)
@@ -778,8 +788,8 @@ test_no_huge_flag(void)
 		printf("Error - process did not run ok with --no-huge flag\n");
 		return -1;
 	}
-	if (launch_proc(argv2) == 0) {
-		printf("Error - process run ok with --no-huge and -m flags\n");
+	if (launch_proc(argv2) != 0) {
+		printf("Error - process did not run ok with --no-huge and -m flags\n");
 		return -1;
 	}
 #ifdef RTE_EXEC_ENV_BSDAPP
@@ -1363,9 +1373,9 @@ test_eal_flags(void)
 		return ret;
 	}
 
-	ret = test_missing_n_flag();
+	ret = test_invalid_n_flag();
 	if (ret < 0) {
-		printf("Error in test_missing_n_flag()\n");
+		printf("Error in test_invalid_n_flag()\n");
 		return ret;
 	}
 

@@ -150,8 +150,10 @@ fdset_add(struct fdset *pfdset, int fd, fd_cb rcb, fd_cb wcb, void *dat)
 
 	/* Find a free slot in the list. */
 	i = fdset_find_free_slot(pfdset);
-	if (i == -1)
+	if (i == -1) {
+		pthread_mutex_unlock(&pfdset->fd_mutex);
 		return -2;
+	}
 
 	fdset_add_fd(pfdset, i, fd, rcb, wcb, dat);
 	pfdset->num++;
@@ -185,6 +187,24 @@ fdset_del(struct fdset *pfdset, int fd)
 		}
 		pthread_mutex_unlock(&pfdset->fd_mutex);
 	} while (i != -1);
+}
+
+/**
+ *  Unregister the fd at the specified slot from the fdset.
+ */
+static void
+fdset_del_slot(struct fdset *pfdset, int index)
+{
+	if (pfdset == NULL || index < 0 || index >= MAX_FDS)
+		return;
+
+	pthread_mutex_lock(&pfdset->fd_mutex);
+
+	pfdset->fd[index].fd = -1;
+	pfdset->fd[index].rcb = pfdset->fd[index].wcb = NULL;
+	pfdset->num--;
+
+	pthread_mutex_unlock(&pfdset->fd_mutex);
 }
 
 /**
@@ -224,6 +244,13 @@ fdset_event_dispatch(struct fdset *pfdset)
 
 		pthread_mutex_unlock(&pfdset->fd_mutex);
 
+		/*
+		 * When select is blocked, other threads might unregister
+		 * listenfds from and register new listenfds into fdset.
+		 * When select returns, the entries for listenfds in the fdset
+		 * might have been updated. It is ok if there is unwanted call
+		 * for new listenfds.
+		 */
 		ret = select(maxfds + 1, &rfds, &wfds, NULL, &tv);
 		if (ret <= 0)
 			continue;
@@ -248,8 +275,15 @@ fdset_event_dispatch(struct fdset *pfdset)
 			 * We don't allow fdset_del to be called in callback
 			 * directly.
 			 */
+			/*
+			 * When we are to clean up the fd from fdset,
+			 * because the fd is closed in the cb,
+			 * the old fd val could be reused by when creates new
+			 * listen fd in another thread, we couldn't call
+			 * fd_set_del.
+			 */
 			if (remove1 || remove2)
-				fdset_del(pfdset, fd);
+				fdset_del_slot(pfdset, i);
 		}
 	}
 }

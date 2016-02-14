@@ -1,6 +1,7 @@
 #   BSD LICENSE
 #
 #   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
+#   Copyright 2015 6WIND S.A.
 #   All rights reserved.
 #
 #   Redistribution and use in source and binary forms, with or without
@@ -29,59 +30,131 @@
 #   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 #   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+# Configuration, compilation and installation can be done at once
+# with make install T=<config>
+
+ifdef T # config, build and install combined
+# The build directory is T and may be prepended with O
+O ?= .
+RTE_OUTPUT := $O/$T
+else # standard install
 # Build directory is given with O=
-ifdef O
-BUILD_DIR=$(O)
+O ?= build
+RTE_OUTPUT := $O
+endif
+
+ifneq ($(MAKECMDGOALS),pre_install)
+include $(RTE_SDK)/mk/rte.vars.mk
+endif
+
+ifdef T # defaults with T= will install an almost flat staging tree
+export prefix ?=
+kerneldir   ?= $(prefix)/kmod
 else
-BUILD_DIR=.
+ifeq ($(RTE_EXEC_ENV),linuxapp)
+kerneldir   ?= /lib/modules/$(shell uname -r)/extra/dpdk
+else
+kerneldir   ?= /boot/modules
 endif
-
-# Targets to install can be specified in command line. It can be a
-# target name or a name containing jokers "*". Example:
-# x86_64-native-*-gcc
-ifndef T
-T=*
+prefix      ?=     /usr/local
 endif
+exec_prefix ?=      $(prefix)
+bindir      ?= $(exec_prefix)/bin
+sbindir     ?= $(exec_prefix)/sbin
+libdir      ?= $(exec_prefix)/lib
+includedir  ?=      $(prefix)/include/dpdk
+datarootdir ?=      $(prefix)/share
+docdir      ?=       $(datarootdir)/doc/dpdk
+datadir     ?=       $(datarootdir)/dpdk
+sdkdir      ?=                $(datadir)
+targetdir   ?=                $(datadir)/$(RTE_TARGET)
 
-#
-# install: build sdk for all supported targets
-#
-INSTALL_CONFIGS := $(patsubst $(RTE_SRCDIR)/config/defconfig_%,%,\
-	$(wildcard $(RTE_SRCDIR)/config/defconfig_$(T)))
-INSTALL_TARGETS := $(addsuffix _install,\
-	$(filter-out %~,$(INSTALL_CONFIGS)))
+# The install directories may be staged in DESTDIR
 
-.PHONY: install
-install: $(INSTALL_TARGETS)
+# Create the directory $1 if not exists
+rte_mkdir = test -d $1 || mkdir -p $1
 
-%_install:
-	@echo ================== Installing $*
-	$(Q)if [ ! -f $(BUILD_DIR)/$*/.config ]; then \
-		$(MAKE) config T=$* O=$(BUILD_DIR)/$*; \
-	elif cmp -s $(BUILD_DIR)/$*/.config.orig $(BUILD_DIR)/$*/.config; then \
-		$(MAKE) config T=$* O=$(BUILD_DIR)/$*; \
+# Create the relative symbolic link $2 -> $1
+# May be replaced with --relative option of ln from coreutils-8.16
+rte_symlink = ln -snf $$($(RTE_SDK)/scripts/relpath.sh $1 $(dir $2)) $2
+
+.PHONY: pre_install
+pre_install:
+ifdef T
+	$(Q)if [ ! -f $(RTE_OUTPUT)/.config ]; then \
+		$(MAKE) config O=$(RTE_OUTPUT); \
+	elif cmp -s $(RTE_OUTPUT)/.config.orig $(RTE_OUTPUT)/.config; then \
+		$(MAKE) config O=$(RTE_OUTPUT); \
 	else \
-		if [ -f $(BUILD_DIR)/$*/.config.orig ] ; then \
-			tmp_build=$(BUILD_DIR)/$*/.config.tmp; \
-			$(MAKE) config T=$* O=$$tmp_build; \
-			if ! cmp -s $(BUILD_DIR)/$*/.config.orig $$tmp_build/.config ; then \
+		if [ -f $(RTE_OUTPUT)/.config.orig ] ; then \
+			tmp_build=$(RTE_OUTPUT)/.config.tmp; \
+			$(MAKE) config O=$$tmp_build; \
+			if ! cmp -s $(RTE_OUTPUT)/.config.orig $$tmp_build/.config ; then \
 				echo "Conflict: local config and template config have both changed"; \
 				exit 1; \
 			fi; \
 		fi; \
 		echo "Using local configuration"; \
 	fi
-	$(Q)$(MAKE) all O=$(BUILD_DIR)/$*
+	$(Q)$(MAKE) all O=$(RTE_OUTPUT)
+endif
 
-#
-# uninstall: remove all built sdk
-#
-UNINSTALL_TARGETS := $(addsuffix _uninstall,\
-	$(filter-out %~,$(INSTALL_CONFIGS)))
+.PHONY: install
+install:
+ifeq ($(DESTDIR)$(if $T,,+),)
+	@echo Installation cannot run with T defined and DESTDIR undefined
+else
+	@echo ================== Installing $(DESTDIR)$(prefix)/
+	$(Q)$(MAKE) O=$(RTE_OUTPUT) T= install-runtime
+	$(Q)$(MAKE) O=$(RTE_OUTPUT) T= install-kmod
+	$(Q)$(MAKE) O=$(RTE_OUTPUT) T= install-sdk
+	$(Q)$(MAKE) O=$(RTE_OUTPUT) T= install-doc
+	@echo Installation in $(DESTDIR)$(prefix)/ complete
+endif
 
-.PHONY: uninstall
-uninstall: $(UNINSTALL_TARGETS)
+install-runtime:
+	$(Q)$(call rte_mkdir, $(DESTDIR)$(libdir))
+	$(Q)cp -a    $O/lib/* $(DESTDIR)$(libdir)
+	$(Q)$(call rte_mkdir, $(DESTDIR)$(bindir))
+	$(Q)tar -cf -      -C $O app  --exclude 'app/*.map' \
+		--exclude 'app/cmdline*' --exclude app/test \
+		--exclude app/testacl --exclude app/testpipeline | \
+	    tar -xf -      -C $(DESTDIR)$(bindir) --strip-components=1 \
+		--keep-newer-files --warning=no-ignore-newer
+	$(Q)$(call rte_mkdir,      $(DESTDIR)$(datadir))
+	$(Q)cp -a $(RTE_SDK)/tools $(DESTDIR)$(datadir)
+	$(Q)$(call rte_mkdir,      $(DESTDIR)$(sbindir))
+	$(Q)$(call rte_symlink,    $(DESTDIR)$(datadir)/tools/dpdk_nic_bind.py, \
+	                           $(DESTDIR)$(sbindir)/dpdk_nic_bind)
 
-%_uninstall:
-	@echo ================== Uninstalling $*
-	$(Q)rm -rf $(BUILD_DIR)/$*
+install-kmod:
+ifneq ($(wildcard $O/kmod/*),)
+	$(Q)$(call rte_mkdir, $(DESTDIR)$(kerneldir))
+	$(Q)cp -a   $O/kmod/* $(DESTDIR)$(kerneldir)
+endif
+
+install-sdk:
+	$(Q)$(call rte_mkdir, $(DESTDIR)$(includedir))
+	$(Q)tar -chf -     -C $O include | \
+	    tar -xf -      -C $(DESTDIR)$(includedir) --strip-components=1 \
+		--keep-newer-files --warning=no-ignore-newer
+	$(Q)$(call rte_mkdir,                            $(DESTDIR)$(sdkdir))
+	$(Q)cp -a               $(RTE_SDK)/mk            $(DESTDIR)$(sdkdir)
+	$(Q)cp -a               $(RTE_SDK)/scripts       $(DESTDIR)$(sdkdir)
+	$(Q)$(call rte_mkdir,                            $(DESTDIR)$(targetdir))
+	$(Q)cp -a               $O/.config               $(DESTDIR)$(targetdir)
+	$(Q)$(call rte_symlink, $(DESTDIR)$(includedir), $(DESTDIR)$(targetdir)/include)
+	$(Q)$(call rte_symlink, $(DESTDIR)$(libdir),     $(DESTDIR)$(targetdir)/lib)
+
+install-doc:
+ifneq ($(wildcard $O/doc),)
+	$(Q)$(call rte_mkdir, $(DESTDIR)$(docdir))
+	$(Q)tar -cf -      -C $O/doc html --exclude 'html/guides/.*' | \
+	    tar -xf -      -C $(DESTDIR)$(docdir) --strip-components=1 \
+		--keep-newer-files --warning=no-ignore-newer
+endif
+ifneq ($(wildcard $O/doc/*/*/*pdf),)
+	$(Q)$(call rte_mkdir,     $(DESTDIR)$(docdir)/guides)
+	$(Q)cp -a $O/doc/*/*/*pdf $(DESTDIR)$(docdir)/guides
+endif
+	$(Q)cp -a $(RTE_SDK)/examples $(DESTDIR)$(datadir)
