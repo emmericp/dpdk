@@ -31,16 +31,13 @@
 Sample Applications User Guide
 ==============================
 
-|today|
-
-**Contents**
-
 .. toctree::
     :maxdepth: 2
     :numbered:
 
     intro
     cmd_line
+    ethtool
     exception_path
     hello_world
     skeleton
@@ -49,6 +46,7 @@ Sample Applications User Guide
     ipv4_multicast
     ip_reassembly
     kernel_nic_interface
+    keep_alive
     l2_forward_job_stats
     l2_forward_real_virtual
     l3_forward
@@ -67,69 +65,83 @@ Sample Applications User Guide
     vmdq_dcb_forwarding
     vhost
     netmap_compatibility
-    internet_proto_ip_pipeline
+    ip_pipeline
     test_pipeline
     dist_app
     vm_power_management
+    tep_termination
+    proc_info
+    ptpclient
+    performance_thread
 
 **Figures**
 
-:ref:`Figure 1.Packet Flow <figure_1>`
+:numref:`figure_exception_path_example` :ref:`figure_exception_path_example`
 
-:ref:`Figure 2.Kernel NIC Application Packet Flow <figure_2>`
+:numref:`figure_kernel_nic` :ref:`figure_kernel_nic`
 
-:ref:`Figure 3.Performance Benchmark Setup (Basic Environment) <figure_3>`
+:numref:`figure_l2_fwd_benchmark_setup_jobstats` :ref:`figure_l2_fwd_benchmark_setup_jobstats`
 
-:ref:`Figure 4.Performance Benchmark Setup (Virtualized Environment) <figure_4>`
+:numref:`figure_l2_fwd_virtenv_benchmark_setup_jobstats` :ref:`figure_l2_fwd_virtenv_benchmark_setup_jobstats`
 
-:ref:`Figure 5.Load Balancer Application Architecture <figure_5>`
+:numref:`figure_l2_fwd_benchmark_setup` :ref:`figure_l2_fwd_benchmark_setup`
 
-:ref:`Figure 5.Example Rules File <figure_5_1>`
+:numref:`figure_l2_fwd_virtenv_benchmark_setup` :ref:`figure_l2_fwd_virtenv_benchmark_setup`
 
-:ref:`Figure 6.Example Data Flow in a Symmetric Multi-process Application <figure_6>`
+:numref:`figure_ipv4_acl_rule` :ref:`figure_ipv4_acl_rule`
 
-:ref:`Figure 7.Example Data Flow in a Client-Server Symmetric Multi-process Application <figure_7>`
+:numref:`figure_example_rules` :ref:`figure_example_rules`
 
-:ref:`Figure 8.Master-slave Process Workflow <figure_8>`
+:numref:`figure_load_bal_app_arch` :ref:`figure_load_bal_app_arch`
 
-:ref:`Figure 9.Slave Process Recovery Process Flow <figure_9>`
+:numref:`figure_sym_multi_proc_app` :ref:`figure_sym_multi_proc_app`
 
-:ref:`Figure 10.QoS Scheduler Application Architecture <figure_10>`
+:numref:`figure_client_svr_sym_multi_proc_app` :ref:`figure_client_svr_sym_multi_proc_app`
 
-:ref:`Figure 11.Intel®QuickAssist Technology Application Block Diagram <figure_11>`
+:numref:`figure_master_slave_proc` :ref:`figure_master_slave_proc`
 
-:ref:`Figure 12.Pipeline Overview <figure_12>`
+:numref:`figure_slave_proc_recov` :ref:`figure_slave_proc_recov`
 
-:ref:`Figure 13.Ring-based Processing Pipeline Performance Setup <figure_13>`
+:numref:`figure_qos_sched_app_arch` :ref:`figure_qos_sched_app_arch`
 
-:ref:`Figure 14.Threads and Pipelines <figure_14>`
+:numref:`figure_quickassist_block_diagram` :ref:`figure_quickassist_block_diagram`
 
-:ref:`Figure 15.Packet Flow Through the VMDQ and DCB Sample Application <figure_15>`
+:numref:`figure_pipeline_overview` :ref:`figure_pipeline_overview`
 
-:ref:`Figure 16.QEMU Virtio-net (prior to vhost-net) <figure_16>`
+:numref:`figure_ring_pipeline_perf_setup` :ref:`figure_ring_pipeline_perf_setup`
 
-:ref:`Figure 17.Virtio with Linux* Kernel Vhost <figure_17>`
+:numref:`figure_threads_pipelines` :ref:`figure_threads_pipelines`
 
-:ref:`Figure 18.Vhost-net Architectural Overview <figure_18>`
+:numref:`figure_vmdq_dcb_example` :ref:`figure_vmdq_dcb_example`
 
-:ref:`Figure 19.Packet Flow Through the vhost-net Sample Application <figure_19>`
+:numref:`figure_qemu_virtio_net` :ref:`figure_qemu_virtio_net`
 
-:ref:`Figure 20.Packet Flow on TX in DPDK-testpmd <figure_20>`
+:numref:`figure_virtio_linux_vhost` :ref:`figure_virtio_linux_vhost`
 
-:ref:`Figure 21.Test Pipeline Application <figure_21>`
+:numref:`figure_vhost_net_arch` :ref:`figure_vhost_net_arch`
 
-:ref:`Figure 22.Performance Benchmarking Setup (Basic Environment) <figure_22>`
+:numref:`figure_vhost_net_sample_app` :ref:`figure_vhost_net_sample_app`
 
-:ref:`Figure 23.Distributor Sample Application Layout <figure_23>`
+:numref:`figure_tx_dpdk_testpmd` :ref:`figure_tx_dpdk_testpmd`
 
-:ref:`Figure 24.High level Solution <figure_24>`
+:numref:`figure_test_pipeline_app` :ref:`figure_test_pipeline_app`
 
-:ref:`Figure 25.VM request to scale frequency <figure_25>`
+:numref:`figure_dist_perf` :ref:`figure_dist_perf`
+
+:numref:`figure_dist_app` :ref:`figure_dist_app`
+
+:numref:`figure_vm_power_mgr_highlevel` :ref:`figure_vm_power_mgr_highlevel`
+
+:numref:`figure_vm_power_mgr_vm_request_seq` :ref:`figure_vm_power_mgr_vm_request_seq`
+:numref:`figure_overlay_networking` :ref:`figure_overlay_networking`
+:numref:`figure_tep_termination_arch` :ref:`figure_tep_termination_arch`
+
+:numref:`figure_ptpclient_highlevel` :ref:`figure_ptpclient_highlevel`
 
 **Tables**
 
-:ref:`Table 1.Output Traffic Marking <table_1>`
+:numref:`table_qos_metering_1` :ref:`table_qos_metering_1`
 
-:ref:`Table 2.Entity Types <table_2>`
+:numref:`table_qos_scheduler_1` :ref:`table_qos_scheduler_1`
 
-:ref:`Table 3.Table Types <table_3>`
+:numref:`table_test_pipeline_1` :ref:`table_test_pipeline_1`

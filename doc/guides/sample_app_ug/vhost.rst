@@ -1,6 +1,6 @@
 
 ..  BSD LICENSE
-    Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
+    Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -48,13 +48,12 @@ between host and guest.
 It was found that virtio-net performance was poor due to context switching and packet copying between host, guest, and QEMU.
 The following figure shows the system architecture for a virtio-based networking (virtio-net).
 
-.. _figure_16:
+.. _figure_qemu_virtio_net:
 
-**Figure16. QEMU Virtio-net (prior to vhost-net)**
+.. figure:: img/qemu_virtio_net.*
 
-.. image19_png has been renamed
+   System Architecture for Virtio-based Networking (virtio-net).
 
-|qemu_virtio_net|
 
 The Linux* Kernel vhost-net module was developed as an offload mechanism for virtio-net.
 The vhost-net module enables KVM (QEMU) to offload the servicing of virtio-net devices to the vhost-net kernel module,
@@ -76,13 +75,12 @@ This is achieved by QEMU sharing the following information with the vhost-net mo
 
 The following figure shows the system architecture for virtio-net networking with vhost-net offload.
 
-.. _figure_17:
+.. _figure_virtio_linux_vhost:
 
-**Figure 17. Virtio with Linux* Kernel Vhost**
+.. figure:: img/virtio_linux_vhost.*
 
-.. image20_png has been renamed
+   Virtio with Linux
 
-|virtio_linux_vhost|
 
 Sample Code Overview
 --------------------
@@ -119,23 +117,21 @@ The vhost sample code application is a simple packet switching application with 
 
 The following figure shows the architecture of the Vhost sample application based on vhost-cuse.
 
-.. _figure_18:
+.. _figure_vhost_net_arch:
 
-**Figure 18. Vhost-net Architectural Overview**
+.. figure:: img/vhost_net_arch.*
 
-.. image21_png has been renamed
+   Vhost-net Architectural Overview
 
-|vhost_net_arch|
 
 The following figure shows the flow of packets through the vhost-net sample application.
 
-.. _figure_19:
+.. _figure_vhost_net_sample_app:
 
-**Figure 19. Packet Flow Through the vhost-net Sample Application**
+.. figure:: img/vhost_net_sample_app.*
 
-.. image22_png  has been renamed
+   Packet Flow Through the vhost-net Sample Application
 
-|vhost_net_sample_app|
 
 Supported Distributions
 -----------------------
@@ -279,7 +275,7 @@ For vhost cuse:
 
 .. code-block:: console
 
-    user@target:~$ qemu-system-x86_64 ... \
+    qemu-system-x86_64 ... \
     -netdev tap,id=hostnet1,vhost=on,vhostfd=<open fd> \
     -device virtio-net-pci, netdev=hostnet1,id=net1 \
     -netdev tap,id=hostnet2,vhost=on,vhostfd=<open fd> \
@@ -289,7 +285,7 @@ For vhost user:
 
 .. code-block:: console
 
-    user@target:~$ qemu-system-x86_64 ... \
+    qemu-system-x86_64 ... \
     -chardev socket,id=char1,path=<sock_path> \
     -netdev type=vhost-user,id=hostnet1,chardev=char1 \
     -device virtio-net-pci,netdev=hostnet1,id=net1 \
@@ -382,7 +378,7 @@ Running the Sample Code
     .. code-block:: console
 
         export RTE_SDK=/path/to/rte_sdk
-        cd ${RTE_SDK}/examples/vhost
+        cd ${RTE_SDK}/examples/vhost/build/app
 
 #.  Run the vhost-switch sample code:
 
@@ -390,34 +386,40 @@ Running the Sample Code
 
     .. code-block:: console
 
-        user@target:~$ ./build/app/vhost-switch -c f -n 4 --huge-dir / mnt/huge -- -p 0x1 --dev-basename usvhost --dev-index 1
+        ./vhost-switch -c f -n 4 --socket-mem 1024 --huge-dir /mnt/huge \
+         -- -p 0x1 --dev-basename usvhost
 
     vhost user: a socket file named usvhost will be created under current directory. Use its path as the socket path in guest's qemu commandline.
 
     .. code-block:: console
 
-        user@target:~$ ./build/app/vhost-switch -c f -n 4 --huge-dir / mnt/huge -- -p 0x1 --dev-basename usvhost
+        ./vhost-switch -c f -n 4 --socket-mem 1024 --huge-dir /mnt/huge \
+         -- -p 0x1 --dev-basename usvhost
 
 .. note::
 
     Please note the huge-dir parameter instructs the DPDK to allocate its memory from the 2 MB page hugetlbfs.
 
+.. note::
+
+    The number used with the --socket-mem parameter may need to be more than 1024.
+    The number required depends on the number of mbufs allocated by vhost-switch.
+
 Parameters
 ~~~~~~~~~~
 
-**Basename and Index.**
+**Basename.**
 vhost cuse uses a Linux* character device to communicate with QEMU.
-The basename and the index are used to generate the character devices name.
+The basename is used to generate the character devices name.
 
-    /dev/<basename>-<index>
+    /dev/<basename>
 
-The index parameter is provided for a situation where multiple instances of the virtual switch is required.
-
-For compatibility with the QEMU wrapper script, a base name of "usvhost" and an index of "1" should be used:
+For compatibility with the QEMU wrapper script, a base name of "usvhost" should be used:
 
 .. code-block:: console
 
-    user@target:~$ ./build/app/vhost-switch -c f -n 4 --huge-dir / mnt/huge -- -p 0x1 --dev-basename usvhost --dev-index 1
+    ./vhost-switch -c f -n 4 --socket-mem 1024 --huge-dir /mnt/huge \
+     -- -p 0x1 --dev-basename usvhost
 
 **vm2vm.**
 The vm2vm parameter disable/set mode of packet switching between guests in the host.
@@ -430,7 +432,8 @@ which bases on the packet destination MAC address and VLAN tag.
 
 .. code-block:: console
 
-    user@target:~$ ./build/app/vhost-switch -c f -n 4 --huge-dir /mnt/huge -- --vm2vm [0,1,2]
+    ./vhost-switch -c f -n 4 --socket-mem 1024 --huge-dir /mnt/huge \
+     -- --vm2vm [0,1,2]
 
 **Mergeable Buffers.**
 The mergeable buffers parameter controls how virtio-net descriptors are used for virtio-net headers.
@@ -440,7 +443,8 @@ The default value is 0 or disabled since recent kernels virtio-net drivers show 
 
 .. code-block:: console
 
-    user@target:~$ ./build/app/vhost-switch -c f -n 4 --huge-dir / mnt/huge -- --mergeable [0,1]
+    ./vhost-switch -c f -n 4 --socket-mem 1024 --huge-dir /mnt/huge \
+     -- --mergeable [0,1]
 
 **Stats.**
 The stats parameter controls the printing of virtio-net device statistics.
@@ -448,7 +452,8 @@ The parameter specifies an interval second to print statistics, with an interval
 
 .. code-block:: console
 
-    user@target:~$ ./build/app/vhost-switch -c f -n 4 --huge-dir / mnt/huge -- --stats [0,n]
+    ./vhost-switch -c f -n 4 --socket-mem 1024 --huge-dir /mnt/huge \
+    -- --stats [0,n]
 
 **RX Retry.**
 The rx-retry option enables/disables enqueue retries when the guests RX queue is full.
@@ -458,7 +463,8 @@ This option is enabled by default.
 
 .. code-block:: console
 
-    user@target:~$ ./build/app/vhost-switch -c f -n 4 --huge-dir / mnt/huge -- --rx-retry [0,1]
+    ./vhost-switch -c f -n 4 --socket-mem 1024 --huge-dir /mnt/huge \
+     -- --rx-retry [0,1]
 
 **RX Retry Number.**
 The rx-retry-num option specifies the number of retries on an RX burst,
@@ -467,7 +473,8 @@ The default value is 4.
 
 .. code-block:: console
 
-    user@target:~$ ./build/app/vhost-switch -c f -n 4 --huge-dir / mnt/huge -- --rx-retry 1 --rx-retry-num 5
+    ./vhost-switch -c f -n 4 --socket-mem 1024 --huge-dir /mnt/huge \
+     -- --rx-retry 1 --rx-retry-num 5
 
 **RX Retry Delay Time.**
 The rx-retry-delay option specifies the timeout (in micro seconds) between retries on an RX burst,
@@ -476,7 +483,8 @@ The default value is 15.
 
 .. code-block:: console
 
-    user@target:~$ ./build/app/vhost-switch -c f -n 4 --huge-dir / mnt/huge -- --rx-retry 1 --rx-retry-delay 20
+    ./vhost-switch -c f -n 4 --socket-mem 1024 --huge-dir /mnt/huge \
+     -- --rx-retry 1 --rx-retry-delay 20
 
 **Zero copy.**
 The zero copy option enables/disables the zero copy mode for RX/TX packet,
@@ -487,7 +495,8 @@ This option is disabled by default.
 
 .. code-block:: console
 
-    user@target:~$ ./build/app/vhost-switch -c f -n 4 --huge-dir /mnt/huge -- --zero-copy [0,1]
+    ./vhost-switch -c f -n 4 --socket-mem 1024 --huge-dir /mnt/huge \
+     -- --zero-copy [0,1]
 
 **RX descriptor number.**
 The RX descriptor number option specify the Ethernet RX descriptor number,
@@ -500,7 +509,8 @@ So it is valid only in zero copy mode is enabled. The value is 32 by default.
 
 .. code-block:: console
 
-    user@target:~$ ./build/app/vhost-switch -c f -n 4 --huge-dir /mnt/huge -- --zero-copy 1 --rx-desc-num [0, n]
+    ./vhost-switch -c f -n 4 --socket-mem 1024 --huge-dir /mnt/huge \
+     -- --zero-copy 1 --rx-desc-num [0, n]
 
 **TX descriptor number.**
 The TX descriptor number option specify the Ethernet TX descriptor number, it is valid only in zero copy mode is enabled.
@@ -508,7 +518,8 @@ The value is 64 by default.
 
 .. code-block:: console
 
-    user@target:~$ ./build/app/vhost-switch -c f -n 4 --huge-dir /mnt/huge -- --zero-copy 1 --tx-desc-num [0, n]
+    ./vhost-switch -c f -n 4 --socket-mem 1024 --huge-dir /mnt/huge \
+     -- --zero-copy 1 --tx-desc-num [0, n]
 
 **VLAN strip.**
 The VLAN strip option enable/disable the VLAN strip on host, if disabled, the guest will receive the packets with VLAN tag.
@@ -516,7 +527,8 @@ It is enabled by default.
 
 .. code-block:: console
 
-    user@target:~$ ./build/app/vhost-switch -c f -n 4 --huge-dir /mnt/huge -- --vlan-strip [0, 1]
+    ./vhost-switch -c f -n 4 --socket-mem 1024 --huge-dir /mnt/huge \
+     -- --vlan-strip [0, 1]
 
 Running the Virtual Machine (QEMU)
 ----------------------------------
@@ -527,25 +539,28 @@ QEMU must be executed with specific parameters to:
 
     .. code-block:: console
 
-        user@target:~$ qemu-system-x86_64 ... -device virtio-net-pci,netdev=hostnet1,id=net1 ...
+        qemu-system-x86_64 ... -device virtio-net-pci,netdev=hostnet1, \
+        id=net1 ...
 
 *   Ensure the guest's virtio-net network adapter is configured with offloads disabled.
 
     .. code-block:: console
 
-        user@target:~$ qemu-system-x86_64 ... -device virtio-net-pci,netdev=hostnet1,id=net1,csum=off,gso=off,guest_tso4=off,guest_tso6=off,guest_ecn=off
+        qemu-system-x86_64 ... -device virtio-net-pci,netdev=hostnet1, \
+        id=net1, csum=off,gso=off,guest_tso4=off,guest_tso6=off,guest_ecn=off
 
 *   Redirect QEMU to communicate with the DPDK vhost-net sample code in place of the vhost-net kernel module(vhost cuse).
 
     .. code-block:: console
 
-        user@target:~$ qemu-system-x86_64 ... -netdev tap,id=hostnet1,vhost=on,vhostfd=<open fd> ...
+        qemu-system-x86_64 ... -netdev tap,id=hostnet1,vhost=on, \
+        vhostfd=<open fd> ...
 
 *   Enable the vhost-net sample code to map the VM's memory into its own process address space.
 
     .. code-block:: console
 
-        user@target:~$ qemu-system-x86_64 ... -mem-prealloc -mem-path / dev/hugepages ...
+        qemu-system-x86_64 ... -mem-prealloc -mem-path /dev/hugepages ...
 
 .. note::
 
@@ -562,7 +577,9 @@ an open file descriptor must be passed to QEMU running as a child process.
 
     #!/usr/bin/python
     fd = os.open("/dev/usvhost-1", os.O_RDWR)
-    subprocess.call("qemu-system-x86_64 ... . -netdev tap,id=vhostnet0,vhost=on,vhostfd=" + fd +"...", shell=True)
+    subprocess.call
+    ("qemu-system-x86_64 ... -netdev tap,id=vhostnet0,vhost=on,vhostfd="
+      + fd +"...", shell=True)
 
 .. note::
 
@@ -579,12 +596,13 @@ In this case, the path passed to the guest should be that of the 1 GB page huget
 
 .. code-block:: console
 
-    user@target:~$ qemu-system-x86_64 ... -mem-prealloc -mem-path / dev/hugepages ...
+    qemu-system-x86_64 ... -mem-prealloc -mem-path /dev/hugepages ...
 
 .. note::
 
     This process is automated in the QEMU wrapper script discussed in Section 24.7.3.
-    The following two sections only applies to vhost cuse. For vhost-user, please make corresponding changes to qemu-wrapper script and guest XML file.
+    The following two sections only applies to vhost cuse.
+    For vhost-user, please make corresponding changes to qemu-wrapper script and guest XML file.
 
 QEMU Wrapper Script
 ~~~~~~~~~~~~~~~~~~~
@@ -605,16 +623,22 @@ The QEMU wrapper script will automatically configure calls to QEMU:
 
 .. code-block:: console
 
-    user@target:~$ qemu-wrap.py -machine pc-i440fx-1.4,accel=kvm,usb=off -cpu SandyBridge -smp 4,sockets=4,cores=1,threads=1
-    -netdev tap,id=hostnet1,vhost=on -device virtio-net-pci,netdev=hostnet1,id=net1 -hda <disk img> -m 4096
+    qemu-wrap.py -machine pc-i440fx-1.4,accel=kvm,usb=off \
+    -cpu SandyBridge -smp 4,sockets=4,cores=1,threads=1 \
+    -netdev tap,id=hostnet1,vhost=on \
+    -device virtio-net-pci,netdev=hostnet1,id=net1 \
+    -hda <disk img> -m 4096
 
 which will become the following call to QEMU:
 
 .. code-block:: console
 
-    /usr/local/bin/qemu-system-x86_64 -machine pc-i440fx-1.4,accel=kvm,usb=off -cpu SandyBridge -smp 4,sockets=4,cores=1,threads=1
-    -netdev tap,id=hostnet1,vhost=on,vhostfd=<open fd> -device virtio-net-pci,netdev=hostnet1,id=net1,
-    csum=off,gso=off,guest_tso4=off,guest_tso6=off,guest_ecn=off -hda <disk img> -m 4096 -mem-path /dev/hugepages -mem-prealloc
+    qemu-system-x86_64 -machine pc-i440fx-1.4,accel=kvm,usb=off \
+    -cpu SandyBridge -smp 4,sockets=4,cores=1,threads=1 \
+    -netdev tap,id=hostnet1,vhost=on,vhostfd=<open fd> \
+    -device virtio-net-pci,netdev=hostnet1,id=net1, \
+    csum=off,gso=off,guest_tso4=off,guest_tso6=off,guest_ecn=off \
+    -hda <disk img> -m 4096 -mem-path /dev/hugepages -mem-prealloc
 
 Libvirt Integration
 ~~~~~~~~~~~~~~~~~~~
@@ -666,8 +690,8 @@ To call the QEMU wrapper automatically from libvirt, the following configuration
 
     .. code-block:: console
 
-        user@target:~$ mkdir /dev/cgroup
-        user@target:~$ mount -t cgroup none /dev/cgroup -o devices
+        mkdir /dev/cgroup
+        mount -t cgroup none /dev/cgroup -o devices
 
 *   Restart the libvirtd system process
 
@@ -682,11 +706,11 @@ To call the QEMU wrapper automatically from libvirt, the following configuration
             emul_path = "/usr/local/bin/qemu-system-x86_64"
 
     *   Configure the "us_vhost_path" variable to point to the DPDK vhost-net sample code's character devices name.
-        DPDK vhost-net sample code's character device will be in the format "/dev/<basename>-<index>".
+        DPDK vhost-net sample code's character device will be in the format "/dev/<basename>".
 
         .. code-block:: xml
 
-            us_vhost_path = "/dev/usvhost-1"
+            us_vhost_path = "/dev/usvhost"
 
 Common Issues
 ~~~~~~~~~~~~~
@@ -720,15 +744,6 @@ Common Issues
     As shared memory mapping is mandatory for user space VHOST to work properly with the guest, user space VHOST
     needs access to the shared memory from the guest to receive and transmit packets. It is important to make sure
     the QEMU version supports shared memory mapping.
-
-*   Issues with ``virsh destroy`` not destroying the VM:
-
-    Using libvirt ``virsh create`` the ``qemu-wrap.py`` spawns a new process to run ``qemu-kvm``. This impacts the behavior
-    of ``virsh destroy`` which kills the process running ``qemu-wrap.py`` without actually destroying the VM (it leaves
-    the ``qemu-kvm`` process running):
-
-    This following patch should fix this issue:
-        http://dpdk.org/ml/archives/dev/2014-June/003607.html
 
 *   In an Ubuntu environment, QEMU fails to start a new guest normally with user space VHOST due to not being able
     to allocate huge pages for the new guest:
@@ -771,13 +786,12 @@ In the "wait and retry" mode if the virtqueue is found to be full, then testpmd 
 The "wait and retry" algorithm is implemented in DPDK testpmd as a forwarding method call "mac_retry".
 The following sequence diagram describes the algorithm in detail.
 
-.. _figure_20:
+.. _figure_tx_dpdk_testpmd:
 
-**Figure 20. Packet Flow on TX in DPDK-testpmd**
+.. figure:: img/tx_dpdk_testpmd.*
 
-.. image23_png has been renamed
+   Packet Flow on TX in DPDK-testpmd
 
-|tx_dpdk_testpmd|
 
 Running Testpmd
 ~~~~~~~~~~~~~~~
@@ -787,21 +801,25 @@ Run the testpmd application as follows:
 
 .. code-block:: console
 
-    user@target:~$ x86_64-native-linuxapp-gcc/app/testpmd -c 0x3 -- n 4 -socket-mem 128 -- --burst=64 -i
+    cd ${RTE_SDK}/x86_64-native-linuxapp-gcc/app
+    ./testpmd -c 0x3 -n 4 --socket-mem 512 \
+    -- --burst=64 --i --disable-hw-vlan-filter
 
 The destination MAC address for packets transmitted on each port can be set at the command line:
 
 .. code-block:: console
 
-    user@target:~$ x86_64-native-linuxapp-gcc/app/testpmd -c 0x3 -- n 4 -socket-mem 128 -- --burst=64 -i --eth- peer=0,aa:bb:cc:dd:ee:ff --eth-peer=1,ff,ee,dd,cc,bb,aa
+    ./testpmd -c 0x3 -n 4 --socket-mem 512 \
+    -- --burst=64 --i --disable-hw-vlan-filter \
+    --eth-peer=0,aa:bb:cc:dd:ee:ff --eth-peer=1,ff:ee:dd:cc:bb:aa
 
 *   Packets received on port 1 will be forwarded on port 0 to MAC address
 
-    aa:bb:cc:dd:ee:ff.
+    aa:bb:cc:dd:ee:ff
 
 *   Packets received on port 0 will be forwarded on port 1 to MAC address
 
-    ff,ee,dd,cc,bb,aa.
+    ff:ee:dd:cc:bb:aa
 
 The testpmd application can then be configured to act as an L2 forwarding application:
 
@@ -838,13 +856,3 @@ For example:
 The above message indicates that device 0 has been registered with MAC address cc:bb:bb:bb:bb:bb and VLAN tag 1000.
 Any packets received on the NIC with these values is placed on the devices receive queue.
 When a virtio-net device transmits packets, the VLAN tag is added to the packet by the DPDK vhost sample code.
-
-.. |vhost_net_arch| image:: img/vhost_net_arch.*
-
-.. |qemu_virtio_net| image:: img/qemu_virtio_net.*
-
-.. |tx_dpdk_testpmd| image:: img/tx_dpdk_testpmd.*
-
-.. |vhost_net_sample_app| image:: img/vhost_net_sample_app.*
-
-.. |virtio_linux_vhost| image:: img/virtio_linux_vhost.*

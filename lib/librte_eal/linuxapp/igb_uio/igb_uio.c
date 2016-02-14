@@ -31,6 +31,7 @@
 #include <linux/io.h>
 #include <linux/msi.h>
 #include <linux/version.h>
+#include <linux/slab.h>
 
 #ifdef CONFIG_XEN_DOM0
 #include <xen/xen.h>
@@ -60,19 +61,12 @@ struct rte_uio_pci_dev {
 static char *intr_mode = NULL;
 static enum rte_intr_mode igbuio_intr_mode_preferred = RTE_INTR_MODE_MSIX;
 
-static inline struct rte_uio_pci_dev *
-igbuio_get_uio_pci_dev(struct uio_info *info)
-{
-	return container_of(info, struct rte_uio_pci_dev, info);
-}
-
 /* sriov sysfs */
 static ssize_t
 show_max_vfs(struct device *dev, struct device_attribute *attr,
 	     char *buf)
 {
-	return snprintf(buf, 10, "%u\n",
-			pci_num_vf(container_of(dev, struct pci_dev, dev)));
+	return snprintf(buf, 10, "%u\n", dev_num_vf(dev));
 }
 
 static ssize_t
@@ -81,7 +75,7 @@ store_max_vfs(struct device *dev, struct device_attribute *attr,
 {
 	int err = 0;
 	unsigned long max_vfs;
-	struct pci_dev *pdev = container_of(dev, struct pci_dev, dev);
+	struct pci_dev *pdev = to_pci_dev(dev);
 
 	if (0 != kstrtoul(buf, 0, &max_vfs))
 		return -EINVAL;
@@ -100,7 +94,7 @@ store_max_vfs(struct device *dev, struct device_attribute *attr,
 static ssize_t
 show_extended_tag(struct device *dev, struct device_attribute *attr, char *buf)
 {
-	struct pci_dev *pci_dev = container_of(dev, struct pci_dev, dev);
+	struct pci_dev *pci_dev = to_pci_dev(dev);
 	uint32_t val = 0;
 
 	pci_read_config_dword(pci_dev, PCI_DEV_CAP_REG, &val);
@@ -121,7 +115,7 @@ store_extended_tag(struct device *dev,
 		   const char *buf,
 		   size_t count)
 {
-	struct pci_dev *pci_dev = container_of(dev, struct pci_dev, dev);
+	struct pci_dev *pci_dev = to_pci_dev(dev);
 	uint32_t val = 0, enable;
 
 	if (strncmp(buf, "on", 2) == 0)
@@ -158,7 +152,7 @@ show_max_read_request_size(struct device *dev,
 			   struct device_attribute *attr,
 			   char *buf)
 {
-	struct pci_dev *pci_dev = container_of(dev, struct pci_dev, dev);
+	struct pci_dev *pci_dev = to_pci_dev(dev);
 	int val = pcie_get_readrq(pci_dev);
 
 	return snprintf(buf, PCI_SYS_FILE_BUF_SIZE, "%d\n", val);
@@ -170,7 +164,7 @@ store_max_read_request_size(struct device *dev,
 			    const char *buf,
 			    size_t count)
 {
-	struct pci_dev *pci_dev = container_of(dev, struct pci_dev, dev);
+	struct pci_dev *pci_dev = to_pci_dev(dev);
 	unsigned long size = 0;
 	int ret;
 
@@ -243,7 +237,7 @@ igbuio_msix_mask_irq(struct msi_desc *desc, int32_t state)
 static int
 igbuio_pci_irqcontrol(struct uio_info *info, s32 irq_state)
 {
-	struct rte_uio_pci_dev *udev = igbuio_get_uio_pci_dev(info);
+	struct rte_uio_pci_dev *udev = info->priv;
 	struct pci_dev *pdev = udev->pdev;
 
 	pci_cfg_access_lock(pdev);
@@ -253,8 +247,13 @@ igbuio_pci_irqcontrol(struct uio_info *info, s32 irq_state)
 	else if (udev->mode == RTE_INTR_MODE_MSIX) {
 		struct msi_desc *desc;
 
+#if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 3, 0))
 		list_for_each_entry(desc, &pdev->msi_list, list)
 			igbuio_msix_mask_irq(desc, irq_state);
+#else
+		list_for_each_entry(desc, &pdev->dev.msi_list, list)
+			igbuio_msix_mask_irq(desc, irq_state);
+#endif
 	}
 	pci_cfg_access_unlock(pdev);
 
@@ -268,7 +267,7 @@ igbuio_pci_irqcontrol(struct uio_info *info, s32 irq_state)
 static irqreturn_t
 igbuio_pci_irqhandler(int irq, struct uio_info *info)
 {
-	struct rte_uio_pci_dev *udev = igbuio_get_uio_pci_dev(info);
+	struct rte_uio_pci_dev *udev = info->priv;
 
 	/* Legacy mode need to mask in hardware */
 	if (udev->mode == RTE_INTR_MODE_LEGACY &&
@@ -563,12 +562,13 @@ static void
 igbuio_pci_remove(struct pci_dev *dev)
 {
 	struct uio_info *info = pci_get_drvdata(dev);
-	struct rte_uio_pci_dev *udev = igbuio_get_uio_pci_dev(info);
+	struct rte_uio_pci_dev *udev;
 
 	if (info->priv == NULL) {
 		pr_notice("Not igbuio device\n");
 		return;
 	}
+	udev = info->priv;
 
 	sysfs_remove_group(&dev->dev.kobj, &dev_attr_grp);
 	uio_unregister_device(info);

@@ -31,11 +31,6 @@
 Programmer's Guide
 ==================
 
-|today|
-
-
-**Contents**
-
 .. toctree::
     :maxdepth: 3
     :numbered:
@@ -43,7 +38,6 @@ Programmer's Guide
     intro
     overview
     env_abstraction_layer
-    malloc_lib
     ring_lib
     mempool_lib
     mbuf_lib
@@ -80,140 +74,168 @@ Programmer's Guide
 
 **Figures**
 
-:ref:`Figure 1. Core Components Architecture <pg_figure_1>`
+:numref:`figure_architecture-overview` :ref:`figure_architecture-overview`
 
-:ref:`Figure 2. EAL Initialization in a Linux Application Environment <pg_figure_2>`
+:numref:`figure_linuxapp_launch` :ref:`figure_linuxapp_launch`
 
-:ref:`Figure 3. Example of a malloc heap and malloc elements within the malloc library <pg_figure_3>`
+:numref:`figure_malloc_heap` :ref:`figure_malloc_heap`
 
-:ref:`Figure 4. Ring Structure <pg_figure_4>`
+:numref:`figure_ring1` :ref:`figure_ring1`
 
-:ref:`Figure 5. Two Channels and Quad-ranked DIMM Example <pg_figure_5>`
+:numref:`figure_ring-enqueue1` :ref:`figure_ring-enqueue1`
 
-:ref:`Figure 6. Three Channels and Two Dual-ranked DIMM Example <pg_figure_6>`
+:numref:`figure_ring-enqueue2` :ref:`figure_ring-enqueue2`
 
-:ref:`Figure 7. A mempool in Memory with its Associated Ring <pg_figure_7>`
+:numref:`figure_ring-enqueue3` :ref:`figure_ring-enqueue3`
 
-:ref:`Figure 8. An mbuf with One Segment <pg_figure_8>`
+:numref:`figure_ring-dequeue1` :ref:`figure_ring-dequeue1`
 
-:ref:`Figure 9. An mbuf with Three Segments <pg_figure_9>`
+:numref:`figure_ring-dequeue2` :ref:`figure_ring-dequeue2`
 
-:ref:`Figure 16. Memory Sharing in the Intel® DPDK Multi-process Sample Application <pg_figure_16>`
+:numref:`figure_ring-dequeue3` :ref:`figure_ring-dequeue3`
 
-:ref:`Figure 17. Components of an Intel® DPDK KNI Application <pg_figure_17>`
+:numref:`figure_ring-mp-enqueue1` :ref:`figure_ring-mp-enqueue1`
 
-:ref:`Figure 18. Packet Flow via mbufs in the Intel DPDK® KNI <pg_figure_18>`
+:numref:`figure_ring-mp-enqueue2` :ref:`figure_ring-mp-enqueue2`
 
-:ref:`Figure 19. vHost-net Architecture Overview <pg_figure_19>`
+:numref:`figure_ring-mp-enqueue3` :ref:`figure_ring-mp-enqueue3`
 
-:ref:`Figure 20. KNI Traffic Flow <pg_figure_20>`
+:numref:`figure_ring-mp-enqueue4` :ref:`figure_ring-mp-enqueue4`
 
-:ref:`Figure 21. Complex Packet Processing Pipeline with QoS Support <pg_figure_21>`
+:numref:`figure_ring-mp-enqueue5` :ref:`figure_ring-mp-enqueue5`
 
-:ref:`Figure 22. Hierarchical Scheduler Block Internal Diagram <pg_figure_22>`
+:numref:`figure_ring-modulo1` :ref:`figure_ring-modulo1`
 
-:ref:`Figure 23. Scheduling Hierarchy per Port <pg_figure_23>`
+:numref:`figure_ring-modulo2` :ref:`figure_ring-modulo2`
 
-:ref:`Figure 24. Internal Data Structures per Port <pg_figure_24>`
+:numref:`figure_memory-management` :ref:`figure_memory-management`
 
-:ref:`Figure 25. Prefetch Pipeline for the Hierarchical Scheduler Enqueue Operation <pg_figure_25>`
+:numref:`figure_memory-management2` :ref:`figure_memory-management2`
 
-:ref:`Figure 26. Pipe Prefetch State Machine for the Hierarchical Scheduler Dequeue Operation <pg_figure_26>`
+:numref:`figure_mempool` :ref:`figure_mempool`
 
-:ref:`Figure 27. High-level Block Diagram of the Intel® DPDK Dropper <pg_figure_27>`
+:numref:`figure_mbuf1` :ref:`figure_mbuf1`
 
-:ref:`Figure 28. Flow Through the Dropper <pg_figure_28>`
+:numref:`figure_mbuf2` :ref:`figure_mbuf2`
 
-:ref:`Figure 29. Example Data Flow Through Dropper <pg_figure_29>`
+:numref:`figure_multi_process_memory` :ref:`figure_multi_process_memory`
 
-:ref:`Figure 30. Packet Drop Probability for a Given RED Configuration <pg_figure_30>`
+:numref:`figure_kernel_nic_intf` :ref:`figure_kernel_nic_intf`
 
-:ref:`Figure 31. Initial Drop Probability (pb), Actual Drop probability (pa) Computed Using a Factor 1 (Blue Curve) and a Factor 2 (Red Curve) <pg_figure_31>`
+:numref:`figure_pkt_flow_kni` :ref:`figure_pkt_flow_kni`
 
-:ref:`Figure 32. Example of packet processing pipeline. The input ports 0 and 1 are connected with the output ports 0, 1 and 2 through tables 0 and 1. <pg_figure_32>`
+:numref:`figure_vhost_net_arch2` :ref:`figure_vhost_net_arch2`
 
-:ref:`Figure 33. Sequence of steps for hash table operations in packet processing context <pg_figure_33>`
+:numref:`figure_kni_traffic_flow` :ref:`figure_kni_traffic_flow`
 
-:ref:`Figure 34. Data structures for configurable key size hash tables <pg_figure_34>`
 
-:ref:`Figure 35. Bucket search pipeline for key lookup operation (configurable key size hash tables) <pg_figure_35>`
+:numref:`figure_pkt_proc_pipeline_qos` :ref:`figure_pkt_proc_pipeline_qos`
 
-:ref:`Figure 36. Pseudo-code for match, match_many and match_pos <pg_figure_36>`
+:numref:`figure_hier_sched_blk` :ref:`figure_hier_sched_blk`
 
-:ref:`Figure 37. Data structures for 8-byte key hash tables <pg_figure_37>`
+:numref:`figure_sched_hier_per_port` :ref:`figure_sched_hier_per_port`
 
-:ref:`Figure 38. Data structures for 16-byte key hash tables <pg_figure_38>`
+:numref:`figure_data_struct_per_port` :ref:`figure_data_struct_per_port`
 
-:ref:`Figure 39. Bucket search pipeline for key lookup operation (single key size hash tables) <pg_figure_39>`
+:numref:`figure_prefetch_pipeline` :ref:`figure_prefetch_pipeline`
+
+:numref:`figure_pipe_prefetch_sm` :ref:`figure_pipe_prefetch_sm`
+
+:numref:`figure_blk_diag_dropper` :ref:`figure_blk_diag_dropper`
+
+:numref:`figure_flow_tru_droppper` :ref:`figure_flow_tru_droppper`
+
+:numref:`figure_ex_data_flow_tru_dropper` :ref:`figure_ex_data_flow_tru_dropper`
+
+:numref:`figure_pkt_drop_probability` :ref:`figure_pkt_drop_probability`
+
+:numref:`figure_drop_probability_graph` :ref:`figure_drop_probability_graph`
+
+:numref:`figure_figure32` :ref:`figure_figure32`
+
+:numref:`figure_figure33` :ref:`figure_figure33`
+
+:numref:`figure_figure34` :ref:`figure_figure34`
+
+:numref:`figure_figure35` :ref:`figure_figure35`
+
+:numref:`figure_figure37` :ref:`figure_figure37`
+
+:numref:`figure_figure38` :ref:`figure_figure38`
+
+:numref:`figure_figure39` :ref:`figure_figure39`
+
 
 **Tables**
 
-:ref:`Table 1. Packet Processing Pipeline Implementing QoS <pg_table_1>`
+:numref:`table_qos_1` :ref:`table_qos_1`
 
-:ref:`Table 2. Infrastructure Blocks Used by the Packet Processing Pipeline <pg_table_2>`
+:numref:`table_qos_2` :ref:`table_qos_2`
 
-:ref:`Table 3. Port Scheduling Hierarchy <pg_table_3>`
+:numref:`table_qos_3` :ref:`table_qos_3`
 
-:ref:`Table 4. Scheduler Internal Data Structures per Port <pg_table_4>`
+:numref:`table_qos_4` :ref:`table_qos_4`
 
-:ref:`Table 5. Ethernet Frame Overhead Fields <pg_table_5>`
+:numref:`table_qos_5` :ref:`table_qos_5`
 
-:ref:`Table 6. Token Bucket Generic Operations <pg_table_6>`
+:numref:`table_qos_6` :ref:`table_qos_6`
 
-:ref:`Table 7. Token Bucket Generic Parameters <pg_table_7>`
+:numref:`table_qos_7` :ref:`table_qos_7`
 
-:ref:`Table 8. Token Bucket Persistent Data Structure <pg_table_8>`
+:numref:`table_qos_8` :ref:`table_qos_8`
 
-:ref:`Table 9. Token Bucket Operations <pg_table_9>`
+:numref:`table_qos_9` :ref:`table_qos_9`
 
-:ref:`Table 10. Subport/Pipe Traffic Class Upper Limit Enforcement Persistent Data Structure <pg_table_10>`
+:numref:`table_qos_10` :ref:`table_qos_10`
 
-:ref:`Table 11. Subport/Pipe Traffic Class Upper Limit Enforcement Operations <pg_table_11>`
+:numref:`table_qos_11` :ref:`table_qos_11`
 
-:ref:`Table 12. Weighted Round Robin (WRR) <pg_table_12>`
+:numref:`table_qos_12` :ref:`table_qos_12`
 
-:ref:`Table 13. Subport Traffic Class Oversubscription <pg_table_13>`
+:numref:`table_qos_13` :ref:`table_qos_13`
 
-:ref:`Table 14. Watermark Propagation from Subport Level to Member Pipes at the Beginning of Each Traffic Class Upper Limit Enforcement Period <pg_table_14>`
+:numref:`table_qos_14` :ref:`table_qos_14`
 
-:ref:`Table 15. Watermark Calculation <pg_table_15>`
+:numref:`table_qos_15` :ref:`table_qos_15`
 
-:ref:`Table 16. RED Configuration Parameters <pg_table_16>`
+:numref:`table_qos_16` :ref:`table_qos_16`
 
-:ref:`Table 17. Relative Performance of Alternative Approaches <pg_table_17>`
+:numref:`table_qos_17` :ref:`table_qos_17`
 
-:ref:`Table 18. RED Configuration Corresponding to RED Configuration File <pg_table_18>`
+:numref:`table_qos_18` :ref:`table_qos_18`
 
-:ref:`Table 19. Port types <pg_table_19>`
+:numref:`table_qos_19` :ref:`table_qos_19`
 
-:ref:`Table 20. Port abstract interface <pg_table_20>`
+:numref:`table_qos_20` :ref:`table_qos_20`
 
-:ref:`Table 21. Table types <pg_table_21>`
+:numref:`table_qos_21` :ref:`table_qos_21`
 
-:ref:`Table 29. Table Abstract Interface <pg_table_29_1>`
+:numref:`table_qos_22` :ref:`table_qos_22`
 
-:ref:`Table 22. Configuration parameters common for all hash table types <pg_table_22>`
+:numref:`table_qos_23` :ref:`table_qos_23`
 
-:ref:`Table 23. Configuration parameters specific to extendable bucket hash table <pg_table_23>`
+:numref:`table_qos_24` :ref:`table_qos_24`
 
-:ref:`Table 24. Configuration parameters specific to pre-computed key signature hash table <pg_table_24>`
+:numref:`table_qos_25` :ref:`table_qos_25`
 
-:ref:`Table 25. The main large data structures (arrays) used for configurable key size hash tables <pg_table_25>`
+:numref:`table_qos_26` :ref:`table_qos_26`
 
-:ref:`Table 26. Field description for bucket array entry (configurable key size hash tables) <pg_table_26>`
+:numref:`table_qos_27` :ref:`table_qos_27`
 
-:ref:`Table 27. Description of the bucket search pipeline stages (configurable key size hash tables) <pg_table_27>`
+:numref:`table_qos_28` :ref:`table_qos_28`
 
-:ref:`Table 28. Lookup tables for match, match_many, match_pos <pg_table_28>`
+:numref:`table_qos_29` :ref:`table_qos_29`
 
-:ref:`Table 29. Collapsed lookup tables for match, match_many and match_pos <pg_table_29>`
+:numref:`table_qos_30` :ref:`table_qos_30`
 
-:ref:`Table 30. The main large data structures (arrays) used for 8-byte and 16-byte key size hash tables <pg_table_30>`
+:numref:`table_qos_31` :ref:`table_qos_31`
 
-:ref:`Table 31. Field description for bucket array entry (8-byte and 16-byte key hash tables) <pg_table_31>`
+:numref:`table_qos_32` :ref:`table_qos_32`
 
-:ref:`Table 32. Description of the bucket search pipeline stages (8-byte and 16-byte key hash tables) <pg_table_32>`
+:numref:`table_qos_33` :ref:`table_qos_33`
 
-:ref:`Table 33. Next hop actions (reserved) <pg_table_33>`
+:numref:`table_qos_34` :ref:`table_qos_34`
 
-:ref:`Table 34. User action examples <pg_table_34>`
+:numref:`table_hash_lib_1` :ref:`table_hash_lib_1`
+
+:numref:`table_hash_lib_2` :ref:`table_hash_lib_2`

@@ -49,11 +49,11 @@
 
 #define SYS_CPU_DIR "/sys/devices/system/cpu/cpu%u"
 #define CORE_ID_FILE "topology/core_id"
-#define PHYS_PKG_FILE "topology/physical_package_id"
+#define NUMA_NODE_PATH "/sys/devices/system/node"
 
 /* Check if a cpu is present by the presence of the cpu information for it */
-static int
-cpu_detected(unsigned lcore_id)
+int
+eal_cpu_detected(unsigned lcore_id)
 {
 	char path[PATH_MAX];
 	int len = snprintf(path, sizeof(path), SYS_CPU_DIR
@@ -66,64 +66,32 @@ cpu_detected(unsigned lcore_id)
 	return 1;
 }
 
-/* Get CPU socket id (NUMA node) by reading directory
- * /sys/devices/system/cpu/cpuX looking for symlink "nodeY"
- * which gives the NUMA topology information.
- * Note: physical package id != NUMA node, but we use it as a
- * fallback for kernels which don't create a nodeY link
+/*
+ * Get CPU socket id (NUMA node) for a logical core.
+ *
+ * This searches each nodeX directories in /sys for the symlink for the given
+ * lcore_id and returns the numa node where the lcore is found. If lcore is not
+ * found on any numa node, returns zero.
  */
 unsigned
 eal_cpu_socket_id(unsigned lcore_id)
 {
-	const char node_prefix[] = "node";
-	const size_t prefix_len = sizeof(node_prefix) - 1;
-	char path[PATH_MAX];
-	DIR *d = NULL;
-	unsigned long id = 0;
-	struct dirent *e;
-	char *endptr = NULL;
+	unsigned socket;
 
-	int len = snprintf(path, sizeof(path),
-			       SYS_CPU_DIR, lcore_id);
-	if (len <= 0 || (unsigned)len >= sizeof(path))
-		goto err;
+	for (socket = 0; socket < RTE_MAX_NUMA_NODES; socket++) {
+		char path[PATH_MAX];
 
-	d = opendir(path);
-	if (!d)
-		goto err;
-
-	while ((e = readdir(d)) != NULL) {
-		if (strncmp(e->d_name, node_prefix, prefix_len) == 0) {
-			id = strtoul(e->d_name+prefix_len, &endptr, 0);
-			break;
-		}
+		snprintf(path, sizeof(path), "%s/node%u/cpu%u", NUMA_NODE_PATH,
+				socket, lcore_id);
+		if (access(path, F_OK) == 0)
+			return socket;
 	}
-	if (endptr == NULL || *endptr!='\0' || endptr == e->d_name+prefix_len) {
-		RTE_LOG(WARNING, EAL, "Cannot read numa node link "
-				"for lcore %u - using physical package id instead\n",
-				lcore_id);
-
-		len = snprintf(path, sizeof(path), SYS_CPU_DIR "/%s",
-				lcore_id, PHYS_PKG_FILE);
-		if (len <= 0 || (unsigned)len >= sizeof(path))
-			goto err;
-		if (eal_parse_sysfs_value(path, &id) != 0)
-			goto err;
-	}
-	closedir(d);
-	return (unsigned)id;
-
-err:
-	if (d)
-		closedir(d);
-	RTE_LOG(ERR, EAL, "Error getting NUMA socket information from %s "
-			"for lcore %u - assuming NUMA socket 0\n", SYS_CPU_DIR, lcore_id);
 	return 0;
 }
 
 /* Get the cpu core id value from the /sys/.../cpuX core_id value */
-static unsigned
-cpu_core_id(unsigned lcore_id)
+unsigned
+eal_cpu_core_id(unsigned lcore_id)
 {
 	char path[PATH_MAX];
 	unsigned long id;
@@ -138,63 +106,5 @@ cpu_core_id(unsigned lcore_id)
 err:
 	RTE_LOG(ERR, EAL, "Error reading core id value from %s "
 			"for lcore %u - assuming core 0\n", SYS_CPU_DIR, lcore_id);
-	return 0;
-}
-
-/*
- * Parse /sys/devices/system/cpu to get the number of physical and logical
- * processors on the machine. The function will fill the cpu_info
- * structure.
- */
-int
-rte_eal_cpu_init(void)
-{
-	/* pointer to global configuration */
-	struct rte_config *config = rte_eal_get_configuration();
-	unsigned lcore_id;
-	unsigned count = 0;
-
-	/*
-	 * Parse the maximum set of logical cores, detect the subset of running
-	 * ones and enable them by default.
-	 */
-	for (lcore_id = 0; lcore_id < RTE_MAX_LCORE; lcore_id++) {
-		/* init cpuset for per lcore config */
-		CPU_ZERO(&lcore_config[lcore_id].cpuset);
-
-		/* in 1:1 mapping, record related cpu detected state */
-		lcore_config[lcore_id].detected = cpu_detected(lcore_id);
-		if (lcore_config[lcore_id].detected == 0) {
-			config->lcore_role[lcore_id] = ROLE_OFF;
-			continue;
-		}
-
-		/* By default, lcore 1:1 map to cpu id */
-		CPU_SET(lcore_id, &lcore_config[lcore_id].cpuset);
-
-		/* By default, each detected core is enabled */
-		config->lcore_role[lcore_id] = ROLE_RTE;
-		lcore_config[lcore_id].core_id = cpu_core_id(lcore_id);
-		lcore_config[lcore_id].socket_id = eal_cpu_socket_id(lcore_id);
-		if (lcore_config[lcore_id].socket_id >= RTE_MAX_NUMA_NODES)
-#ifdef RTE_EAL_ALLOW_INV_SOCKET_ID
-			lcore_config[lcore_id].socket_id = 0;
-#else
-			rte_panic("Socket ID (%u) is greater than "
-				"RTE_MAX_NUMA_NODES (%d)\n",
-				lcore_config[lcore_id].socket_id, RTE_MAX_NUMA_NODES);
-#endif
-		RTE_LOG(DEBUG, EAL, "Detected lcore %u as core %u on socket %u\n",
-				lcore_id,
-				lcore_config[lcore_id].core_id,
-				lcore_config[lcore_id].socket_id);
-		count ++;
-	}
-	/* Set the count of enabled logical cores of the EAL configuration */
-	config->lcore_count = count;
-	RTE_LOG(DEBUG, EAL, "Support maximum %u logical core(s) by configuration.\n",
-		RTE_MAX_LCORE);
-	RTE_LOG(DEBUG, EAL, "Detected %u lcore(s)\n", config->lcore_count);
-
 	return 0;
 }

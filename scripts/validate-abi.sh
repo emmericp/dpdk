@@ -33,7 +33,7 @@ TARGET=$3
 ABI_DIR=`mktemp -d -p /tmp ABI.XXXXXX`
 
 usage() {
-	echo "$0 <TAG1> <TAG2> <TARGET>"
+	echo "$0 <REV1> <REV2> <TARGET>"
 }
 
 log() {
@@ -43,16 +43,15 @@ log() {
 }
 
 validate_tags() {
-	git tag -l | grep -q "$TAG1"
-	if [ $? -ne 0 ]
+
+	if [ -z "$HASH1" ]
 	then
-		echo "$TAG1 is invalid"
+		echo "invalid revision: $TAG1"
 		return
 	fi
-	git tag -l | grep -q "$TAG2"
-	if [ $? -ne 0 ]
+	if [ -z "$HASH2" ]
 	then
-		echo "$TAG2 is invalid"
+		echo "invalid revision: $TAG2"
 		return
 	fi
 }
@@ -60,12 +59,12 @@ validate_tags() {
 validate_args() {
 	if [ -z "$TAG1" ]
 	then
-		echo "Must Specify TAG1"
+		echo "Must Specify REV1"
 		return
 	fi
 	if [ -z "$TAG2" ]
 	then
-		echo "Must Specify TAG2"
+		echo "Must Specify REV2"
 		return
 	fi
 	if [ -z "$TARGET" ]
@@ -79,6 +78,16 @@ cleanup_and_exit() {
 	rm -rf $ABI_DIR
 	git checkout $CURRENT_BRANCH
 	exit $1
+}
+
+# Make sure we configure SHARED libraries
+# Also turn off IGB and KNI as those require kernel headers to build
+fixup_config() {
+	sed -i -e"$ a\CONFIG_RTE_BUILD_SHARED_LIB=y" config/defconfig_$TARGET
+	sed -i -e"$ a\CONFIG_RTE_NEXT_ABI=n" config/defconfig_$TARGET
+	sed -i -e"$ a\CONFIG_RTE_EAL_IGB_UIO=n" config/defconfig_$TARGET
+	sed -i -e"$ a\CONFIG_RTE_LIBRTE_KNI=n" config/defconfig_$TARGET
+	sed -i -e"$ a\CONFIG_RTE_KNI_KMOD=n" config/defconfig_$TARGET
 }
 
 ###########################################
@@ -112,6 +121,9 @@ then
 	cleanup_and_exit 1
 fi
 
+HASH1=$(git show -s --format=%H "$TAG1" -- 2> /dev/null | tail -1)
+HASH2=$(git show -s --format=%H "$TAG2" -- 2> /dev/null | tail -1)
+
 # Make sure our tags exist
 res=$(validate_tags)
 if [ -n "$res" ]
@@ -119,6 +131,10 @@ then
 	echo $res
 	cleanup_and_exit 1
 fi
+
+# Make hashes available in output for non-local reference
+TAG1="$TAG1 ($HASH1)"
+TAG2="$TAG2 ($HASH2)"
 
 ABICHECK=`which abi-compliance-checker 2>/dev/null`
 if [ $? -ne 0 ]
@@ -135,8 +151,8 @@ then
 fi
 
 log "INFO" "We're going to check and make sure that applications built"
-log "INFO" "against DPDK DSOs from tag $TAG1 will still run when executed"
-log "INFO" "against DPDK DSOs built from tag $TAG2."
+log "INFO" "against DPDK DSOs from version $TAG1 will still run when executed"
+log "INFO" "against DPDK DSOs built from version $TAG2."
 log "INFO" ""
 
 # Check to make sure we have a clean tree
@@ -152,19 +168,15 @@ cd $(dirname $0)/..
 
 log "INFO" "Checking out version $TAG1 of the dpdk"
 # Move to the old version of the tree
-git checkout $TAG1
+git checkout $HASH1
 
-# Make sure we configure SHARED libraries
-# Also turn off IGB and KNI as those require kernel headers to build
-sed -i -e"$ a\CONFIG_RTE_BUILD_SHARED_LIB=y" config/defconfig_$TARGET
-sed -i -e"$ a\CONFIG_RTE_EAL_IGB_UIO=n" config/defconfig_$TARGET
-sed -i -e"$ a\CONFIG_RTE_LIBRTE_KNI=n" config/defconfig_$TARGET
+fixup_config
 
 # Checking abi compliance relies on using the dwarf information in
 # The shared objects.  Thats only included in the DSO's if we build
 # with -g
-export EXTRA_CFLAGS=-g
-export EXTRA_LDFLAGS=-g
+export EXTRA_CFLAGS="$EXTRA_CFLAGS -g"
+export EXTRA_LDFLAGS="$EXTRA_LDFLAGS -g"
 
 # Now configure the build
 log "INFO" "Configuring DPDK $TAG1"
@@ -184,7 +196,7 @@ cd $TARGET/lib
 log "INFO" "COLLECTING ABI INFORMATION FOR $TAG1"
 for i in `ls *.so`
 do
-	$ABIDUMP $i -o $ABI_DIR/$i-ABI-0.dump -lver $TAG1
+	$ABIDUMP $i -o $ABI_DIR/$i-ABI-0.dump -lver $HASH1
 done
 cd ../..
 
@@ -193,13 +205,9 @@ git clean -f -d
 git reset --hard
 # Move to the new version of the tree
 log "INFO" "Checking out version $TAG2 of the dpdk"
-git checkout $TAG2
+git checkout $HASH2
 
-# Make sure we configure SHARED libraries
-# Also turn off IGB and KNI as those require kernel headers to build
-sed -i -e"$ a\CONFIG_RTE_BUILD_SHARED_LIB=y" config/defconfig_$TARGET
-sed -i -e"$ a\CONFIG_RTE_EAL_IGB_UIO=n" config/defconfig_$TARGET
-sed -i -e"$ a\CONFIG_RTE_LIBRTE_KNI=n" config/defconfig_$TARGET
+fixup_config
 
 # Now configure the build
 log "INFO" "Configuring DPDK $TAG2"
@@ -218,7 +226,7 @@ cd $TARGET/lib
 log "INFO" "COLLECTING ABI INFORMATION FOR $TAG2"
 for i in `ls *.so`
 do
-	$ABIDUMP $i -o $ABI_DIR/$i-ABI-1.dump -lver $TAG2
+	$ABIDUMP $i -o $ABI_DIR/$i-ABI-1.dump -lver $HASH2
 done
 cd ../..
 
@@ -241,5 +249,3 @@ done
 git reset --hard
 log "INFO" "ABI CHECK COMPLETE.  REPORTS ARE IN compat_report directory"
 cleanup_and_exit 0
-
-

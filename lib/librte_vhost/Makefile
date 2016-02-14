@@ -36,7 +36,7 @@ LIB = librte_vhost.a
 
 EXPORT_MAP := rte_vhost_version.map
 
-LIBABIVER := 1
+LIBABIVER := 2
 
 CFLAGS += $(WERROR_FLAGS) -I$(SRCDIR) -O3 -D_FILE_OFFSET_BITS=64
 ifeq ($(CONFIG_RTE_LIBRTE_VHOST_USER),y)
@@ -44,6 +44,10 @@ CFLAGS += -I vhost_user
 else
 CFLAGS += -I vhost_cuse -lfuse
 LDFLAGS += -lfuse
+endif
+
+ifeq ($(CONFIG_RTE_LIBRTE_VHOST_NUMA),y)
+LDFLAGS += -lnuma
 endif
 
 # all source are stored in SRCS-y

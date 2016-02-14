@@ -31,19 +31,19 @@
 Supported Operating Systems
 ===========================
 
-The following Linux* distributions were successfully used to generate or run DPDK.
+The following Linux distributions were successfully used to compiler or run DPDK.
 
-*   FreeBSD* 10
+*   FreeBSD 10
 
 *   Fedora release 20
 
-*   Ubuntu* 14.04 LTS
+*   Ubuntu 14.04 LTS
 
-*   Wind River* Linux* 6
+*   Wind River Linux 6
 
-*   Red Hat* Enterprise Linux 6.5
+*   Red Hat Enterprise Linux 6.5
 
-*   SUSE Enterprise Linux* 11 SP3
+*   SUSE Enterprise Linux 11 SP3
 
 These distributions may need additional packages that are not installed by default, or a specific kernel.
-Refer to the *DPDK Getting Started Guide* for details.
+Refer to the :ref:`Linux guide <linux_gsg>` and :ref:`FreeBSD guide <freebsd_gsg>` for details.

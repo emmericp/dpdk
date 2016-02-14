@@ -31,8 +31,8 @@ MLX4 poll mode driver library
 =============================
 
 The MLX4 poll mode driver library (**librte_pmd_mlx4**) implements support
-for **Mellanox ConnectX-3 EN** 10/40 Gbps adapters as well as their virtual
-functions (VF) in SR-IOV context.
+for **Mellanox ConnectX-3** and **Mellanox ConnectX-3 Pro** 10/40 Gbps adapters
+as well as their virtual functions (VF) in SR-IOV context.
 
 Information and documentation about this family of adapters can be found on
 the `Mellanox website <http://www.mellanox.com>`_. Help is also provided by
@@ -46,6 +46,11 @@ There is also a `section dedicated to this poll mode driver
    Due to external dependencies, this driver is disabled by default. It must
    be enabled manually by setting ``CONFIG_RTE_LIBRTE_MLX4_PMD=y`` and
    recompiling DPDK.
+
+.. warning::
+
+   ``CONFIG_RTE_BUILD_COMBINE_LIBS`` with ``CONFIG_RTE_BUILD_SHARED_LIB``
+   is not supported and thus the compilation will fail with this configuration.
 
 Implementation details
 ----------------------
@@ -73,8 +78,8 @@ long as they share the same MAC address.
 
 Compiling librte_pmd_mlx4 causes DPDK to be linked against libibverbs.
 
-Features and limitations
-------------------------
+Features
+--------
 
 - RSS, also known as RCA, is supported. In this mode the number of
   configured RX queues must be a power of two.
@@ -84,12 +89,19 @@ Features and limitations
 - All multicast mode is supported.
 - Multiple MAC addresses (unicast, multicast) can be configured.
 - Scattered packets are supported for TX and RX.
+- Inner L3/L4 (IP, TCP and UDP) TX/RX checksum offloading and validation.
+- Outer L3 (IP) TX/RX checksum offloading and validation for VXLAN frames.
+- Secondary process TX is supported.
 
-.. break
+Limitations
+-----------
 
 - RSS hash key cannot be modified.
+- RSS RETA cannot be configured
+- RSS always includes L3 (IPv4/IPv6) and L4 (UDP/TCP). They cannot be
+  dissociated.
 - Hardware counters are not implemented (they are software counters).
-- Checksum offloads are not supported yet.
+- Secondary process RX is not supported.
 
 Configuration
 -------------
@@ -175,9 +187,8 @@ below.
 
   - **-1**: force device-managed flow steering (DMFS).
   - **-7**: configure optimized steering mode to improve performance with the
-    following limitation: Ethernet frames with the port MAC address as the
-    destination cannot be received, even in promiscuous mode. Additional MAC
-    addresses can still be set by ``rte_eth_dev_mac_addr_addr()``.
+    following limitation: VLAN filtering is not supported with this mode.
+    This is the recommended mode in case VLAN filter is not needed.
 
 Prerequisites
 -------------
@@ -232,8 +243,9 @@ DPDK and must be installed separately:
 
 Currently supported by DPDK:
 
-- Mellanox OFED **2.4-1**.
-- Firmware version **2.33.5000** and higher.
+- Mellanox OFED **3.1**.
+- Firmware version **2.35.5100** and higher.
+- Supported architectures:  **x86_64** and **POWER8**.
 
 Getting Mellanox OFED
 ~~~~~~~~~~~~~~~~~~~~~
@@ -255,23 +267,6 @@ required from that distribution.
    this DPDK release was developed and tested against is strongly
    recommended. Please check the `prerequisites`_.
 
-Getting libibverbs and libmlx4 from DPDK.org
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-Based on Mellanox OFED, optimized libibverbs and libmlx4 versions can be
-optionally downloaded from DPDK.org:
-
-`<http://www.dpdk.org/download/mlx4>`_
-
-Some enhancements are done for better performance with DPDK applications and
-are not merged upstream yet.
-
-Since it is partly achieved by tuning compilation options to disable features
-not needed by DPDK, linking these libraries statically and avoid system-wide
-installation is the preferred method.
-
-Installation documentation is available from the above link.
-
 Usage example
 -------------
 
@@ -283,6 +278,13 @@ devices managed by librte_pmd_mlx4.
    .. code-block:: console
 
       modprobe -a ib_uverbs mlx4_en mlx4_core mlx4_ib
+
+   Alternatively if MLNX_OFED is fully installed, the following script can
+   be run:
+
+   .. code-block:: console
+
+      /etc/init.d/openibd restart
 
    .. note::
 

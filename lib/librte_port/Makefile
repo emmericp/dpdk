@@ -41,7 +41,7 @@ CFLAGS += $(WERROR_FLAGS)
 
 EXPORT_MAP := rte_port_version.map
 
-LIBABIVER := 1
+LIBABIVER := 2
 
 #
 # all source are stored in SRCS-y
@@ -70,7 +70,6 @@ SYMLINK-$(CONFIG_RTE_LIBRTE_PORT)-include += rte_port_source_sink.h
 DEPDIRS-$(CONFIG_RTE_LIBRTE_PORT) := lib/librte_eal
 DEPDIRS-$(CONFIG_RTE_LIBRTE_PORT) += lib/librte_mbuf
 DEPDIRS-$(CONFIG_RTE_LIBRTE_PORT) += lib/librte_mempool
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PORT) += lib/librte_malloc
 DEPDIRS-$(CONFIG_RTE_LIBRTE_PORT) += lib/librte_ether
 DEPDIRS-$(CONFIG_RTE_LIBRTE_PORT) += lib/librte_ip_frag
 

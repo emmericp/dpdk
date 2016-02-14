@@ -57,6 +57,12 @@ quit()
 	QUIT=$1
 }
 
+# Shortcut for quit.
+q()
+{
+	quit
+}
+
 #
 # Sets up environmental variables for ICC.
 #
@@ -102,14 +108,6 @@ setup_target()
 	echo "------------------------------------------------------------------------------"
 	echo " RTE_TARGET exported as $RTE_TARGET"
 	echo "------------------------------------------------------------------------------"
-}
-
-#
-# Uninstall all targets.
-#
-uninstall_targets()
-{
-	make uninstall
 }
 
 #
@@ -571,23 +569,20 @@ step5_func()
 {
 	TITLE="Uninstall and system cleanup"
 
-	TEXT[1]="Uninstall all targets"
-	FUNC[1]="uninstall_targets"
+	TEXT[1]="Unbind NICs from IGB UIO or VFIO driver"
+	FUNC[1]="unbind_nics"
 
-	TEXT[2]="Unbind NICs from IGB UIO or VFIO driver"
-	FUNC[2]="unbind_nics"
+	TEXT[2]="Remove IGB UIO module"
+	FUNC[2]="remove_igb_uio_module"
 
-	TEXT[3]="Remove IGB UIO module"
-	FUNC[3]="remove_igb_uio_module"
+	TEXT[3]="Remove VFIO module"
+	FUNC[3]="remove_vfio_module"
 
-	TEXT[4]="Remove VFIO module"
-	FUNC[4]="remove_vfio_module"
+	TEXT[4]="Remove KNI module"
+	FUNC[4]="remove_kni_module"
 
-	TEXT[5]="Remove KNI module"
-	FUNC[5]="remove_kni_module"
-
-	TEXT[6]="Remove hugepage mappings"
-	FUNC[6]="clear_huge_pages"
+	TEXT[5]="Remove hugepage mappings"
+	FUNC[5]="clear_huge_pages"
 }
 
 STEPS[1]="step1_func"
@@ -628,6 +623,10 @@ while [ "$QUIT" == "0" ]; do
 	read our_entry
 	echo ""
 	${OPTIONS[our_entry]} ${our_entry}
-	echo
-	echo -n "Press enter to continue ..."; read
+
+	if [ "$QUIT" == "0" ] ; then
+		echo
+		echo -n "Press enter to continue ..."; read
+	fi
+
 done

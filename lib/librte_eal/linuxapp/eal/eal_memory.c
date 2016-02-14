@@ -97,6 +97,13 @@
 #include "eal_filesystem.h"
 #include "eal_hugepages.h"
 
+#ifdef RTE_LIBRTE_XEN_DOM0
+int rte_xen_dom0_supported(void)
+{
+	return internal_config.xen_dom0_support;
+}
+#endif
+
 /**
  * @file
  * Huge page mapping under linux
@@ -111,7 +118,27 @@
 
 static uint64_t baseaddr_offset;
 
+static unsigned proc_pagemap_readable;
+
 #define RANDOMIZE_VA_SPACE_FILE "/proc/sys/kernel/randomize_va_space"
+
+static void
+test_proc_pagemap_readable(void)
+{
+	int fd = open("/proc/self/pagemap", O_RDONLY);
+
+	if (fd < 0) {
+		RTE_LOG(ERR, EAL,
+			"Cannot open /proc/self/pagemap: %s. "
+			"virt2phys address translation will not work\n",
+			strerror(errno));
+		return;
+	}
+
+	/* Is readable */
+	close(fd);
+	proc_pagemap_readable = 1;
+}
 
 /* Lock page in physical memory and prevent from swapping. */
 int
@@ -134,6 +161,10 @@ rte_mem_virt2phy(const void *virtaddr)
 	unsigned long virt_pfn;
 	int page_size;
 	off_t offset;
+
+	/* Cannot parse /proc/self/pagemap, no need to log errors everywhere */
+	if (!proc_pagemap_readable)
+		return RTE_BAD_PHYS_ADDR;
 
 	/* standard page size */
 	page_size = getpagesize();
@@ -239,7 +270,7 @@ get_virtual_area(size_t *size, size_t hugepage_sz)
 	}
 	else addr = NULL;
 
-	RTE_LOG(INFO, EAL, "Ask a virtual area of 0x%zx bytes\n", *size);
+	RTE_LOG(DEBUG, EAL, "Ask a virtual area of 0x%zx bytes\n", *size);
 
 	fd = open("/dev/zero", O_RDONLY);
 	if (fd < 0){
@@ -255,7 +286,8 @@ get_virtual_area(size_t *size, size_t hugepage_sz)
 
 	if (addr == MAP_FAILED) {
 		close(fd);
-		RTE_LOG(INFO, EAL, "Cannot get a virtual area\n");
+		RTE_LOG(ERR, EAL, "Cannot get a virtual area: %s\n",
+			strerror(errno));
 		return NULL;
 	}
 
@@ -268,7 +300,7 @@ get_virtual_area(size_t *size, size_t hugepage_sz)
 	aligned_addr &= (~(hugepage_sz - 1));
 	addr = (void *)(aligned_addr);
 
-	RTE_LOG(INFO, EAL, "Virtual area found at %p (size = 0x%zx)\n",
+	RTE_LOG(DEBUG, EAL, "Virtual area found at %p (size = 0x%zx)\n",
 		addr, *size);
 
 	/* increment offset */
@@ -604,7 +636,7 @@ find_numasocket(struct hugepage_file *hugepg_tbl, struct hugepage_info *hpi)
 
 	f = fopen("/proc/self/numa_maps", "r");
 	if (f == NULL) {
-		RTE_LOG(INFO, EAL, "cannot open /proc/self/numa_maps,"
+		RTE_LOG(NOTICE, EAL, "cannot open /proc/self/numa_maps,"
 				" consider that all memory is in socket_id 0\n");
 		return 0;
 	}
@@ -761,6 +793,30 @@ copy_hugepages_to_shared_mem(struct hugepage_file * dst, int dest_size,
 	return 0;
 }
 
+static int
+unlink_hugepage_files(struct hugepage_file *hugepg_tbl,
+		unsigned num_hp_info)
+{
+	unsigned socket, size;
+	int page, nrpages = 0;
+
+	/* get total number of hugepages */
+	for (size = 0; size < num_hp_info; size++)
+		for (socket = 0; socket < RTE_MAX_NUMA_NODES; socket++)
+			nrpages +=
+			internal_config.hugepage_info[size].num_pages[socket];
+
+	for (page = 0; page < nrpages; page++) {
+		struct hugepage_file *hp = &hugepg_tbl[page];
+
+		if (hp->final_va != NULL && unlink(hp->filepath)) {
+			RTE_LOG(WARNING, EAL, "%s(): Removing %s failed: %s\n",
+				__func__, hp->filepath, strerror(errno));
+		}
+	}
+	return 0;
+}
+
 /*
  * unmaps hugepages that are not going to be used. since we originally allocate
  * ALL hugepages (not just those we need), additional unmapping needs to be done.
@@ -880,7 +936,7 @@ get_socket_mem_size(int socket)
 			size += hpi->hugepage_sz * hpi->num_pages[socket];
 	}
 
-	return (size);
+	return size;
 }
 
 /*
@@ -1001,7 +1057,7 @@ calc_num_pages_per_socket(uint64_t * memory,
 					0x100000);
 			available = requested -
 					((unsigned) (memory[socket] / 0x100000));
-			RTE_LOG(INFO, EAL, "Not enough memory available on socket %u! "
+			RTE_LOG(ERR, EAL, "Not enough memory available on socket %u! "
 					"Requested: %uMB, available: %uMB\n", socket,
 					requested, available);
 			return -1;
@@ -1012,7 +1068,7 @@ calc_num_pages_per_socket(uint64_t * memory,
 	if (total_mem > 0) {
 		requested = (unsigned) (internal_config.memory / 0x100000);
 		available = requested - (unsigned) (total_mem / 0x100000);
-		RTE_LOG(INFO, EAL, "Not enough memory available! Requested: %uMB,"
+		RTE_LOG(ERR, EAL, "Not enough memory available! Requested: %uMB,"
 				" available: %uMB\n", requested, available);
 		return -1;
 	}
@@ -1030,7 +1086,7 @@ calc_num_pages_per_socket(uint64_t * memory,
  *  6. unmap the first mapping
  *  7. fill memsegs in configuration with contiguous zones
  */
-static int
+int
 rte_eal_hugepage_init(void)
 {
 	struct rte_mem_config *mcfg;
@@ -1046,6 +1102,8 @@ rte_eal_hugepage_init(void)
 #ifdef RTE_EAL_SINGLE_FILE_SEGMENTS
 	int new_pages_count[MAX_HUGEPAGE_SIZES];
 #endif
+
+	test_proc_pagemap_readable();
 
 	memset(used_hp, 0, sizeof(used_hp));
 
@@ -1063,8 +1121,9 @@ rte_eal_hugepage_init(void)
 		}
 		mcfg->memseg[0].phys_addr = (phys_addr_t)(uintptr_t)addr;
 		mcfg->memseg[0].addr = addr;
+		mcfg->memseg[0].hugepage_sz = RTE_PGSIZE_4K;
 		mcfg->memseg[0].len = internal_config.memory;
-		mcfg->memseg[0].socket_id = SOCKET_ID_ANY;
+		mcfg->memseg[0].socket_id = 0;
 		return 0;
 	}
 
@@ -1078,7 +1137,6 @@ rte_eal_hugepage_init(void)
 			return 0;
 #endif
 	}
-
 
 	/* calculate total number of hugepages available. at this point we haven't
 	 * yet started sorting them so they all are on socket 0 */
@@ -1188,7 +1246,9 @@ rte_eal_hugepage_init(void)
 		int socket = tmp_hp[i].socket_id;
 
 		/* find a hugepage info with right size and increment num_pages */
-		for (j = 0; j < (int) internal_config.num_hugepage_sizes; j++) {
+		const int nb_hpsizes = RTE_MIN(MAX_HUGEPAGE_SIZES,
+				(int)internal_config.num_hugepage_sizes);
+		for (j = 0; j < nb_hpsizes; j++) {
 			if (tmp_hp[i].size ==
 					internal_config.hugepage_info[j].hugepage_sz) {
 #ifdef RTE_EAL_SINGLE_FILE_SEGMENTS
@@ -1218,13 +1278,13 @@ rte_eal_hugepage_init(void)
 	for (i = 0; i < (int) internal_config.num_hugepage_sizes; i++) {
 		for (j = 0; j < RTE_MAX_NUMA_NODES; j++) {
 			if (used_hp[i].num_pages[j] > 0) {
-				RTE_LOG(INFO, EAL,
-						"Requesting %u pages of size %uMB"
-						" from socket %i\n",
-						used_hp[i].num_pages[j],
-						(unsigned)
-							(used_hp[i].hugepage_sz / 0x100000),
-						j);
+				RTE_LOG(DEBUG, EAL,
+					"Requesting %u pages of size %uMB"
+					" from socket %i\n",
+					used_hp[i].num_pages[j],
+					(unsigned)
+					(used_hp[i].hugepage_sz / 0x100000),
+					j);
 			}
 		}
 	}
@@ -1257,6 +1317,13 @@ rte_eal_hugepage_init(void)
 	if (copy_hugepages_to_shared_mem(hugepage, nr_hugefiles,
 			tmp_hp, nr_hugefiles) < 0) {
 		RTE_LOG(ERR, EAL, "Copying tables to shared memory failed!\n");
+		goto fail;
+	}
+
+	/* free the hugepage backing files */
+	if (internal_config.hugepage_unlink &&
+		unlink_hugepage_files(tmp_hp, internal_config.num_hugepage_sizes) < 0) {
+		RTE_LOG(ERR, EAL, "Unlinking hugepage files failed!\n");
 		goto fail;
 	}
 
@@ -1339,7 +1406,7 @@ rte_eal_hugepage_init(void)
 			"of memory.\n",
 			i, nr_hugefiles, RTE_STR(CONFIG_RTE_MAX_MEMSEG),
 			RTE_MAX_MEMSEG);
-		return (-ENOMEM);
+		return -ENOMEM;
 	}
 
 	return 0;
@@ -1368,7 +1435,7 @@ getFileSize(int fd)
  * configuration and finds the hugepages which form that segment, mapping them
  * in order to form a contiguous block in the virtual memory space
  */
-static int
+int
 rte_eal_hugepage_attach(void)
 {
 	const struct rte_mem_config *mcfg = rte_eal_get_configuration()->mem_config;
@@ -1384,6 +1451,8 @@ rte_eal_hugepage_attach(void)
 		RTE_LOG(WARNING, EAL, "   This may cause issues with mapping memory "
 				"into secondary processes\n");
 	}
+
+	test_proc_pagemap_readable();
 
 	if (internal_config.xen_dom0_support) {
 #ifdef RTE_LIBRTE_XEN_DOM0
@@ -1527,37 +1596,4 @@ error:
 	if (fd_hugepage >= 0)
 		close(fd_hugepage);
 	return -1;
-}
-
-static int
-rte_eal_memdevice_init(void)
-{
-	struct rte_config *config;
-
-	if (rte_eal_process_type() == RTE_PROC_SECONDARY)
-		return 0;
-
-	config = rte_eal_get_configuration();
-	config->mem_config->nchannel = internal_config.force_nchannel;
-	config->mem_config->nrank = internal_config.force_nrank;
-
-	return 0;
-}
-
-
-/* init memory subsystem */
-int
-rte_eal_memory_init(void)
-{
-	RTE_LOG(INFO, EAL, "Setting up memory...\n");
-	const int retval = rte_eal_process_type() == RTE_PROC_PRIMARY ?
-			rte_eal_hugepage_init() :
-			rte_eal_hugepage_attach();
-	if (retval < 0)
-		return -1;
-
-	if (internal_config.no_shconf == 0 && rte_eal_memdevice_init() < 0)
-		return -1;
-
-	return 0;
 }

@@ -343,11 +343,8 @@ stats_display(uint8_t port_id)
 	printf("  RX-packets: %-10"PRIu64" RX-missed: %-10"PRIu64" RX-bytes:  "
 	       "%-"PRIu64"\n",
 	       stats.ipackets, stats.imissed, stats.ibytes);
-	printf("  RX-badcrc:  %-10"PRIu64" RX-badlen: %-10"PRIu64" RX-errors: "
-	       "%-"PRIu64"\n",
-	       stats.ibadcrc, stats.ibadlen, stats.ierrors);
-	printf("  RX-nombuf:  %-10"PRIu64"\n",
-	       stats.rx_nombuf);
+	printf("  RX-errors: %-10"PRIu64" RX-nombuf:  %-10"PRIu64"\n",
+	       stats.ierrors, stats.rx_nombuf);
 	printf("  TX-packets: %-10"PRIu64" TX-errors: %-10"PRIu64" TX-bytes:  "
 	       "%-"PRIu64"\n",
 	       stats.opackets, stats.oerrors, stats.obytes);
@@ -629,7 +626,10 @@ timeout:
 
 	rte_free(pkts_burst);
 
-	return diff_tsc / total;
+	if (total > 0)
+		return diff_tsc / total;
+	else
+		return -1;
 }
 
 static int
@@ -676,8 +676,10 @@ exec_burst(uint32_t flags, int lcore)
 
 	/* wait for polling finished */
 	diff_tsc = rte_eal_wait_lcore(lcore);
-	if (diff_tsc < 0)
+	if (diff_tsc < 0) {
+		printf("exec_burst: Failed to measure cycles per packet\n");
 		return -1;
+	}
 
 	printf("Result: %d cycles per packet\n", diff_tsc);
 
@@ -814,7 +816,8 @@ test_pmd_perf(void)
 			return -1;
 	} else if (sc_flag == SC_BURST_POLL_FIRST ||
 		   sc_flag == SC_BURST_XMIT_FIRST)
-		exec_burst(sc_flag, slave_id);
+		if (exec_burst(sc_flag, slave_id) < 0)
+			return -1;
 
 	/* port tear down */
 	for (portid = 0; portid < nb_ports; portid++) {
@@ -841,10 +844,10 @@ test_set_rxtx_conf(cmdline_fixed_string_t mode)
 		port_conf.rxmode.enable_scatter = 0;
 		return 0;
 	} else if (!strcmp(mode, "scalar")) {
-		/* bulk alloc rx, simple tx */
-		tx_conf.txq_flags = 0xf01;
-		tx_conf.tx_rs_thresh = 128;
-		tx_conf.tx_free_thresh = 128;
+		/* bulk alloc rx, full-featured tx */
+		tx_conf.txq_flags = 0;
+		tx_conf.tx_rs_thresh = 32;
+		tx_conf.tx_free_thresh = 32;
 		port_conf.rxmode.hw_ip_checksum = 1;
 		port_conf.rxmode.enable_scatter = 0;
 		return 0;

@@ -61,31 +61,24 @@
 
 static const char sys_dir_path[] = "/sys/kernel/mm/hugepages";
 
-static int32_t
+/* this function is only called from eal_hugepage_info_init which itself
+ * is only called from a primary process */
+static uint32_t
 get_num_hugepages(const char *subdir)
 {
 	char path[PATH_MAX];
 	long unsigned resv_pages, num_pages = 0;
-	const char *nr_hp_file;
+	const char *nr_hp_file = "free_hugepages";
 	const char *nr_rsvd_file = "resv_hugepages";
 
 	/* first, check how many reserved pages kernel reports */
 	snprintf(path, sizeof(path), "%s/%s/%s",
 			sys_dir_path, subdir, nr_rsvd_file);
-
 	if (eal_parse_sysfs_value(path, &resv_pages) < 0)
 		return 0;
 
-	/* if secondary process, just look at the number of hugepages,
-	 * otherwise look at number of free hugepages */
-	if (internal_config.process_type == RTE_PROC_SECONDARY)
-		nr_hp_file = "nr_hugepages";
-	else
-		nr_hp_file = "free_hugepages";
-
 	snprintf(path, sizeof(path), "%s/%s/%s",
 			sys_dir_path, subdir, nr_hp_file);
-
 	if (eal_parse_sysfs_value(path, &num_pages) < 0)
 		return 0;
 
@@ -93,11 +86,18 @@ get_num_hugepages(const char *subdir)
 		RTE_LOG(WARNING, EAL, "No free hugepages reported in %s\n",
 				subdir);
 
-	/* adjust num_pages in case of primary process */
-	if (num_pages > 0 && internal_config.process_type == RTE_PROC_PRIMARY)
+	/* adjust num_pages */
+	if (num_pages >= resv_pages)
 		num_pages -= resv_pages;
+	else if (resv_pages)
+		num_pages = 0;
 
-	return (int32_t)num_pages;
+	/* we want to return a uint32_t and more than this looks suspicious
+	 * anyway ... */
+	if (num_pages > UINT32_MAX)
+		num_pages = UINT32_MAX;
+
+	return num_pages;
 }
 
 static uint64_t
@@ -189,15 +189,6 @@ get_hugepage_dir(uint64_t hugepage_sz)
 	return retval;
 }
 
-static inline void
-swap_hpi(struct hugepage_info *a, struct hugepage_info *b)
-{
-	char buf[sizeof(*a)];
-	memcpy(buf, a, sizeof(buf));
-	memcpy(a, b, sizeof(buf));
-	memcpy(b, buf, sizeof(buf));
-}
-
 /*
  * Clear the hugepage directory of whatever hugepage files
  * there are. Checks if the file is locked (i.e.
@@ -214,7 +205,7 @@ clear_hugedir(const char * hugedir)
 	/* open directory */
 	dir = opendir(hugedir);
 	if (!dir) {
-		RTE_LOG(INFO, EAL, "Unable to open hugepage directory %s\n",
+		RTE_LOG(ERR, EAL, "Unable to open hugepage directory %s\n",
 				hugedir);
 		goto error;
 	}
@@ -222,7 +213,7 @@ clear_hugedir(const char * hugedir)
 
 	dirent = readdir(dir);
 	if (!dirent) {
-		RTE_LOG(INFO, EAL, "Unable to read hugepage directory %s\n",
+		RTE_LOG(ERR, EAL, "Unable to read hugepage directory %s\n",
 				hugedir);
 		goto error;
 	}
@@ -262,10 +253,19 @@ error:
 	if (dir)
 		closedir(dir);
 
-	RTE_LOG(INFO, EAL, "Error while clearing hugepage dir: %s\n",
+	RTE_LOG(ERR, EAL, "Error while clearing hugepage dir: %s\n",
 		strerror(errno));
 
 	return -1;
+}
+
+static int
+compare_hpi(const void *a, const void *b)
+{
+	const struct hugepage_info *hpi_a = a;
+	const struct hugepage_info *hpi_b = b;
+
+	return hpi_b->hugepage_sz - hpi_a->hugepage_sz;
 }
 
 /*
@@ -279,76 +279,85 @@ eal_hugepage_info_init(void)
 	const char dirent_start_text[] = "hugepages-";
 	const size_t dirent_start_len = sizeof(dirent_start_text) - 1;
 	unsigned i, num_sizes = 0;
+	DIR *dir;
+	struct dirent *dirent;
 
-	DIR *dir = opendir(sys_dir_path);
+	dir = opendir(sys_dir_path);
 	if (dir == NULL)
-		rte_panic("Cannot open directory %s to read system hugepage info\n",
-				sys_dir_path);
+		rte_panic("Cannot open directory %s to read system hugepage "
+			  "info\n", sys_dir_path);
 
-	struct dirent *dirent = readdir(dir);
-	while(dirent != NULL){
-		if (strncmp(dirent->d_name, dirent_start_text, dirent_start_len) == 0){
-			struct hugepage_info *hpi = \
-					&internal_config.hugepage_info[num_sizes];
-			hpi->hugepage_sz = rte_str_to_size(&dirent->d_name[dirent_start_len]);
-			hpi->hugedir = get_hugepage_dir(hpi->hugepage_sz);
+	for (dirent = readdir(dir); dirent != NULL; dirent = readdir(dir)) {
+		struct hugepage_info *hpi;
 
-			/* first, check if we have a mountpoint */
-			if (hpi->hugedir == NULL){
-				int32_t num_pages;
-				if ((num_pages = get_num_hugepages(dirent->d_name)) > 0)
-					RTE_LOG(INFO, EAL, "%u hugepages of size %llu reserved, "\
-							"but no mounted hugetlbfs found for that size\n",
-							(unsigned)num_pages,
-							(unsigned long long)hpi->hugepage_sz);
-			} else {
-				/* try to obtain a writelock */
-				hpi->lock_descriptor = open(hpi->hugedir, O_RDONLY);
+		if (strncmp(dirent->d_name, dirent_start_text,
+			    dirent_start_len) != 0)
+			continue;
 
-				/* if blocking lock failed */
-				if (flock(hpi->lock_descriptor, LOCK_EX) == -1) {
-					RTE_LOG(CRIT, EAL, "Failed to lock hugepage directory!\n");
-					closedir(dir);
-					return -1;
-				}
-				/* clear out the hugepages dir from unused pages */
-				if (clear_hugedir(hpi->hugedir) == -1) {
-					closedir(dir);
-					return -1;
-				}
+		if (num_sizes >= MAX_HUGEPAGE_SIZES)
+			break;
 
-				/* for now, put all pages into socket 0,
-				 * later they will be sorted */
-				hpi->num_pages[0] = get_num_hugepages(dirent->d_name);
+		hpi = &internal_config.hugepage_info[num_sizes];
+		hpi->hugepage_sz =
+			rte_str_to_size(&dirent->d_name[dirent_start_len]);
+		hpi->hugedir = get_hugepage_dir(hpi->hugepage_sz);
+
+		/* first, check if we have a mountpoint */
+		if (hpi->hugedir == NULL) {
+			uint32_t num_pages;
+
+			num_pages = get_num_hugepages(dirent->d_name);
+			if (num_pages > 0)
+				RTE_LOG(NOTICE, EAL,
+					"%" PRIu32 " hugepages of size "
+					"%" PRIu64 " reserved, but no mounted "
+					"hugetlbfs found for that size\n",
+					num_pages, hpi->hugepage_sz);
+			continue;
+		}
+
+		/* try to obtain a writelock */
+		hpi->lock_descriptor = open(hpi->hugedir, O_RDONLY);
+
+		/* if blocking lock failed */
+		if (flock(hpi->lock_descriptor, LOCK_EX) == -1) {
+			RTE_LOG(CRIT, EAL,
+				"Failed to lock hugepage directory!\n");
+			break;
+		}
+		/* clear out the hugepages dir from unused pages */
+		if (clear_hugedir(hpi->hugedir) == -1)
+			break;
+
+		/* for now, put all pages into socket 0,
+		 * later they will be sorted */
+		hpi->num_pages[0] = get_num_hugepages(dirent->d_name);
 
 #ifndef RTE_ARCH_64
-				/* for 32-bit systems, limit number of hugepages to 1GB per page size */
-				hpi->num_pages[0] = RTE_MIN(hpi->num_pages[0],
-						RTE_PGSIZE_1G / hpi->hugepage_sz);
+		/* for 32-bit systems, limit number of hugepages to
+		 * 1GB per page size */
+		hpi->num_pages[0] = RTE_MIN(hpi->num_pages[0],
+					    RTE_PGSIZE_1G / hpi->hugepage_sz);
 #endif
 
-				num_sizes++;
-			}
-		}
-		dirent = readdir(dir);
+		num_sizes++;
 	}
 	closedir(dir);
+
+	/* something went wrong, and we broke from the for loop above */
+	if (dirent != NULL)
+		return -1;
+
 	internal_config.num_hugepage_sizes = num_sizes;
 
 	/* sort the page directory entries by size, largest to smallest */
-	for (i = 0; i < num_sizes; i++){
-		unsigned j;
-		for (j = i+1; j < num_sizes; j++)
-			if (internal_config.hugepage_info[j-1].hugepage_sz < \
-					internal_config.hugepage_info[j].hugepage_sz)
-				swap_hpi(&internal_config.hugepage_info[j-1],
-						&internal_config.hugepage_info[j]);
-	}
+	qsort(&internal_config.hugepage_info[0], num_sizes,
+	      sizeof(internal_config.hugepage_info[0]), compare_hpi);
 
 	/* now we have all info, check we have at least one valid size */
 	for (i = 0; i < num_sizes; i++)
 		if (internal_config.hugepage_info[i].hugedir != NULL &&
-				internal_config.hugepage_info[i].num_pages[0] > 0)
+		    internal_config.hugepage_info[i].num_pages[0] > 0)
 			return 0;
 
 	/* no valid hugepage mounts available, return error */

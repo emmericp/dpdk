@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
+ *   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -31,135 +31,34 @@
  *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <stdint.h>
-#include <inttypes.h>
-#include <sys/types.h>
-#include <string.h>
-#include <sys/queue.h>
-#include <stdarg.h>
-#include <errno.h>
-#include <getopt.h>
-#include <unistd.h>
+#include "app.h"
 
-#include <rte_common.h>
-#include <rte_byteorder.h>
-#include <rte_log.h>
-#include <rte_memory.h>
-#include <rte_memcpy.h>
-#include <rte_memzone.h>
-#include <rte_eal.h>
-#include <rte_per_lcore.h>
-#include <rte_launch.h>
-#include <rte_atomic.h>
-#include <rte_cycles.h>
-#include <rte_prefetch.h>
-#include <rte_lcore.h>
-#include <rte_per_lcore.h>
-#include <rte_branch_prediction.h>
-#include <rte_interrupts.h>
-#include <rte_pci.h>
-#include <rte_random.h>
-#include <rte_debug.h>
-#include <rte_ether.h>
-#include <rte_ethdev.h>
-#include <rte_ring.h>
-#include <rte_mempool.h>
-#include <rte_mbuf.h>
-#include <rte_ip.h>
-#include <rte_tcp.h>
-#include <rte_lpm.h>
-#include <rte_lpm6.h>
-
-#include "main.h"
+static struct app_params app;
 
 int
 main(int argc, char **argv)
 {
-	int ret;
+	rte_openlog_stream(stderr);
 
-	/* Init EAL */
-	ret = rte_eal_init(argc, argv);
-	if (ret < 0)
-		return -1;
-	argc -= ret;
-	argv += ret;
+	/* Config */
+	app_config_init(&app);
 
-	/* Parse application arguments (after the EAL ones) */
-	ret = app_parse_args(argc, argv);
-	if (ret < 0) {
-		app_print_usage(argv[0]);
-		return -1;
-	}
+	app_config_args(&app, argc, argv);
+
+	app_config_preproc(&app);
+
+	app_config_parse(&app, app.parser_file);
+
+	app_config_check(&app);
 
 	/* Init */
-	app_init();
+	app_init(&app);
 
-	/* Launch per-lcore init on every lcore */
-	rte_eal_mp_remote_launch(app_lcore_main_loop, NULL, CALL_MASTER);
+	/* Run-time */
+	rte_eal_mp_remote_launch(
+		app_thread,
+		(void *) &app,
+		CALL_MASTER);
 
 	return 0;
-}
-
-int
-app_lcore_main_loop(__attribute__((unused)) void *arg)
-{
-	uint32_t core_id, i;
-
-	core_id = rte_lcore_id();
-
-	for (i = 0; i < app.n_cores; i++) {
-		struct app_core_params *p = &app.cores[i];
-
-		if (p->core_id != core_id)
-			continue;
-
-		switch (p->core_type) {
-		case APP_CORE_MASTER:
-			app_ping();
-			app_main_loop_cmdline();
-			return 0;
-		case APP_CORE_RX:
-			app_main_loop_pipeline_rx();
-			/* app_main_loop_rx(); */
-			return 0;
-		case APP_CORE_TX:
-			app_main_loop_pipeline_tx();
-			/* app_main_loop_tx(); */
-			return 0;
-		case APP_CORE_PT:
-			/* app_main_loop_pipeline_passthrough(); */
-			app_main_loop_passthrough();
-			return 0;
-		case APP_CORE_FC:
-			app_main_loop_pipeline_flow_classification();
-			return 0;
-		case APP_CORE_FW:
-		case APP_CORE_RT:
-			app_main_loop_pipeline_routing();
-			return 0;
-
-#ifdef RTE_LIBRTE_ACL
-			app_main_loop_pipeline_firewall();
-			return 0;
-#else
-			rte_exit(EXIT_FAILURE, "ACL not present in build\n");
-#endif
-
-		case APP_CORE_IPV4_FRAG:
-			app_main_loop_pipeline_ipv4_frag();
-			return 0;
-		case APP_CORE_IPV4_RAS:
-			app_main_loop_pipeline_ipv4_ras();
-			return 0;
-
-		default:
-			rte_panic("%s: Invalid core type for core %u\n",
-				__func__, i);
-		}
-	}
-
-	rte_panic("%s: Algorithmic error\n", __func__);
-	return -1;
 }

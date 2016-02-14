@@ -2250,8 +2250,14 @@ static int igb_ndo_bridge_setlink(struct net_device *dev,
 }
 
 #ifdef HAVE_BRIDGE_FILTER
+#ifdef HAVE_NDO_BRIDGE_GETLINK_NLFLAGS
+static int igb_ndo_bridge_getlink(struct sk_buff *skb, u32 pid, u32 seq,
+				  struct net_device *dev, u32 filter_mask,
+				  int nlflags)
+#else
 static int igb_ndo_bridge_getlink(struct sk_buff *skb, u32 pid, u32 seq,
 				  struct net_device *dev, u32 filter_mask)
+#endif /* HAVE_NDO_BRIDGE_GETLINK_NLFLAGS */
 #else
 static int igb_ndo_bridge_getlink(struct sk_buff *skb, u32 pid, u32 seq,
 				  struct net_device *dev)
@@ -2268,11 +2274,20 @@ static int igb_ndo_bridge_getlink(struct sk_buff *skb, u32 pid, u32 seq,
 	else
 		mode = BRIDGE_MODE_VEPA;
 
-#ifdef HAVE_NDO_FDB_ADD_VID
+#ifdef HAVE_NDO_DFLT_BRIDGE_ADD_MASK
+#ifdef HAVE_NDO_BRIDGE_GETLINK_NLFLAGS
+#ifdef HAVE_NDO_BRIDGE_GETLINK_FILTER_MASK_VLAN_FILL
+	return ndo_dflt_bridge_getlink(skb, pid, seq, dev, mode, 0, 0,
+				nlflags, filter_mask, NULL);
+#else
+	return ndo_dflt_bridge_getlink(skb, pid, seq, dev, mode, 0, 0, nlflags);
+#endif /* HAVE_NDO_BRIDGE_GETLINK_FILTER_MASK_VLAN_FILL */
+#else
 	return ndo_dflt_bridge_getlink(skb, pid, seq, dev, mode, 0, 0);
+#endif /* HAVE_NDO_BRIDGE_GETLINK_NLFLAGS */
 #else
 	return ndo_dflt_bridge_getlink(skb, pid, seq, dev, mode);
-#endif /* HAVE_NDO_FDB_ADD_VID */
+#endif /* HAVE_NDO_DFLT_BRIDGE_ADD_MASK */
 }
 #endif /* HAVE_BRIDGE_ATTRIBS */
 #endif /* NTF_SELF */
@@ -3168,8 +3183,8 @@ static int igb_sw_init(struct igb_adapter *adapter)
 				     GFP_ATOMIC);
 
 	/* Setup and initialize a copy of the hw vlan table array */
-	adapter->shadow_vfta = (u32 *)kzalloc(sizeof(u32) * E1000_VFTA_ENTRIES,
-					GFP_ATOMIC);
+	adapter->shadow_vfta = kzalloc(sizeof(u32) * E1000_VFTA_ENTRIES,
+				       GFP_ATOMIC);
 #ifdef NO_KNI
 	/* These calls may decrease the number of queues */
 	if (hw->mac.type < e1000_i210) {
@@ -9500,7 +9515,7 @@ static void igb_vmm_control(struct igb_adapter *adapter)
 	}
 
 		/* enable replication and loopback support */
- 		count = adapter->vfs_allocated_count || adapter->vmdq_pools;
+		count = adapter->vfs_allocated_count || adapter->vmdq_pools;
 		if (adapter->flags & IGB_FLAG_LOOPBACK_ENABLE && count)
 			e1000_vmdq_set_loopback_pf(hw, 1);
 		e1000_vmdq_set_anti_spoofing_pf(hw,

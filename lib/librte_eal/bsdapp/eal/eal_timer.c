@@ -55,29 +55,12 @@
 
 enum timer_source eal_timer_source = EAL_TIMER_TSC;
 
-/* The frequency of the RDTSC timer resolution */
-static uint64_t eal_tsc_resolution_hz = 0;
-
-void
-rte_delay_us(unsigned us)
-{
-	const uint64_t start = rte_get_timer_cycles();
-	const uint64_t ticks = (uint64_t)us * rte_get_timer_hz() / 1E6;
-	while ((rte_get_timer_cycles() - start) < ticks)
-		rte_pause();
-}
-
 uint64_t
-rte_get_tsc_hz(void)
-{
-	return eal_tsc_resolution_hz;
-}
-
-static int
-set_tsc_freq_from_sysctl(void)
+get_tsc_freq(void)
 {
 	size_t sz;
 	int tmp;
+	uint64_t tsc_hz;
 
 	sz = sizeof(tmp);
 	tmp = 0;
@@ -94,42 +77,13 @@ set_tsc_freq_from_sysctl(void)
 	else if (tmp != 1)
 		RTE_LOG(WARNING, EAL, "TSC is not invariant\n");
 
-	sz = sizeof(eal_tsc_resolution_hz);
-	if (sysctlbyname("machdep.tsc_freq", &eal_tsc_resolution_hz, &sz, NULL, 0)) {
+	sz = sizeof(tsc_hz);
+	if (sysctlbyname("machdep.tsc_freq", &tsc_hz, &sz, NULL, 0)) {
 		RTE_LOG(WARNING, EAL, "%s\n", strerror(errno));
-		return -1;
+		return 0;
 	}
 
-	return 0;
-}
-
-static void
-set_tsc_freq_fallback(void)
-{
-	RTE_LOG(WARNING, EAL, "WARNING: clock_gettime cannot use "
-			"CLOCK_MONOTONIC_RAW and HPET is not available"
-			" - clock timings may be less accurate.\n");
-	/* assume that the sleep(1) will sleep for 1 second */
-	uint64_t start = rte_rdtsc();
-	sleep(1);
-	eal_tsc_resolution_hz = rte_rdtsc() - start;
-}
-
-/*
- * This function measures the TSC frequency. It uses a variety of approaches.
- *
- * 1. Read the TSC frequency value provided by the kernel
- * 2. If above does not work, just sleep for 1 second and tune off that,
- *    printing a warning about inaccuracy of timing
- */
-static void
-set_tsc_freq(void)
-{
-	if (set_tsc_freq_from_sysctl() < 0)
-		set_tsc_freq_fallback();
-
-	RTE_LOG(INFO, EAL, "TSC frequency is ~%"PRIu64" KHz\n",
-			eal_tsc_resolution_hz/1000);
+	return tsc_hz;
 }
 
 int

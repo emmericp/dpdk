@@ -55,6 +55,9 @@ __FBSDID("$FreeBSD$");
 
 #define MAX_BARS (PCIR_MAX_BAR_0 + 1)
 
+#define MAX_DETACHED_DEVICES	128
+static device_t detached_devices[MAX_DETACHED_DEVICES] = {};
+static int num_detached = 0;
 
 struct nic_uio_softc {
 	device_t        dev_t;
@@ -103,24 +106,6 @@ struct pci_bdf {
 	uint32_t function;
 };
 
-
-#define RTE_PCI_DEV_ID_DECL_EM(vend, dev)      {vend, dev},
-#define RTE_PCI_DEV_ID_DECL_IGB(vend, dev)     {vend, dev},
-#define RTE_PCI_DEV_ID_DECL_IGBVF(vend, dev)   {vend, dev},
-#define RTE_PCI_DEV_ID_DECL_IXGBE(vend, dev)   {vend, dev},
-#define RTE_PCI_DEV_ID_DECL_IXGBEVF(vend, dev) {vend, dev},
-#define RTE_PCI_DEV_ID_DECL_I40E(vend, dev)    {vend, dev},
-#define RTE_PCI_DEV_ID_DECL_I40EVF(vend, dev)  {vend, dev},
-#define RTE_PCI_DEV_ID_DECL_VIRTIO(vend, dev)  {vend, dev},
-#define RTE_PCI_DEV_ID_DECL_VMXNET3(vend, dev) {vend, dev},
-#define RTE_PCI_DEV_ID_DECL_ENIC(vend, dev)    {vend, dev},
-
-const struct device devices[] = {
-#include <rte_pci_dev_ids.h>
-};
-#define NUM_DEVICES (sizeof(devices)/sizeof(devices[0]))
-
-
 static devclass_t nic_uio_devclass;
 
 DEFINE_CLASS_0(nic_uio, nic_uio_driver, nic_uio_methods, sizeof(struct nic_uio_softc));
@@ -131,7 +116,7 @@ nic_uio_mmap(struct cdev *cdev, vm_ooffset_t offset, vm_paddr_t *paddr,
 		int prot, vm_memattr_t *memattr)
 {
 	*paddr = offset;
-	return (0);
+	return 0;
 }
 
 static int
@@ -191,16 +176,19 @@ static int
 nic_uio_probe (device_t dev)
 {
 	int i;
+	unsigned int bus = pci_get_bus(dev);
+	unsigned int device = pci_get_slot(dev);
+	unsigned int function = pci_get_function(dev);
 
-	for (i = 0; i < NUM_DEVICES; i++)
-		if (pci_get_vendor(dev) == devices[i].vend &&
-			pci_get_device(dev) == devices[i].dev) {
-
-			device_set_desc(dev, "Intel(R) DPDK PCI Device");
-			return (BUS_PROBE_SPECIFIC);
+	for (i = 0; i < num_detached; i++)
+		if (bus == pci_get_bus(detached_devices[i]) &&
+		    device == pci_get_slot(detached_devices[i]) &&
+		    function == pci_get_function(detached_devices[i])) {
+			device_set_desc(dev, "DPDK PCI Device");
+			return BUS_PROBE_SPECIFIC;
 		}
 
-	return (ENXIO);
+	return ENXIO;
 }
 
 static int
@@ -253,7 +241,6 @@ static void
 nic_uio_load(void)
 {
 	uint32_t bus, device, function;
-	int i;
 	device_t dev;
 	char bdf_str[256];
 	char *token, *remaining;
@@ -289,23 +276,41 @@ nic_uio_load(void)
 		function = strtol(token, NULL, 10);
 
 		dev = pci_find_bsf(bus, device, function);
-		if (dev != NULL)
-			for (i = 0; i < NUM_DEVICES; i++)
-				if (pci_get_vendor(dev) == devices[i].vend &&
-						pci_get_device(dev) == devices[i].dev)
-							device_detach(dev);
+		if (dev == NULL)
+			continue;
+
+		if (num_detached < MAX_DETACHED_DEVICES) {
+			printf("nic_uio_load: detaching and storing dev=%p\n",
+			       dev);
+			detached_devices[num_detached++] = dev;
+		} else {
+			printf("nic_uio_load: reached MAX_DETACHED_DEVICES=%d. dev=%p won't be reattached\n",
+			       MAX_DETACHED_DEVICES, dev);
+		}
+		device_detach(dev);
 	}
 }
 
 static void
 nic_uio_unload(void)
 {
+	int i;
+	printf("nic_uio_unload: entered...\n");
+
+	for (i = 0; i < num_detached; i++) {
+		printf("nic_uio_unload: calling to device_probe_and_attach for dev=%p...\n",
+			detached_devices[i]);
+		device_probe_and_attach(detached_devices[i]);
+		printf("nic_uio_unload: done.\n");
+	}
+
+	printf("nic_uio_unload: leaving...\n");
 }
 
 static int
 nic_uio_shutdown(void)
 {
-	return (0);
+	return 0;
 }
 
 static int
@@ -326,5 +331,5 @@ nic_uio_modevent(module_t mod, int type, void *arg)
 		break;
 	}
 
-	return (0);
+	return 0;
 }

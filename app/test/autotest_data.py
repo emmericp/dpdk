@@ -43,11 +43,10 @@ def num_sockets():
 		return 1
 	return result
 
-# spread given number for all sockets
-# e.g. 32 becomes 16,16 or 8,8,8,8 etc.
-def all_sockets(num):
-	mem_per_socket = num / num_sockets()
-	return ",".join([str(mem_per_socket)] * num_sockets())
+# Assign given number to each socket
+# e.g. 32 becomes 32,32 or 32,32,32,32
+def per_sockets(num):
+    return ",".join([str(num)] * num_sockets())
 
 # groups of tests that can be run in parallel
 # the grouping has been found largely empirically
@@ -55,8 +54,8 @@ parallel_test_group_list = [
 
 {
 	"Prefix":	"group_1",
-	"Memory" :	all_sockets(8),
-	"Tests" :	
+	"Memory" :	per_sockets(8),
+	"Tests" :
 	[
 		{
 		 "Name" :	"Timer autotest",
@@ -69,7 +68,7 @@ parallel_test_group_list = [
 		 "Command" : 	"debug_autotest",
 		 "Func" :	default_autotest,
 		 "Report" :	None,
-		},	
+		},
 		{
 		 "Name" :	"Errno autotest",
 		 "Command" : 	"errno_autotest",
@@ -87,7 +86,7 @@ parallel_test_group_list = [
 		 "Command" : 	"common_autotest",
 		 "Func" :	default_autotest,
 		 "Report" :	None,
-		},	
+		},
 		{
 		 "Name" :	"Dump log history",
 		 "Command" :	"dump_log_history",
@@ -110,8 +109,8 @@ parallel_test_group_list = [
 },
 {
 	"Prefix":	"group_2",
-	"Memory" :	"32",
-	"Tests" :	
+	"Memory" :	"64",
+	"Tests" :
 	[
 		{
 		 "Name" :	"Memory autotest",
@@ -165,8 +164,8 @@ parallel_test_group_list = [
 },
 {
 	"Prefix":	"group_3",
-	"Memory" :	all_sockets(1024),
-	"Tests" :	
+	"Memory" :	per_sockets(1024),
+	"Tests" :
 	[
 		{
 		 "Name" :	"LPM autotest",
@@ -208,8 +207,8 @@ parallel_test_group_list = [
 },
 {
 	"Prefix":	"group_4",
-	"Memory" :	all_sockets(128),
-	"Tests" :	
+	"Memory" :	per_sockets(128),
+	"Tests" :
 	[
 		{
 		 "Name" :	"PCI autotest",
@@ -251,8 +250,8 @@ parallel_test_group_list = [
 },
 {
 	"Prefix":	"group_5",
-	"Memory" :	"16",
-	"Tests" :	
+	"Memory" :	"32",
+	"Tests" :
 	[
 		{
 		 "Name" :	"Spinlock autotest",
@@ -288,8 +287,8 @@ parallel_test_group_list = [
 },
 {
 	"Prefix":	"group_6",
-	"Memory" :	all_sockets(620),
-	"Tests" :	
+	"Memory" :	per_sockets(620),
+	"Tests" :
 	[
 		{
 		 "Name" :	"Function reentrancy autotest",
@@ -368,8 +367,8 @@ non_parallel_test_group_list = [
 },
 {
 	"Prefix":	"mempool_perf",
-	"Memory" :	all_sockets(256),
-	"Tests" :	
+	"Memory" :	per_sockets(256),
+	"Tests" :
 	[
 		{
 		 "Name" :	"Cycles autotest",
@@ -387,8 +386,8 @@ non_parallel_test_group_list = [
 },
 {
 	"Prefix":	"memcpy_perf",
-	"Memory" :	all_sockets(512),
-	"Tests" :	
+	"Memory" :	per_sockets(512),
+	"Tests" :
 	[
 		{
 		 "Name" :	"Memcpy performance autotest",
@@ -400,8 +399,8 @@ non_parallel_test_group_list = [
 },
 {
 	"Prefix":	"hash_perf",
-	"Memory" :	all_sockets(512),
-	"Tests" :	
+	"Memory" :	per_sockets(512),
+	"Tests" :
 	[
 		{
 		 "Name" :	"Hash performance autotest",
@@ -413,7 +412,7 @@ non_parallel_test_group_list = [
 },
 {
 	"Prefix" :      "power",
-	"Memory" :      all_sockets(512),
+	"Memory" :      per_sockets(512),
 	"Tests" :
 	[
 		{
@@ -426,7 +425,7 @@ non_parallel_test_group_list = [
 },
 {
 	"Prefix" :      "power_acpi_cpufreq",
-	"Memory" :      all_sockets(512),
+	"Memory" :      per_sockets(512),
 	"Tests" :
 	[
 		{
@@ -465,8 +464,8 @@ non_parallel_test_group_list = [
 },
 {
 	"Prefix":	"timer_perf",
-	"Memory" :	all_sockets(512),
-	"Tests" :	
+	"Memory" :	per_sockets(512),
+	"Tests" :
 	[
 		{
 		 "Name" :	"Timer performance autotest",
@@ -476,14 +475,14 @@ non_parallel_test_group_list = [
 		},
 	]
 },
-							
+
 #
 # Please always make sure that ring_perf is the last test!
 #
 {
 	"Prefix":	"ring_perf",
-	"Memory" :	all_sockets(512),
-	"Tests" :	
+	"Memory" :	per_sockets(512),
+	"Tests" :
 	[
 		{
 		 "Name" :	"Ring performance autotest",

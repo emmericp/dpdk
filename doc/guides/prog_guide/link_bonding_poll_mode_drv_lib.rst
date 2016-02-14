@@ -1,5 +1,5 @@
 ..  BSD LICENSE
-    Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
+    Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -35,7 +35,10 @@ In addition to Poll Mode Drivers (PMDs) for physical and virtual hardware,
 DPDK also includes a pure-software library that
 allows physical PMD's to be bonded together to create a single logical PMD.
 
-|bond-overview|
+.. figure:: img/bond-overview.*
+
+   Bonded PMDs
+
 
 The Link Bonding PMD library(librte_pmd_bond) supports bonding of groups of
 ``rte_eth_dev`` ports of the same speed and duplex to provide
@@ -62,7 +65,10 @@ Currently the Link Bonding PMD library supports 4 modes of operation:
 
 *   **Round-Robin (Mode 0):**
 
-|bond-mode-0|
+.. figure:: img/bond-mode-0.*
+
+   Round-Robin (Mode 0)
+
 
     This mode provides load balancing and fault tolerance by transmission of
     packets in sequential order from the first available slave device through
@@ -72,7 +78,10 @@ Currently the Link Bonding PMD library supports 4 modes of operation:
 
 *   **Active Backup (Mode 1):**
 
-|bond-mode-1|
+.. figure:: img/bond-mode-1.*
+
+   Active Backup (Mode 1)
+
 
     In this mode only one slave in the bond is active at any time, a different
     slave becomes active if, and only if, the primary active slave fails,
@@ -82,7 +91,10 @@ Currently the Link Bonding PMD library supports 4 modes of operation:
 
 *   **Balance XOR (Mode 2):**
 
-|bond-mode-2|
+.. figure:: img/bond-mode-2.*
+
+   Balance XOR (Mode 2)
+
 
     This mode provides transmit load balancing (based on the selected
     transmission policy) and fault tolerance. The default policy (layer2) uses
@@ -101,14 +113,20 @@ Currently the Link Bonding PMD library supports 4 modes of operation:
 
 *   **Broadcast (Mode 3):**
 
-|bond-mode-3|
+.. figure:: img/bond-mode-3.*
+
+   Broadcast (Mode 3)
+
 
     This mode provides fault tolerance by transmission of packets on all slave
     ports.
 
 *   **Link Aggregation 802.3AD (Mode 4):**
 
-|bond-mode-4|
+.. figure:: img/bond-mode-4.*
+
+   Link Aggregation 802.3AD (Mode 4)
+
 
     This mode provides dynamic link aggregation according to the 802.3ad
     specification. It negotiates and monitors aggregation groups that share the
@@ -128,7 +146,10 @@ Currently the Link Bonding PMD library supports 4 modes of operation:
 
 *   **Transmit Load Balancing (Mode 5):**
 
-|bond-mode-5|
+.. figure:: img/bond-mode-5.*
+
+   Transmit Load Balancing (Mode 5)
+
 
     This mode provides an adaptive transmit load balancing. It dynamically
     changes the transmitting slave, according to the computed load. Statistics
@@ -152,7 +173,28 @@ After a slave device is added to a bonded device slave is stopped using
 ``rte_eth_dev_stop`` and then reconfigured using ``rte_eth_dev_configure``
 the RX and TX queues are also reconfigured using ``rte_eth_tx_queue_setup`` /
 ``rte_eth_rx_queue_setup`` with the parameters use to configure the bonding
-device.
+device. If RSS is enabled for bonding device, this mode is also enabled on new
+slave and configured as well.
+
+Setting up multi-queue mode for bonding device to RSS, makes it fully
+RSS-capable, so all slaves are synchronized with its configuration. This mode is
+intended to provide RSS configuration on slaves transparent for client
+application implementation.
+
+Bonding device stores its own version of RSS settings i.e. RETA, RSS hash
+function and RSS key, used to set up its slaves. That let to define the meaning
+of RSS configuration of bonding device as desired configuration of whole bonding
+(as one unit), without pointing any of slave inside. It is required to ensure
+consistency and made it more error-proof.
+
+RSS hash function set for bonding device, is a maximal set of RSS hash functions
+supported by all bonded slaves. RETA size is a GCD of all its RETA's sizes, so
+it can be easily used as a pattern providing expected behavior, even if slave
+RETAs' sizes are different. If RSS Key is not set for bonded device, it's not
+changed on the slaves and default key for device is used.
+
+All settings are managed through the bonding port API and always are propagated
+in one direction (from bonding to slaves).
 
 Link Status Change Interrupts / Polling
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -167,7 +209,7 @@ conditions are not met. If a user wishes to monitor individual slaves then they
 must register callbacks with that slave directly.
 
 The link bonding library also supports devices which do not implement link
-status change interrupts, this is achieve by polling the devices link status at
+status change interrupts, this is achieved by polling the devices link status at
 a defined period which is set using the ``rte_eth_bond_link_monitoring_set``
 API, the default polling interval is 10ms. When a device is added as a slave to
 a bonding device it is determined using the ``RTE_PCI_DRV_INTR_LSC`` flag
@@ -185,6 +227,15 @@ these parameters.
 
 A bonding device must have a minimum of one slave before the bonding device
 itself can be started.
+
+To use a bonding device dynamic RSS configuration feature effectively, it is
+also required, that all slaves should be RSS-capable and support, at least one
+common hash function available for each of them. Changing RSS key is only
+possible, when all slave devices support the same key size.
+
+To prevent inconsistency on how slaves process packets, once a device is added
+to a bonding device, RSS configuration should be managed through the bonding
+device API, and not directly on the slave.
 
 Like all other PMD, all functions exported by a PMD are lock-free functions
 that are assumed not to be invoked in parallel on different logical cores to
@@ -265,7 +316,7 @@ and UDP protocols for load balancing.
 Using Link Bonding Devices
 --------------------------
 
-The librte_pmd_bond library support two modes of device creation, the libraries
+The librte_pmd_bond library supports two modes of device creation, the libraries
 export full C API or using the EAL command line to statically configure link
 bonding devices at application startup. Using the EAL option it is possible to
 use link bonding functionality transparently without specific knowledge of the
@@ -278,7 +329,7 @@ Using the Poll Mode Driver from an Application
 
 Using the librte_pmd_bond libraries API it is possible to dynamically create
 and manage link bonding device from within any application. Link bonding
-device are created using the ``rte_eth_bond_create`` API which requires a
+devices are created using the ``rte_eth_bond_create`` API which requires a
 unique device name, the link bonding mode to initial the device in and finally
 the socket Id which to allocate the devices resources onto. After successful
 creation of a bonding device it must be configured using the generic Ethernet
@@ -341,7 +392,7 @@ The different options are:
         mode=2
 
 *   slave: Defines the PMD device which will be added as slave to the bonded
-    device. This option can be selected multiple time, for each device to be
+    device. This option can be selected multiple times, for each device to be
     added as a slave. Physical devices should be specified using their PCI
     address, in the format domain:bus:devid.function
 
@@ -433,11 +484,3 @@ Create a bonded device in balance mode with two slaves specified by their PCI ad
 .. code-block:: console
 
     $RTE_TARGET/app/testpmd -c '0xf' -n 4 --vdev 'eth_bond0,mode=2, slave=0000:00a:00.01,slave=0000:004:00.00,xmit_policy=l34' -- --port-topology=chained
-
-.. |bond-overview| image:: img/bond-overview.*
-.. |bond-mode-0| image:: img/bond-mode-0.*
-.. |bond-mode-1| image:: img/bond-mode-1.*
-.. |bond-mode-2| image:: img/bond-mode-2.*
-.. |bond-mode-3| image:: img/bond-mode-3.*
-.. |bond-mode-4| image:: img/bond-mode-4.*
-.. |bond-mode-5| image:: img/bond-mode-5.*

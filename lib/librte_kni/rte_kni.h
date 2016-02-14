@@ -47,6 +47,8 @@
  */
 
 #include <rte_pci.h>
+#include <rte_memory.h>
+#include <rte_mempool.h>
 
 #include <exec-env/rte_kni_common.h>
 
@@ -127,30 +129,6 @@ extern struct rte_kni *rte_kni_alloc(struct rte_mempool *pktmbuf_pool,
 				     struct rte_kni_ops *ops);
 
 /**
- * It create a KNI device for specific port.
- *
- * Note: It is deprecated and just for backward compatibility.
- *
- * @param port_id
- *  Port ID.
- * @param mbuf_size
- *  mbuf size.
- * @param pktmbuf_pool
- *  The mempool for allocting mbufs for packets.
- * @param ops
- *  The pointer to the callbacks for the KNI kernel requests.
- *
- * @return
- *  - The pointer to the context of a KNI interface.
- *  - NULL indicate error.
- */
-extern struct rte_kni *rte_kni_create(uint8_t port_id,
-				      unsigned mbuf_size,
-				      struct rte_mempool *pktmbuf_pool,
-				      struct rte_kni_ops *ops) \
-				      __attribute__ ((deprecated));
-
-/**
  * Release KNI interface according to the context. It will also release the
  * paired KNI interface in kernel space. All processing on the specific KNI
  * context need to be stopped before calling this interface.
@@ -219,21 +197,6 @@ extern unsigned rte_kni_tx_burst(struct rte_kni *kni,
 		struct rte_mbuf **mbufs, unsigned num);
 
 /**
- * Get the port id from KNI interface.
- *
- * Note: It is deprecated and just for backward compatibility.
- *
- * @param kni
- *  The KNI interface context.
- *
- * @return
- *  On success: The port id.
- *  On failure: ~0x0
- */
-extern uint8_t rte_kni_get_port_id(struct rte_kni *kni) \
-				__attribute__ ((deprecated));
-
-/**
  * Get the KNI context of its name.
  *
  * @param name
@@ -246,19 +209,14 @@ extern uint8_t rte_kni_get_port_id(struct rte_kni *kni) \
 extern struct rte_kni *rte_kni_get(const char *name);
 
 /**
- * Get the KNI context of the specific port.
+ * Get the name given to a KNI device
  *
- * Note: It is deprecated and just for backward compatibility.
- *
- * @param port_id
- *  the port id.
- *
+ * @param kni
+ *   The KNI instance to query
  * @return
- *  On success: Pointer to KNI interface.
- *  On failure: NULL
+ *   The pointer to the KNI name
  */
-extern struct rte_kni *rte_kni_info_get(uint8_t port_id) \
-				__attribute__ ((deprecated));
+extern const char *rte_kni_get_name(const struct rte_kni *kni);
 
 /**
  * Register KNI request handling for a specified port,and it can
@@ -289,12 +247,7 @@ extern int rte_kni_register_handlers(struct rte_kni *kni,
 extern int rte_kni_unregister_handlers(struct rte_kni *kni);
 
 /**
- *  close KNI device.
- *
- *  @param void
- *
- *  @return
- *   void
+ *  Close KNI device.
  */
 extern void rte_kni_close(void);
 
@@ -303,4 +256,3 @@ extern void rte_kni_close(void);
 #endif
 
 #endif /* _RTE_KNI_H_ */
-

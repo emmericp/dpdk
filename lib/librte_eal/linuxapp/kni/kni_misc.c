@@ -22,12 +22,16 @@
  *   Intel Corporation
  */
 
+#include <linux/version.h>
 #include <linux/module.h>
 #include <linux/miscdevice.h>
 #include <linux/netdevice.h>
 #include <linux/pci.h>
 #include <linux/kthread.h>
 #include <linux/rwsem.h>
+#include <linux/nsproxy.h>
+#include <net/net_namespace.h>
+#include <net/netns/generic.h>
 
 #include <exec-env/rte_kni_common.h>
 #include "kni_dev.h"
@@ -90,18 +94,70 @@ static unsigned multiple_kthread_on = 0;
 
 #define KNI_DEV_IN_USE_BIT_NUM 0 /* Bit number for device in use */
 
-static volatile unsigned long device_in_use; /* device in use flag */
-static struct task_struct *kni_kthread;
+static int kni_net_id;
 
-/* kni list lock */
-static DECLARE_RWSEM(kni_list_lock);
+struct kni_net {
+	unsigned long device_in_use; /* device in use flag */
+	struct task_struct *kni_kthread;
+	struct rw_semaphore kni_list_lock;
+	struct list_head kni_list_head;
+};
 
-/* kni list */
-static struct list_head kni_list_head = LIST_HEAD_INIT(kni_list_head);
+static int __net_init kni_init_net(struct net *net)
+{
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 32)
+	struct kni_net *knet = net_generic(net, kni_net_id);
+#else
+	struct kni_net *knet;
+	int ret;
+
+	knet = kmalloc(sizeof(struct kni_net), GFP_KERNEL);
+	if (!knet) {
+		ret = -ENOMEM;
+		return ret;
+	}
+#endif /* LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 32) */
+
+	/* Clear the bit of device in use */
+	clear_bit(KNI_DEV_IN_USE_BIT_NUM, &knet->device_in_use);
+
+	init_rwsem(&knet->kni_list_lock);
+	INIT_LIST_HEAD(&knet->kni_list_head);
+
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 32)
+	return 0;
+#else
+	ret = net_assign_generic(net, kni_net_id, knet);
+	if (ret < 0)
+		kfree(knet);
+
+	return ret;
+#endif /* LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 32) */
+}
+
+static void __net_exit kni_exit_net(struct net *net)
+{
+#if LINUX_VERSION_CODE <= KERNEL_VERSION(2, 6, 32)
+	struct kni_net *knet = net_generic(net, kni_net_id);
+
+	kfree(knet);
+#endif /* LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 32) */
+}
+
+static struct pernet_operations kni_net_ops = {
+	.init = kni_init_net,
+	.exit = kni_exit_net,
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 32)
+	.id   = &kni_net_id,
+	.size = sizeof(struct kni_net),
+#endif /* LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 32) */
+};
 
 static int __init
 kni_init(void)
 {
+	int rc;
+
 	KNI_PRINT("######## DPDK kni module loading ########\n");
 
 	if (kni_parse_kthread_mode() < 0) {
@@ -109,13 +165,19 @@ kni_init(void)
 		return -EINVAL;
 	}
 
-	if (misc_register(&kni_misc) != 0) {
-		KNI_ERR("Misc registration failed\n");
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 32)
+	rc = register_pernet_subsys(&kni_net_ops);
+#else
+	rc = register_pernet_gen_subsys(&kni_net_id, &kni_net_ops);
+#endif /* LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 32) */
+	if (rc)
 		return -EPERM;
-	}
 
-	/* Clear the bit of device in use */
-	clear_bit(KNI_DEV_IN_USE_BIT_NUM, &device_in_use);
+	rc = misc_register(&kni_misc);
+	if (rc != 0) {
+		KNI_ERR("Misc registration failed\n");
+		goto out;
+	}
 
 	/* Configure the lo mode according to the input parameter */
 	kni_net_config_lo_mode(lo_mode);
@@ -123,12 +185,25 @@ kni_init(void)
 	KNI_PRINT("######## DPDK kni module loaded  ########\n");
 
 	return 0;
+
+out:
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 32)
+	unregister_pernet_subsys(&kni_net_ops);
+#else
+	register_pernet_gen_subsys(&kni_net_id, &kni_net_ops);
+#endif /* LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 32) */
+	return rc;
 }
 
 static void __exit
 kni_exit(void)
 {
 	misc_deregister(&kni_misc);
+#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 32)
+	unregister_pernet_subsys(&kni_net_ops);
+#else
+	register_pernet_gen_subsys(&kni_net_id, &kni_net_ops);
+#endif /* LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 32) */
 	KNI_PRINT("####### DPDK kni module unloaded  #######\n");
 }
 
@@ -151,23 +226,27 @@ kni_parse_kthread_mode(void)
 static int
 kni_open(struct inode *inode, struct file *file)
 {
-	/* kni device can be opened by one user only, test and set bit */
-	if (test_and_set_bit(KNI_DEV_IN_USE_BIT_NUM, &device_in_use))
+	struct net *net = current->nsproxy->net_ns;
+	struct kni_net *knet = net_generic(net, kni_net_id);
+
+	/* kni device can be opened by one user only per netns */
+	if (test_and_set_bit(KNI_DEV_IN_USE_BIT_NUM, &knet->device_in_use))
 		return -EBUSY;
 
 	/* Create kernel thread for single mode */
 	if (multiple_kthread_on == 0) {
 		KNI_PRINT("Single kernel thread for all KNI devices\n");
 		/* Create kernel thread for RX */
-		kni_kthread = kthread_run(kni_thread_single, NULL,
+		knet->kni_kthread = kthread_run(kni_thread_single, (void *)knet,
 						"kni_single");
-		if (IS_ERR(kni_kthread)) {
+		if (IS_ERR(knet->kni_kthread)) {
 			KNI_ERR("Unable to create kernel threaed\n");
-			return PTR_ERR(kni_kthread);
+			return PTR_ERR(knet->kni_kthread);
 		}
 	} else
 		KNI_PRINT("Multiple kernel thread mode enabled\n");
 
+	file->private_data = get_net(net);
 	KNI_PRINT("/dev/kni opened\n");
 
 	return 0;
@@ -176,17 +255,19 @@ kni_open(struct inode *inode, struct file *file)
 static int
 kni_release(struct inode *inode, struct file *file)
 {
+	struct net *net = file->private_data;
+	struct kni_net *knet = net_generic(net, kni_net_id);
 	struct kni_dev *dev, *n;
 
 	/* Stop kernel thread for single mode */
 	if (multiple_kthread_on == 0) {
 		/* Stop kernel thread */
-		kthread_stop(kni_kthread);
-		kni_kthread = NULL;
+		kthread_stop(knet->kni_kthread);
+		knet->kni_kthread = NULL;
 	}
 
-	down_write(&kni_list_lock);
-	list_for_each_entry_safe(dev, n, &kni_list_head, list) {
+	down_write(&knet->kni_list_lock);
+	list_for_each_entry_safe(dev, n, &knet->kni_list_head, list) {
 		/* Stop kernel thread for multiple mode */
 		if (multiple_kthread_on && dev->pthread != NULL) {
 			kthread_stop(dev->pthread);
@@ -199,27 +280,28 @@ kni_release(struct inode *inode, struct file *file)
 		kni_dev_remove(dev);
 		list_del(&dev->list);
 	}
-	up_write(&kni_list_lock);
+	up_write(&knet->kni_list_lock);
 
 	/* Clear the bit of device in use */
-	clear_bit(KNI_DEV_IN_USE_BIT_NUM, &device_in_use);
+	clear_bit(KNI_DEV_IN_USE_BIT_NUM, &knet->device_in_use);
 
+	put_net(net);
 	KNI_PRINT("/dev/kni closed\n");
 
 	return 0;
 }
 
 static int
-kni_thread_single(void *unused)
+kni_thread_single(void *data)
 {
+	struct kni_net *knet = data;
 	int j;
-	struct kni_dev *dev, *n;
+	struct kni_dev *dev;
 
 	while (!kthread_should_stop()) {
-		down_read(&kni_list_lock);
+		down_read(&knet->kni_list_lock);
 		for (j = 0; j < KNI_RX_LOOP_NUM; j++) {
-			list_for_each_entry_safe(dev, n,
-					&kni_list_head, list) {
+			list_for_each_entry(dev, &knet->kni_list_head, list) {
 #ifdef RTE_KNI_VHOST
 				kni_chk_vhost_rx(dev);
 #else
@@ -228,7 +310,7 @@ kni_thread_single(void *unused)
 				kni_net_poll_resp(dev);
 			}
 		}
-		up_read(&kni_list_lock);
+		up_read(&knet->kni_list_lock);
 #ifdef RTE_KNI_PREEMPT_DEFAULT
 		/* reschedule out for a while */
 		schedule_timeout_interruptible(usecs_to_jiffies( \
@@ -306,8 +388,10 @@ kni_check_param(struct kni_dev *kni, struct rte_kni_device_info *dev)
 }
 
 static int
-kni_ioctl_create(unsigned int ioctl_num, unsigned long ioctl_param)
+kni_ioctl_create(struct net *net,
+		unsigned int ioctl_num, unsigned long ioctl_param)
 {
+	struct kni_net *knet = net_generic(net, kni_net_id);
 	int ret;
 	struct rte_kni_device_info dev_info;
 	struct pci_dev *pci = NULL;
@@ -315,7 +399,6 @@ kni_ioctl_create(unsigned int ioctl_num, unsigned long ioctl_param)
 	struct net_device *net_dev = NULL;
 	struct net_device *lad_dev = NULL;
 	struct kni_dev *kni, *dev, *n;
-	struct net *net;
 
 	printk(KERN_INFO "KNI: Creating kni...\n");
 	/* Check the buffer size, to avoid warning */
@@ -340,14 +423,14 @@ kni_ioctl_create(unsigned int ioctl_num, unsigned long ioctl_param)
 	}
 
 	/* Check if it has been created */
-	down_read(&kni_list_lock);
-	list_for_each_entry_safe(dev, n, &kni_list_head, list) {
+	down_read(&knet->kni_list_lock);
+	list_for_each_entry_safe(dev, n, &knet->kni_list_head, list) {
 		if (kni_check_param(dev, &dev_info) < 0) {
-			up_read(&kni_list_lock);
+			up_read(&knet->kni_list_lock);
 			return -EINVAL;
 		}
 	}
-	up_read(&kni_list_lock);
+	up_read(&knet->kni_list_lock);
 
 	net_dev = alloc_netdev(sizeof(struct kni_dev), dev_info.name,
 #ifdef NET_NAME_UNKNOWN
@@ -359,13 +442,7 @@ kni_ioctl_create(unsigned int ioctl_num, unsigned long ioctl_param)
 		return -EBUSY;
 	}
 
-	net = get_net_ns_by_pid(current->pid);
-	if (IS_ERR(net)) {
-		free_netdev(net_dev);
-		return PTR_ERR(net);
-	}
 	dev_net_set(net_dev, net);
-	put_net(net);
 
 	kni = netdev_priv(net_dev);
 
@@ -495,16 +572,18 @@ kni_ioctl_create(unsigned int ioctl_num, unsigned long ioctl_param)
 		wake_up_process(kni->pthread);
 	}
 
-	down_write(&kni_list_lock);
-	list_add(&kni->list, &kni_list_head);
-	up_write(&kni_list_lock);
+	down_write(&knet->kni_list_lock);
+	list_add(&kni->list, &knet->kni_list_head);
+	up_write(&knet->kni_list_lock);
 
 	return 0;
 }
 
 static int
-kni_ioctl_release(unsigned int ioctl_num, unsigned long ioctl_param)
+kni_ioctl_release(struct net *net,
+		unsigned int ioctl_num, unsigned long ioctl_param)
 {
+	struct kni_net *knet = net_generic(net, kni_net_id);
 	int ret = -EINVAL;
 	struct kni_dev *dev, *n;
 	struct rte_kni_device_info dev_info;
@@ -522,8 +601,8 @@ kni_ioctl_release(unsigned int ioctl_num, unsigned long ioctl_param)
 	if (strlen(dev_info.name) == 0)
 		return ret;
 
-	down_write(&kni_list_lock);
-	list_for_each_entry_safe(dev, n, &kni_list_head, list) {
+	down_write(&knet->kni_list_lock);
+	list_for_each_entry_safe(dev, n, &knet->kni_list_head, list) {
 		if (strncmp(dev->name, dev_info.name, RTE_KNI_NAMESIZE) != 0)
 			continue;
 
@@ -540,7 +619,7 @@ kni_ioctl_release(unsigned int ioctl_num, unsigned long ioctl_param)
 		ret = 0;
 		break;
 	}
-	up_write(&kni_list_lock);
+	up_write(&knet->kni_list_lock);
 	printk(KERN_INFO "KNI: %s release kni named %s\n",
 		(ret == 0 ? "Successfully" : "Unsuccessfully"), dev_info.name);
 
@@ -553,8 +632,9 @@ kni_ioctl(struct inode *inode,
 	unsigned long ioctl_param)
 {
 	int ret = -EINVAL;
+	struct net *net = current->nsproxy->net_ns;
 
-	KNI_DBG("IOCTL num=0x%0x param=0x%0lx \n", ioctl_num, ioctl_param);
+	KNI_DBG("IOCTL num=0x%0x param=0x%0lx\n", ioctl_num, ioctl_param);
 
 	/*
 	 * Switch according to the ioctl called
@@ -564,13 +644,13 @@ kni_ioctl(struct inode *inode,
 		/* For test only, not used */
 		break;
 	case _IOC_NR(RTE_KNI_IOCTL_CREATE):
-		ret = kni_ioctl_create(ioctl_num, ioctl_param);
+		ret = kni_ioctl_create(net, ioctl_num, ioctl_param);
 		break;
 	case _IOC_NR(RTE_KNI_IOCTL_RELEASE):
-		ret = kni_ioctl_release(ioctl_num, ioctl_param);
+		ret = kni_ioctl_release(net, ioctl_num, ioctl_param);
 		break;
 	default:
-		KNI_DBG("IOCTL default \n");
+		KNI_DBG("IOCTL default\n");
 		break;
 	}
 
@@ -607,4 +687,3 @@ MODULE_PARM_DESC(kthread_mode,
 "    multiple  Multiple kernel thread mode enabled.\n"
 "\n"
 );
-

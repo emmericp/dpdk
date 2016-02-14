@@ -36,29 +36,44 @@ endif
 # Default target, can be overridden by command line or environment
 RTE_TARGET ?= x86_64-native-linuxapp-gcc
 
+DIRS-(CONFIG_RTE_LIBRTE_PIPELINE) += pipeline
+
 include $(RTE_SDK)/mk/rte.vars.mk
 
 # binary name
 APP = ip_pipeline
 
+VPATH += $(SRCDIR)/pipeline
+
+INC += $(wildcard *.h) $(wildcard pipeline/*.h)
+
 # all source are stored in SRCS-y
 SRCS-$(CONFIG_RTE_LIBRTE_PIPELINE) := main.c
-SRCS-$(CONFIG_RTE_LIBRTE_PIPELINE) += config.c
+SRCS-$(CONFIG_RTE_LIBRTE_PIPELINE) += config_parse.c
+SRCS-$(CONFIG_RTE_LIBRTE_PIPELINE) += config_parse_tm.c
+SRCS-$(CONFIG_RTE_LIBRTE_PIPELINE) += config_check.c
 SRCS-$(CONFIG_RTE_LIBRTE_PIPELINE) += init.c
-SRCS-$(CONFIG_RTE_LIBRTE_PIPELINE) += cmdline.c
-SRCS-$(CONFIG_RTE_LIBRTE_PIPELINE) += pipeline_rx.c
-SRCS-$(CONFIG_RTE_LIBRTE_PIPELINE) += pipeline_tx.c
-SRCS-$(CONFIG_RTE_LIBRTE_PIPELINE) += pipeline_flow_classification.c
-SRCS-$(CONFIG_RTE_LIBRTE_PIPELINE) += pipeline_routing.c
+SRCS-$(CONFIG_RTE_LIBRTE_PIPELINE) += thread.c
+SRCS-$(CONFIG_RTE_LIBRTE_PIPELINE) += thread_fe.c
+SRCS-$(CONFIG_RTE_LIBRTE_PIPELINE) += cpu_core_map.c
+
+SRCS-$(CONFIG_RTE_LIBRTE_PIPELINE) += pipeline_common_be.c
+SRCS-$(CONFIG_RTE_LIBRTE_PIPELINE) += pipeline_common_fe.c
+SRCS-$(CONFIG_RTE_LIBRTE_PIPELINE) += pipeline_master_be.c
+SRCS-$(CONFIG_RTE_LIBRTE_PIPELINE) += pipeline_master.c
+SRCS-$(CONFIG_RTE_LIBRTE_PIPELINE) += pipeline_passthrough_be.c
 SRCS-$(CONFIG_RTE_LIBRTE_PIPELINE) += pipeline_passthrough.c
-SRCS-$(CONFIG_RTE_LIBRTE_PIPELINE) += pipeline_ipv4_frag.c
-SRCS-$(CONFIG_RTE_LIBRTE_PIPELINE) += pipeline_ipv4_ras.c
-
-ifeq ($(CONFIG_RTE_LIBRTE_ACL),y)
+SRCS-$(CONFIG_RTE_LIBRTE_PIPELINE) += pipeline_firewall_be.c
 SRCS-$(CONFIG_RTE_LIBRTE_PIPELINE) += pipeline_firewall.c
-endif
+SRCS-$(CONFIG_RTE_LIBRTE_PIPELINE) += pipeline_flow_classification_be.c
+SRCS-$(CONFIG_RTE_LIBRTE_PIPELINE) += pipeline_flow_classification.c
+SRCS-$(CONFIG_RTE_LIBRTE_PIPELINE) += pipeline_flow_actions_be.c
+SRCS-$(CONFIG_RTE_LIBRTE_PIPELINE) += pipeline_flow_actions.c
+SRCS-$(CONFIG_RTE_LIBRTE_PIPELINE) += pipeline_routing_be.c
+SRCS-$(CONFIG_RTE_LIBRTE_PIPELINE) += pipeline_routing.c
 
+CFLAGS += -I$(SRCDIR) -I$(SRCDIR)/pipeline
 CFLAGS += -O3
-CFLAGS += $(WERROR_FLAGS)
+CFLAGS += $(WERROR_FLAGS) -Wno-error=unused-function -Wno-error=unused-variable
 
 include $(RTE_SDK)/mk/rte.extapp.mk

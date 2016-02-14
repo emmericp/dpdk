@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
+ *   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -53,7 +53,9 @@
 
 #include "main.h"
 
-#define MAX_QUEUES 512
+#ifndef MAX_QUEUES
+#define MAX_QUEUES 128
+#endif
 
 /* the maximum number of external ports supported */
 #define MAX_SUP_PORTS 1
@@ -61,7 +63,7 @@
 /*
  * Calculate the number of buffers needed per port
  */
-#define NUM_MBUFS_PER_PORT ((MAX_QUEUES*RTE_TEST_RX_DESC_DEFAULT) +  		\
+#define NUM_MBUFS_PER_PORT ((MAX_QUEUES*RTE_TEST_RX_DESC_DEFAULT) +		\
 							(num_switching_cores*MAX_PKT_BURST) +  			\
 							(num_switching_cores*RTE_TEST_TX_DESC_DEFAULT) +\
 							(num_switching_cores*MBUF_CACHE_SIZE))
@@ -78,10 +80,10 @@
 #define MBUF_DATA_SIZE_ZCP		RTE_MBUF_DEFAULT_BUF_SIZE
 #define MBUF_CACHE_SIZE_ZCP 0
 
-#define MAX_PKT_BURST 32 		/* Max burst size for RX/TX */
-#define BURST_TX_DRAIN_US 100 	/* TX drain every ~100us */
+#define MAX_PKT_BURST 32		/* Max burst size for RX/TX */
+#define BURST_TX_DRAIN_US 100	/* TX drain every ~100us */
 
-#define BURST_RX_WAIT_US 15 	/* Defines how long we wait between retries on RX */
+#define BURST_RX_WAIT_US 15	/* Defines how long we wait between retries on RX */
 #define BURST_RX_RETRIES 4		/* Number of retries on RX. */
 
 #define JUMBO_FRAME_MAX_SIZE    0x2600
@@ -1050,8 +1052,8 @@ virtio_tx_local(struct vhost_dev *vdev, struct rte_mbuf *m)
 					rte_atomic64_add(
 					&dev_statistics[tdev->device_fh].rx_atomic,
 					ret);
-					dev_statistics[tdev->device_fh].tx_total++;
-					dev_statistics[tdev->device_fh].tx += ret;
+					dev_statistics[dev->device_fh].tx_total++;
+					dev_statistics[dev->device_fh].tx += ret;
 				}
 			}
 
@@ -1433,7 +1435,7 @@ put_desc_to_used_list_zcp(struct vhost_virtqueue *vq, uint16_t desc_idx)
 
 	/* Kick the guest if necessary. */
 	if (!(vq->avail->flags & VRING_AVAIL_F_NO_INTERRUPT))
-		eventfd_write((int)vq->callfd, 1);
+		eventfd_write(vq->callfd, (eventfd_t)1);
 }
 
 /*
@@ -1449,7 +1451,8 @@ attach_rxmbuf_zcp(struct virtio_net *dev)
 	uint64_t buff_addr, phys_addr;
 	struct vhost_virtqueue *vq;
 	struct vring_desc *desc;
-	struct rte_mbuf *mbuf = NULL;
+	void *obj = NULL;
+	struct rte_mbuf *mbuf;
 	struct vpool *vpool;
 	hpa_type addr_type;
 	struct vhost_dev *vdev = (struct vhost_dev *)dev->priv;
@@ -1500,7 +1503,8 @@ attach_rxmbuf_zcp(struct virtio_net *dev)
 		}
 	} while (unlikely(phys_addr == 0));
 
-	rte_ring_sc_dequeue(vpool->ring, (void **)&mbuf);
+	rte_ring_sc_dequeue(vpool->ring, &obj);
+	mbuf = obj;
 	if (unlikely(mbuf == NULL)) {
 		LOG_DEBUG(VHOST_DATA,
 			"(%"PRIu64") in attach_rxmbuf_zcp: "
@@ -1517,7 +1521,7 @@ attach_rxmbuf_zcp(struct virtio_net *dev)
 			"size required: %d\n",
 			dev->device_fh, desc->len, desc_idx, vpool->buf_size);
 		put_desc_to_used_list_zcp(vq, desc_idx);
-		rte_ring_sp_enqueue(vpool->ring, (void *)mbuf);
+		rte_ring_sp_enqueue(vpool->ring, obj);
 		return;
 	}
 
@@ -1626,7 +1630,7 @@ txmbuf_clean_zcp(struct virtio_net *dev, struct vpool *vpool)
 
 	/* Kick guest if required. */
 	if (!(vq->avail->flags & VRING_AVAIL_F_NO_INTERRUPT))
-		eventfd_write((int)vq->callfd, 1);
+		eventfd_write(vq->callfd, (eventfd_t)1);
 
 	return 0;
 }
@@ -1774,7 +1778,7 @@ virtio_dev_rx_zcp(struct virtio_net *dev, struct rte_mbuf **pkts,
 
 	/* Kick the guest if necessary. */
 	if (!(vq->avail->flags & VRING_AVAIL_F_NO_INTERRUPT))
-		eventfd_write((int)vq->callfd, 1);
+		eventfd_write(vq->callfd, (eventfd_t)1);
 
 	return count;
 }
@@ -1789,7 +1793,8 @@ virtio_tx_route_zcp(struct virtio_net *dev, struct rte_mbuf *m,
 {
 	struct mbuf_table *tx_q;
 	struct rte_mbuf **m_table;
-	struct rte_mbuf *mbuf = NULL;
+	void *obj = NULL;
+	struct rte_mbuf *mbuf;
 	unsigned len, ret, offset = 0;
 	struct vpool *vpool;
 	uint16_t vlan_tag = (uint16_t)vlan_tags[(uint16_t)dev->device_fh];
@@ -1801,7 +1806,8 @@ virtio_tx_route_zcp(struct virtio_net *dev, struct rte_mbuf *m,
 
 	/* Allocate an mbuf and populate the structure. */
 	vpool = &vpool_array[MAX_QUEUES + vmdq_rx_q];
-	rte_ring_sc_dequeue(vpool->ring, (void **)&mbuf);
+	rte_ring_sc_dequeue(vpool->ring, &obj);
+	mbuf = obj;
 	if (unlikely(mbuf == NULL)) {
 		struct vhost_virtqueue *vq = dev->virtqueue[VIRTIO_TXQ];
 		RTE_LOG(ERR, VHOST_DATA,
@@ -2871,6 +2877,16 @@ setup_mempool_tbl(int socket, uint32_t index, char *pool_name,
 	}
 }
 
+/* When we receive a INT signal, unregister vhost driver */
+static void
+sigint_handler(__rte_unused int signum)
+{
+	/* Unregister vhost driver. */
+	int ret = rte_vhost_driver_unregister((char *)&dev_basename);
+	if (ret != 0)
+		rte_exit(EXIT_FAILURE, "vhost driver unregister failure.\n");
+	exit(0);
+}
 
 /*
  * Main function, does initialisation and calls the per-lcore functions. The CUSE
@@ -2886,6 +2902,9 @@ main(int argc, char *argv[])
 	uint8_t portid;
 	uint16_t queue_id;
 	static pthread_t tid;
+	char thread_name[RTE_MAX_THREAD_NAME_LEN];
+
+	signal(SIGINT, sigint_handler);
 
 	/* init EAL */
 	ret = rte_eal_init(argc, argv);
@@ -3006,8 +3025,19 @@ main(int argc, char *argv[])
 	memset(&dev_statistics, 0, sizeof(dev_statistics));
 
 	/* Enable stats if the user option is set. */
-	if (enable_stats)
-		pthread_create(&tid, NULL, (void*)print_stats, NULL );
+	if (enable_stats) {
+		ret = pthread_create(&tid, NULL, (void *)print_stats, NULL);
+		if (ret != 0)
+			rte_exit(EXIT_FAILURE,
+				"Cannot create print-stats thread\n");
+
+		/* Set thread_name for aid in debugging.  */
+		snprintf(thread_name, RTE_MAX_THREAD_NAME_LEN, "print-stats");
+		ret = rte_thread_setname(tid, thread_name);
+		if (ret != 0)
+			RTE_LOG(ERR, VHOST_CONFIG,
+				"Cannot set print-stats name\n");
+	}
 
 	/* Launch all data cores. */
 	if (zero_copy == 0) {
@@ -3051,10 +3081,10 @@ main(int argc, char *argv[])
 	if (mergeable == 0)
 		rte_vhost_feature_disable(1ULL << VIRTIO_NET_F_MRG_RXBUF);
 
-	/* Register CUSE device to handle IOCTLs. */
+	/* Register vhost(cuse or user) driver to handle vhost messages. */
 	ret = rte_vhost_driver_register((char *)&dev_basename);
 	if (ret != 0)
-		rte_exit(EXIT_FAILURE,"CUSE device setup failure.\n");
+		rte_exit(EXIT_FAILURE, "vhost driver register failure.\n");
 
 	rte_vhost_driver_callback_register(&virtio_net_device_ops);
 
@@ -3063,4 +3093,3 @@ main(int argc, char *argv[])
 	return 0;
 
 }
-

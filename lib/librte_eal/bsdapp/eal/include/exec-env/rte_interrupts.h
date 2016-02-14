@@ -35,8 +35,13 @@
 #error "don't include this file directly, please include generic <rte_interrupts.h>"
 #endif
 
-#ifndef _RTE_LINUXAPP_INTERRUPTS_H_
-#define _RTE_LINUXAPP_INTERRUPTS_H_
+#ifndef _RTE_BSDAPP_INTERRUPTS_H_
+#define _RTE_BSDAPP_INTERRUPTS_H_
+
+#define RTE_INTR_VEC_ZERO_OFFSET      0
+#define RTE_INTR_VEC_RXTX_OFFSET      1
+
+#define RTE_MAX_RXTX_INTR_VEC_ID     32
 
 enum rte_intr_handle_type {
 	RTE_INTR_HANDLE_UNKNOWN = 0,
@@ -48,7 +53,85 @@ enum rte_intr_handle_type {
 /** Handle for interrupts. */
 struct rte_intr_handle {
 	int fd;                          /**< file descriptor */
+	int uio_cfg_fd;                  /**< UIO config file descriptor */
 	enum rte_intr_handle_type type;  /**< handle type */
+	int max_intr;                    /**< max interrupt requested */
+	uint32_t nb_efd;                 /**< number of available efds */
+	int *intr_vec;                   /**< intr vector number array */
 };
 
-#endif /* _RTE_LINUXAPP_INTERRUPTS_H_ */
+/**
+ * @param intr_handle
+ *   Pointer to the interrupt handle.
+ * @param epfd
+ *   Epoll instance fd which the intr vector associated to.
+ * @param op
+ *   The operation be performed for the vector.
+ *   Operation type of {ADD, DEL}.
+ * @param vec
+ *   RX intr vector number added to the epoll instance wait list.
+ * @param data
+ *   User raw data.
+ * @return
+ *   - On success, zero.
+ *   - On failure, a negative value.
+ */
+int
+rte_intr_rx_ctl(struct rte_intr_handle *intr_handle,
+		int epfd, int op, unsigned int vec, void *data);
+
+/**
+ * It enables the fastpath event fds if it's necessary.
+ * It creates event fds when multi-vectors allowed,
+ * otherwise it multiplexes the single event fds.
+ *
+ * @param intr_handle
+ *   Pointer to the interrupt handle.
+ * @param nb_efd
+ *   Number of interrupt vector trying to enable.
+ *   The value 0 is not allowed.
+ * @return
+ *   - On success, zero.
+ *   - On failure, a negative value.
+ */
+int
+rte_intr_efd_enable(struct rte_intr_handle *intr_handle, uint32_t nb_efd);
+
+/**
+ * It disable the fastpath event fds.
+ * It deletes registered eventfds and closes the open fds.
+ *
+ * @param intr_handle
+ *   Pointer to the interrupt handle.
+ */
+void
+rte_intr_efd_disable(struct rte_intr_handle *intr_handle);
+
+/**
+ * The fastpath interrupt is enabled or not.
+ *
+ * @param intr_handle
+ *   Pointer to the interrupt handle.
+ */
+int rte_intr_dp_is_en(struct rte_intr_handle *intr_handle);
+
+/**
+ * The interrupt handle instance allows other cause or not.
+ * Other cause stands for none fastpath interrupt.
+ *
+ * @param intr_handle
+ *   Pointer to the interrupt handle.
+ */
+int rte_intr_allow_others(struct rte_intr_handle *intr_handle);
+
+/**
+ * The multiple interrupt vector capability of interrupt handle instance.
+ * It returns zero if no multiple interrupt vector support.
+ *
+ * @param intr_handle
+ *   Pointer to the interrupt handle.
+ */
+int
+rte_intr_cap_multiple(struct rte_intr_handle *intr_handle);
+
+#endif /* _RTE_BSDAPP_INTERRUPTS_H_ */

@@ -53,6 +53,8 @@ enum {
 	OPT_FILE_PREFIX_NUM,
 #define OPT_HUGE_DIR          "huge-dir"
 	OPT_HUGE_DIR_NUM,
+#define OPT_HUGE_UNLINK       "huge-unlink"
+	OPT_HUGE_UNLINK_NUM,
 #define OPT_LCORES            "lcores"
 	OPT_LCORES_NUM,
 #define OPT_LOG_LEVEL         "log-level"
@@ -93,5 +95,6 @@ int eal_adjust_config(struct internal_config *internal_cfg);
 int eal_check_common_options(struct internal_config *internal_cfg);
 void eal_common_usage(void);
 enum rte_proc_type_t eal_proc_type_detect(void);
+int eal_plugins_init(void);
 
 #endif /* EAL_OPTIONS_H */
