@@ -68,7 +68,7 @@ Options:
     --help, --usage:
         Display usage information and quit
 
-    --status:
+    -s, --status:
         Print the current status of all known network interfaces.
         For each device, it displays the PCI domain, bus, slot and function,
         along with a text description of the device. Depending upon whether the
@@ -391,7 +391,7 @@ def unbind_all(dev_list, force=False):
         unbind_one(d, force)
 
 def bind_all(dev_list, driver, force=False):
-    """Unbind method, takes a list of device locations"""
+    """Bind method, takes a list of device locations"""
     global devices
 
     dev_list = map(dev_id_from_dev_name, dev_list)
@@ -477,7 +477,7 @@ def parse_args():
         sys.exit(0)
 
     try:
-        opts, args = getopt.getopt(sys.argv[1:], "b:u",
+        opts, args = getopt.getopt(sys.argv[1:], "b:us",
                                ["help", "usage", "status", "force",
                                 "bind=", "unbind"])
     except getopt.GetoptError, error:
@@ -489,7 +489,7 @@ def parse_args():
         if opt == "--help" or opt == "--usage":
             usage()
             sys.exit(0)
-        if opt == "--status":
+        if opt == "--status" or opt == "-s":
             status_flag = True
         if opt == "--force":
             force_flag = True

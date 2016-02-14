@@ -71,7 +71,6 @@
 #include <rte_version.h>
 #include <rte_atomic.h>
 #include <malloc_heap.h>
-#include <rte_eth_ring.h>
 
 #include "eal_private.h"
 #include "eal_thread.h"
@@ -306,16 +305,21 @@ eal_get_hugepage_mem_size(void)
 	return (size < SIZE_MAX) ? (size_t)(size) : SIZE_MAX;
 }
 
-/* Parse the argument given in the command line of the application */
-static int
-eal_parse_args(int argc, char **argv)
+/* Parse the arguments for --log-level only */
+static void
+eal_log_level_parse(int argc, char **argv)
 {
-	int opt, ret;
+	int opt;
 	char **argvopt;
 	int option_index;
-	char *prgname = argv[0];
+	const int old_optind = optind;
+	const int old_optopt = optopt;
+	const int old_optreset = optreset;
+	char * const old_optarg = optarg;
 
 	argvopt = argv;
+	optind = 1;
+	optreset = 1;
 
 	eal_reset_internal_config(&internal_config);
 
@@ -325,16 +329,57 @@ eal_parse_args(int argc, char **argv)
 		int ret;
 
 		/* getopt is not happy, stop right now */
+		if (opt == '?')
+			break;
+
+		ret = (opt == OPT_LOG_LEVEL_NUM) ?
+			eal_parse_common_option(opt, optarg, &internal_config) : 0;
+
+		/* common parser is not happy */
+		if (ret < 0)
+			break;
+	}
+
+	/* restore getopt lib */
+	optind = old_optind;
+	optopt = old_optopt;
+	optreset = old_optreset;
+	optarg = old_optarg;
+}
+
+/* Parse the argument given in the command line of the application */
+static int
+eal_parse_args(int argc, char **argv)
+{
+	int opt, ret;
+	char **argvopt;
+	int option_index;
+	char *prgname = argv[0];
+	const int old_optind = optind;
+	const int old_optopt = optopt;
+	const int old_optreset = optreset;
+	char * const old_optarg = optarg;
+
+	argvopt = argv;
+	optind = 1;
+	optreset = 1;
+
+	while ((opt = getopt_long(argc, argvopt, eal_short_options,
+				  eal_long_options, &option_index)) != EOF) {
+
+		/* getopt is not happy, stop right now */
 		if (opt == '?') {
 			eal_usage(prgname);
-			return -1;
+			ret = -1;
+			goto out;
 		}
 
 		ret = eal_parse_common_option(opt, optarg, &internal_config);
 		/* common parser is not happy */
 		if (ret < 0) {
 			eal_usage(prgname);
-			return -1;
+			ret = -1;
+			goto out;
 		}
 		/* common parser handled this option */
 		if (ret == 0)
@@ -358,23 +403,34 @@ eal_parse_args(int argc, char **argv)
 					"on FreeBSD\n", opt);
 			}
 			eal_usage(prgname);
-			return -1;
+			ret = -1;
+			goto out;
 		}
 	}
 
-	if (eal_adjust_config(&internal_config) != 0)
-		return -1;
+	if (eal_adjust_config(&internal_config) != 0) {
+		ret = -1;
+		goto out;
+	}
 
 	/* sanity checks */
 	if (eal_check_common_options(&internal_config) != 0) {
 		eal_usage(prgname);
-		return -1;
+		ret = -1;
+		goto out;
 	}
 
 	if (optind >= 0)
 		argv[optind-1] = prgname;
 	ret = optind-1;
-	optind = 0; /* reset getopt lib */
+
+out:
+	/* restore getopt lib */
+	optind = old_optind;
+	optopt = old_optopt;
+	optreset = old_optreset;
+	optarg = old_optarg;
+
 	return ret;
 }
 
@@ -438,6 +494,7 @@ rte_eal_init(int argc, char **argv)
 	pthread_t thread_id;
 	static rte_atomic32_t run_once = RTE_ATOMIC32_INIT(0);
 	char cpuset[RTE_CPU_AFFINITY_STR_LEN];
+	char thread_name[RTE_MAX_THREAD_NAME_LEN];
 
 	if (!rte_atomic32_test_and_set(&run_once))
 		return -1;
@@ -447,15 +504,17 @@ rte_eal_init(int argc, char **argv)
 	if (rte_eal_log_early_init() < 0)
 		rte_panic("Cannot init early logs\n");
 
+	eal_log_level_parse(argc, argv);
+
+	/* set log level as early as possible */
+	rte_set_log_level(internal_config.log_level);
+
 	if (rte_eal_cpu_init() < 0)
 		rte_panic("Cannot detect lcores\n");
 
 	fctret = eal_parse_args(argc, argv);
 	if (fctret < 0)
 		exit(1);
-
-	/* set log level as early as possible */
-	rte_set_log_level(internal_config.log_level);
 
 	if (internal_config.no_hugetlbfs == 0 &&
 			internal_config.process_type != RTE_PROC_SECONDARY &&
@@ -512,6 +571,9 @@ rte_eal_init(int argc, char **argv)
 
 	rte_eal_mcfg_complete();
 
+	if (eal_plugins_init() < 0)
+		rte_panic("Cannot init plugins\n");
+
 	eal_thread_init_master(rte_config.master_lcore);
 
 	ret = eal_thread_dump_affinity(cpuset, RTE_CPU_AFFINITY_STR_LEN);
@@ -541,6 +603,11 @@ rte_eal_init(int argc, char **argv)
 				     eal_thread_loop, NULL);
 		if (ret != 0)
 			rte_panic("Cannot create thread\n");
+
+		/* Set thread_name for aid in debugging. */
+		snprintf(thread_name, RTE_MAX_THREAD_NAME_LEN,
+				"lcore-slave-%d", i);
+		pthread_set_name_np(lcore_config[i].thread_id, thread_name);
 	}
 
 	/*
@@ -561,12 +628,11 @@ rte_eal_init(int argc, char **argv)
 enum rte_lcore_role_t
 rte_eal_lcore_role(unsigned lcore_id)
 {
-	return (rte_config.lcore_role[lcore_id]);
+	return rte_config.lcore_role[lcore_id];
 }
 
 enum rte_proc_type_t
 rte_eal_process_type(void)
 {
-	return (rte_config.process_type);
+	return rte_config.process_type;
 }
-

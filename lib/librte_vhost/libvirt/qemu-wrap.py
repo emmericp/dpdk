@@ -49,17 +49,17 @@
 #
 #    3.a) Set the VM to use the launch script
 #
-#    	Set the emulator path contained in the
+#	Set the emulator path contained in the
 #		<emulator><emulator/> tags
 #
-#    	e.g replace <emulator>/usr/bin/qemu-kvm<emulator/>
+#	e.g replace <emulator>/usr/bin/qemu-kvm<emulator/>
 #        with    <emulator>/usr/bin/qemu-wrap.py<emulator/>
 #
 #	 3.b) Set the VM's device's to use vhost-net offload
 #
 #		<interface type="network">
-#       	<model type="virtio"/>
-#       	<driver name="vhost"/>
+#	<model type="virtio"/>
+#	<driver name="vhost"/>
 #		<interface/>
 #
 # 4. Enable libvirt to access our userpace device file by adding it to
@@ -75,7 +75,8 @@
 #                "/dev/random", "/dev/urandom",
 #                "/dev/ptmx", "/dev/kvm", "/dev/kqemu",
 #                "/dev/rtc", "/dev/hpet", "/dev/net/tun",
-#                "/dev/<devbase-name>-<index>",
+#                "/dev/<devbase-name>",
+#                "/dev/hugepages",
 #            ]
 #
 #   4.b) Disable SELinux or set to permissive mode
@@ -129,13 +130,13 @@
 emul_path = "/usr/local/bin/qemu-system-x86_64"
 
 #Path to userspace vhost device file
-# This filename should match the --dev-basename --dev-index parameters of
+# This filename should match the --dev-basename parameters of
 # the command used to launch the userspace vhost sample application e.g.
 # if the sample app lauch command is:
-#    ./build/vhost-switch ..... --dev-basename usvhost --dev-index 1
+#    ./build/vhost-switch ..... --dev-basename usvhost
 # then this variable should be set to:
-#   us_vhost_path = "/dev/usvhost-1"
-us_vhost_path = "/dev/usvhost-1"
+#   us_vhost_path = "/dev/usvhost"
+us_vhost_path = "/dev/usvhost"
 
 #List of additional user defined emulation options. These options will
 #be added to all Qemu calls
@@ -161,6 +162,8 @@ hugetlbfs_dir = ""
 #############################################
 
 import sys, os, subprocess
+import time
+import signal
 
 
 #List of open userspace vhost file descriptors
@@ -173,6 +176,18 @@ vhost_flags = [ "csum=off",
                 "guest_tso6=off",
                 "guest_ecn=off"
               ]
+
+#String of the path to the Qemu process pid
+qemu_pid = "/tmp/%d-qemu.pid" % os.getpid()
+
+#############################################
+# Signal haldler to kill Qemu subprocess
+#############################################
+def kill_qemu_process(signum, stack):
+    pidfile = open(qemu_pid, 'r')
+    pid = int(pidfile.read())
+    os.killpg(pid, signal.SIGTERM)
+    pidfile.close()
 
 
 #############################################
@@ -229,7 +244,7 @@ def get_vhost_fd():
 # flags onto the end
 #############################################
 def modify_netdev_arg(arg):
-	
+
     global fd_list
     vhost_in_use = 0
     s = ''
@@ -259,7 +274,7 @@ def modify_netdev_arg(arg):
 
         s+=opt
 
-    return s	
+    return s
 
 
 #############################################
@@ -280,7 +295,7 @@ def main():
     while (num < num_cmd_args):
         arg = sys.argv[num]
 
-		#Check netdev +1 parameter for vhostfd
+	#Check netdev +1 parameter for vhostfd
         if arg == '-netdev':
             num_vhost_devs = len(fd_list)
             new_args.append(arg)
@@ -333,7 +348,6 @@ def main():
         emul_call += mp
         emul_call += " "
 
-
     #add user options
     for opt in emul_opts_user:
         emul_call += opt
@@ -353,15 +367,21 @@ def main():
         emul_call+=str(arg)
         emul_call+= " "
 
+    emul_call += "-pidfile %s " % qemu_pid
     #Call QEMU
-    subprocess.call(emul_call, shell=True)
+    process = subprocess.Popen(emul_call, shell=True, preexec_fn=os.setsid)
 
+    for sig in [signal.SIGTERM, signal.SIGINT, signal.SIGHUP, signal.SIGQUIT]:
+        signal.signal(sig, kill_qemu_process)
+
+    process.wait()
 
     #Close usvhost files
     for fd in fd_list:
         os.close(fd)
-
+    #Cleanup temporary files
+    if os.access(qemu_pid, os.F_OK):
+        os.remove(qemu_pid)
 
 if __name__ == "__main__":
     main()
-

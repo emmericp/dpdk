@@ -407,8 +407,13 @@ crc32c_sse42_u64(uint64_t data, uint64_t init_val)
 #define CRC32_SSE42         (1U << 1)
 #define CRC32_x64           (1U << 2)
 #define CRC32_SSE42_x64     (CRC32_x64|CRC32_SSE42)
+#define CRC32_ARM64         (1U << 3)
 
 static uint8_t crc32_alg = CRC32_SW;
+
+#if defined(RTE_ARCH_ARM64)
+#include "rte_crc_arm64.h"
+#else
 
 /**
  * Allow or disallow use of SSE4.2 instrinsics for CRC32 hash
@@ -425,12 +430,14 @@ static inline void
 rte_hash_crc_set_alg(uint8_t alg)
 {
 	switch (alg) {
+#if defined(RTE_ARCH_I686) || defined(RTE_ARCH_X86_64)
 	case CRC32_SSE42_x64:
 		if (! rte_cpu_get_flag_enabled(RTE_CPUFLAG_EM64T))
 			alg = CRC32_SSE42;
 	case CRC32_SSE42:
 		if (! rte_cpu_get_flag_enabled(RTE_CPUFLAG_SSE4_2))
 			alg = CRC32_SW;
+#endif
 	case CRC32_SW:
 		crc32_alg = alg;
 	default:
@@ -495,6 +502,8 @@ rte_hash_crc_8byte(uint64_t data, uint32_t init_val)
 
 	return crc32c_2words(data, init_val);
 }
+
+#endif
 
 /**
  * Calculate CRC32 hash on user-supplied byte array.

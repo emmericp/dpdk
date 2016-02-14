@@ -134,6 +134,8 @@ struct rte_ring_debug_stats {
                                     *   if RTE_RING_PAUSE_REP not defined. */
 #endif
 
+struct rte_memzone; /* forward declaration, so as not to require memzone.h */
+
 /**
  * An RTE ring structure.
  *
@@ -147,6 +149,8 @@ struct rte_ring_debug_stats {
 struct rte_ring {
 	char name[RTE_RING_NAMESIZE];    /**< Name of the ring. */
 	int flags;                       /**< Flags supplied at creation. */
+	const struct rte_memzone *memzone;
+			/**< Memzone, if any, containing the rte_ring */
 
 	/** Ring producer status. */
 	struct prod {
@@ -300,6 +304,13 @@ int rte_ring_init(struct rte_ring *r, const char *name, unsigned count,
  */
 struct rte_ring *rte_ring_create(const char *name, unsigned count,
 				 int socket_id, unsigned flags);
+/**
+ * De-allocate all memory used by the ring.
+ *
+ * @param r
+ *   Ring to free
+ */
+void rte_ring_free(struct rte_ring *r);
 
 /**
  * Change the high water mark.
@@ -457,7 +468,7 @@ __rte_ring_mp_do_enqueue(struct rte_ring *r, void * const *obj_table,
 
 	/* write entries in ring */
 	ENQUEUE_PTRS();
-	rte_compiler_barrier();
+	rte_smp_wmb();
 
 	/* if we exceed the watermark */
 	if (unlikely(((mask + 1) - free_entries + n) > r->prod.watermark)) {
@@ -552,7 +563,7 @@ __rte_ring_sp_do_enqueue(struct rte_ring *r, void * const *obj_table,
 
 	/* write entries in ring */
 	ENQUEUE_PTRS();
-	rte_compiler_barrier();
+	rte_smp_wmb();
 
 	/* if we exceed the watermark */
 	if (unlikely(((mask + 1) - free_entries + n) > r->prod.watermark)) {
@@ -643,7 +654,7 @@ __rte_ring_mc_do_dequeue(struct rte_ring *r, void **obj_table,
 
 	/* copy in table */
 	DEQUEUE_PTRS();
-	rte_compiler_barrier();
+	rte_smp_rmb();
 
 	/*
 	 * If there are other dequeues in progress that preceded us,
@@ -727,7 +738,7 @@ __rte_ring_sc_do_dequeue(struct rte_ring *r, void **obj_table,
 
 	/* copy in table */
 	DEQUEUE_PTRS();
-	rte_compiler_barrier();
+	rte_smp_rmb();
 
 	__RING_STAT_ADD(r, deq_success, n);
 	r->cons.tail = cons_next;

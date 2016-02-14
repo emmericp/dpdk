@@ -44,6 +44,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <rte_branch_prediction.h>
+#include <rte_byteorder.h>
 #include <rte_memory.h>
 #include <rte_common.h>
 #include <rte_vect.h>
@@ -54,16 +55,6 @@ extern "C" {
 
 /** Max number of characters in LPM name. */
 #define RTE_LPM_NAMESIZE                32
-
-/** @deprecated Possible location to allocate memory. This was for last
- * parameter of rte_lpm_create(), but is now redundant. The LPM table is always
- * allocated in memory using librte_malloc which uses a memzone. */
-#define RTE_LPM_HEAP                    0
-
-/** @deprecated Possible location to allocate memory. This was for last
- * parameter of rte_lpm_create(), but is now redundant. The LPM table is always
- * allocated in memory using librte_malloc which uses a memzone. */
-#define RTE_LPM_MEMZONE                 1
 
 /** Maximum depth value possible for IPv4 LPM. */
 #define RTE_LPM_MAX_DEPTH               32
@@ -96,6 +87,7 @@ extern "C" {
 /** Bitmask used to indicate successful lookup */
 #define RTE_LPM_LOOKUP_SUCCESS          0x0100
 
+#if RTE_BYTE_ORDER == RTE_LITTLE_ENDIAN
 /** @internal Tbl24 entry structure. */
 struct rte_lpm_tbl24_entry {
 	/* Stores Next hop or group index (i.e. gindex)into tbl8. */
@@ -117,6 +109,24 @@ struct rte_lpm_tbl8_entry {
 	uint8_t valid_group :1; /**< Group validation flag. */
 	uint8_t depth       :6; /**< Rule depth. */
 };
+#else
+struct rte_lpm_tbl24_entry {
+	uint8_t depth       :6;
+	uint8_t ext_entry   :1;
+	uint8_t valid       :1;
+	union {
+		uint8_t tbl8_gindex;
+		uint8_t next_hop;
+	};
+};
+
+struct rte_lpm_tbl8_entry {
+	uint8_t depth       :6;
+	uint8_t valid_group :1;
+	uint8_t valid       :1;
+	uint8_t next_hop;
+};
+#endif
 
 /** @internal Rule structure. */
 struct rte_lpm_rule {
@@ -134,7 +144,6 @@ struct rte_lpm_rule_info {
 struct rte_lpm {
 	/* LPM metadata. */
 	char name[RTE_LPM_NAMESIZE];        /**< Name of the lpm. */
-	int mem_location; /**< @deprecated @see RTE_LPM_HEAP and RTE_LPM_MEMZONE. */
 	uint32_t max_rules; /**< Max. balanced rules per lpm. */
 	struct rte_lpm_rule_info rule_info[RTE_LPM_MAX_DEPTH]; /**< Rule info table. */
 

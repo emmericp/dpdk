@@ -33,7 +33,7 @@
 # used to set the RTE_CPUFLAG_* environment variables giving details
 # of what instruction sets the target cpu supports.
 
-AUTO_CPUFLAGS := $(shell $(CC) $(MACHINE_CFLAGS) -dM -E - < /dev/null)
+AUTO_CPUFLAGS := $(shell $(CC) $(MACHINE_CFLAGS) $(WERROR_FLAGS) $(EXTRA_CFLAGS) -dM -E - < /dev/null)
 
 # adding flags to CPUFLAGS
 
@@ -105,6 +105,16 @@ endif
 ifneq ($(filter $(AUTO_CPUFLAGS),__builtin_vsx_xvnmaddadp),)
 CPUFLAGS += VSX
 endif
+
+# ARM flags
+ifneq ($(filter $(AUTO_CPUFLAGS),__ARM_NEON_FP),)
+CPUFLAGS += NEON
+endif
+
+ifneq ($(filter $(AUTO_CPUFLAGS),__ARM_FEATURE_CRC32),)
+CPUFLAGS += CRC32
+endif
+
 
 MACHINE_CFLAGS += $(addprefix -DRTE_MACHINE_CPUFLAG_,$(CPUFLAGS))
 

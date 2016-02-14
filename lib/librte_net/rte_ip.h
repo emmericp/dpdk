@@ -169,7 +169,8 @@ __rte_raw_cksum(const void *buf, size_t len, uint32_t sum)
 {
 	/* workaround gcc strict-aliasing warning */
 	uintptr_t ptr = (uintptr_t)buf;
-	const uint16_t *u16 = (const uint16_t *)ptr;
+	typedef uint16_t __attribute__((__may_alias__)) u16_p;
+	const u16_p *u16 = (const u16_p *)ptr;
 
 	while (len >= (sizeof(*u16) * 4)) {
 		sum += u16[0];
@@ -243,7 +244,7 @@ rte_ipv4_cksum(const struct ipv4_hdr *ipv4_hdr)
 {
 	uint16_t cksum;
 	cksum = rte_raw_cksum(ipv4_hdr, sizeof(struct ipv4_hdr));
-	return ((cksum == 0xffff) ? cksum : ~cksum);
+	return (cksum == 0xffff) ? cksum : ~cksum;
 }
 
 /**

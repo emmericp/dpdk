@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
+ *   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -61,7 +61,7 @@
 /*
  * Calculate the number of buffers needed per port
  */
-#define NUM_MBUFS_PER_PORT ((MAX_QUEUES*RTE_TEST_RX_DESC_DEFAULT) +  		\
+#define NUM_MBUFS_PER_PORT ((MAX_QUEUES*RTE_TEST_RX_DESC_DEFAULT) +		\
 							(num_switching_cores*MAX_PKT_BURST) +  			\
 							(num_switching_cores*RTE_TEST_TX_DESC_DEFAULT) +\
 							(num_switching_cores*MBUF_CACHE_SIZE))
@@ -87,9 +87,9 @@
 #define TX_HTHRESH 0  /* Default values of TX host threshold reg. */
 #define TX_WTHRESH 0  /* Default values of TX write-back threshold reg. */
 
-#define MAX_PKT_BURST 32 		/* Max burst size for RX/TX */
-#define MAX_MRG_PKT_BURST 16 	/* Max burst for merge buffers. Set to 1 due to performance issue. */
-#define BURST_TX_DRAIN_US 100 	/* TX drain every ~100us */
+#define MAX_PKT_BURST 32		/* Max burst size for RX/TX */
+#define MAX_MRG_PKT_BURST 16	/* Max burst for merge buffers. Set to 1 due to performance issue. */
+#define BURST_TX_DRAIN_US 100	/* TX drain every ~100us */
 
 /* State of virtio device. */
 #define DEVICE_NOT_READY     0
@@ -579,6 +579,7 @@ virtio_dev_rx(struct virtio_net *dev, struct rte_mbuf **pkts, uint32_t count)
 	uint16_t res_base_idx, res_end_idx;
 	uint16_t free_entries;
 	uint8_t success = 0;
+	void *userdata;
 
 	LOG_DEBUG(VHOST_DATA, "(%"PRIu64") virtio_dev_rx()\n", dev->device_fh);
 	vq = dev->virtqueue_rx;
@@ -656,13 +657,14 @@ virtio_dev_rx(struct virtio_net *dev, struct rte_mbuf **pkts, uint32_t count)
 		vq->used->ring[res_cur_idx & (vq->size - 1)].len = packet_len;
 
 		/* Copy mbuf data to buffer */
-		rte_memcpy((void *)(uintptr_t)buff_addr, (const void*)buff->data, rte_pktmbuf_data_len(buff));
+		userdata = rte_pktmbuf_mtod(buff, void *);
+		rte_memcpy((void *)(uintptr_t)buff_addr, userdata, rte_pktmbuf_data_len(buff));
 
 		res_cur_idx++;
 		packet_success++;
 
 		/* mergeable is disabled then a header is required per buffer. */
-		rte_memcpy((void *)(uintptr_t)buff_hdr_addr, (const void*)&virtio_hdr, vq->vhost_hlen);
+		rte_memcpy((void *)(uintptr_t)buff_hdr_addr, (const void *)&virtio_hdr, vq->vhost_hlen);
 		if (res_cur_idx < res_end_idx) {
 			/* Prefetch descriptor index. */
 			rte_prefetch0(&vq->desc[head[packet_success]]);
@@ -725,7 +727,7 @@ link_vmdq(struct virtio_net *dev)
 
 	/* Register the MAC address. */
 	ret = rte_eth_dev_mac_addr_add(ports[0], &dev->mac_address, (uint32_t)dev->device_fh);
- 	if (ret) {
+	if (ret) {
 		RTE_LOG(ERR, VHOST_DATA, "(%"PRIu64") Failed to add device MAC address to VMDQ\n",
 										dev->device_fh);
 		return -1;
@@ -873,8 +875,8 @@ virtio_tx_route(struct virtio_net* dev, struct rte_mbuf *m, struct rte_mempool *
 	vlan_hdr->h_vlan_TCI = htons(vlan_tag);
 
 	/* Copy the remaining packet contents to the mbuf. */
-	rte_memcpy((void *)(rte_pktmbuf_mtod(mbuf, uint8_t *) + VLAN_ETH_HLEN),
-		(const void *)(rte_pktmbuf_mtod(m, uint8_t *) + ETH_HLEN),
+	rte_memcpy(rte_pktmbuf_mtod_offset(mbuf, void *, VLAN_ETH_HLEN),
+		rte_pktmbuf_mtod_offset(m, const void *, ETH_HLEN),
 		(m->data_len - ETH_HLEN));
 	tx_q->m_table[len] = mbuf;
 	len++;
@@ -1432,6 +1434,7 @@ main(int argc, char *argv[])
 	int ret;
 	uint8_t portid;
 	static pthread_t tid;
+	char thread_name[RTE_MAX_THREAD_NAME_LEN];
 
 	/* init EAL */
 	ret = rte_eal_init(argc, argv);
@@ -1461,9 +1464,9 @@ main(int argc, char *argv[])
 		nb_ports = RTE_MAX_ETHPORTS;
 
 	/*
-   	 * Update the global var NUM_PORTS and global array PORTS
-  	 * and get value of var VALID_NUM_PORTS according to system ports number
-  	 */
+	 * Update the global var NUM_PORTS and global array PORTS
+	 * and get value of var VALID_NUM_PORTS according to system ports number
+	 */
 	valid_num_ports = check_ports_num(nb_ports);
 
 	if ((valid_num_ports ==  0) || (valid_num_ports > MAX_SUP_PORTS)) {
@@ -1501,8 +1504,19 @@ main(int argc, char *argv[])
 	memset(&dev_statistics, 0, sizeof(dev_statistics));
 
 	/* Enable stats if the user option is set. */
-	if (enable_stats)
-		pthread_create(&tid, NULL, (void*)print_stats, NULL );
+	if (enable_stats) {
+		ret = pthread_create(&tid, NULL, (void *)print_stats, NULL);
+		if (ret != 0)
+			rte_exit(EXIT_FAILURE,
+				"Cannot create print-stats thread\n");
+
+		/* Set thread_name for aid in debugging. */
+		snprintf(thread_name, RTE_MAX_THREAD_NAME_LEN, "print-xen-stats");
+		ret = rte_thread_setname(tid, thread_name);
+		if (ret != 0)
+			RTE_LOG(ERR, VHOST_CONFIG,
+				"Cannot set print-stats name\n");
+	}
 
 	/* Launch all data cores. */
 	RTE_LCORE_FOREACH_SLAVE(lcore_id) {

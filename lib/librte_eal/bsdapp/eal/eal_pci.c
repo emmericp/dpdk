@@ -67,7 +67,6 @@
 #include <rte_debug.h>
 #include <rte_devargs.h>
 
-#include "rte_pci_dev_ids.h"
 #include "eal_filesystem.h"
 #include "eal_private.h"
 
@@ -83,35 +82,8 @@
  * enabling bus master.
  */
 
-struct uio_map {
-	void *addr;
-	uint64_t offset;
-	uint64_t size;
-	uint64_t phaddr;
-};
-
-/*
- * For multi-process we need to reproduce all PCI mappings in secondary
- * processes, so save them in a tailq.
- */
-struct uio_resource {
-	TAILQ_ENTRY(uio_resource) next;
-
-	struct rte_pci_addr pci_addr;
-	char path[PATH_MAX];
-	size_t nb_maps;
-	struct uio_map maps[PCI_MAX_RESOURCE];
-};
-
-TAILQ_HEAD(uio_res_list, uio_resource);
-
-static struct rte_tailq_elem rte_uio_tailq = {
-	.name = "UIO_RESOURCE_LIST",
-};
-EAL_REGISTER_TAILQ(rte_uio_tailq)
-
 /* unbind kernel driver for this device */
-static int
+int
 pci_unbind_kernel_driver(struct rte_pci_device *dev __rte_unused)
 {
 	RTE_LOG(ERR, EAL, "RTE_PCI_DRV_FORCE_UNBIND flag is not implemented "
@@ -119,97 +91,66 @@ pci_unbind_kernel_driver(struct rte_pci_device *dev __rte_unused)
 	return -ENOTSUP;
 }
 
-/* map a particular resource from a file */
-static void *
-pci_map_resource(void *requested_addr, const char *devname, off_t offset,
-		 size_t size)
+/* Map pci device */
+int
+pci_map_device(struct rte_pci_device *dev)
 {
-	int fd;
-	void *mapaddr;
+	int ret = -1;
 
-	/*
-	 * open devname, to mmap it
-	 */
-	fd = open(devname, O_RDWR);
-	if (fd < 0) {
-		RTE_LOG(ERR, EAL, "Cannot open %s: %s\n",
-			devname, strerror(errno));
-		goto fail;
+	/* try mapping the NIC resources */
+	switch (dev->kdrv) {
+	case RTE_KDRV_NIC_UIO:
+		/* map resources for devices that use uio */
+		ret = pci_uio_map_resource(dev);
+		break;
+	default:
+		RTE_LOG(DEBUG, EAL,
+			"  Not managed by a supported kernel driver, skipped\n");
+		ret = 1;
+		break;
 	}
 
-	/* Map the PCI memory resource of device */
-	mapaddr = mmap(requested_addr, size, PROT_READ | PROT_WRITE,
-			MAP_SHARED, fd, offset);
-	close(fd);
-	if (mapaddr == MAP_FAILED ||
-			(requested_addr != NULL && mapaddr != requested_addr)) {
-		RTE_LOG(ERR, EAL, "%s(): cannot mmap(%s(%d), %p, 0x%lx, 0x%lx):"
-			" %s (%p)\n", __func__, devname, fd, requested_addr,
-			(unsigned long)size, (unsigned long)offset,
-			strerror(errno), mapaddr);
-		goto fail;
-	}
-
-	RTE_LOG(DEBUG, EAL, "  PCI memory mapped at %p\n", mapaddr);
-
-	return mapaddr;
-
-fail:
-	return NULL;
+	return ret;
 }
 
-static int
-pci_uio_map_secondary(struct rte_pci_device *dev)
+/* Unmap pci device */
+void
+pci_unmap_device(struct rte_pci_device *dev)
 {
-        size_t i;
-        struct uio_resource *uio_res;
-	struct uio_res_list *uio_res_list = RTE_TAILQ_CAST(rte_uio_tailq.head, uio_res_list);
-
-	TAILQ_FOREACH(uio_res, uio_res_list, next) {
-
-		/* skip this element if it doesn't match our PCI address */
-		if (memcmp(&uio_res->pci_addr, &dev->addr, sizeof(dev->addr)))
-			continue;
-
-		for (i = 0; i != uio_res->nb_maps; i++) {
-			if (pci_map_resource(uio_res->maps[i].addr,
-					     uio_res->path,
-					     (off_t)uio_res->maps[i].offset,
-					     (size_t)uio_res->maps[i].size)
-			    != uio_res->maps[i].addr) {
-				RTE_LOG(ERR, EAL,
-					"Cannot mmap device resource\n");
-				return (-1);
-			}
-		}
-		return (0);
+	/* try unmapping the NIC resources */
+	switch (dev->kdrv) {
+	case RTE_KDRV_NIC_UIO:
+		/* unmap resources for devices that use uio */
+		pci_uio_unmap_resource(dev);
+		break;
+	default:
+		RTE_LOG(DEBUG, EAL,
+			"  Not managed by a supported kernel driver, skipped\n");
+		break;
 	}
-
-	RTE_LOG(ERR, EAL, "Cannot find resource for device\n");
-	return 1;
 }
 
-/* map the PCI resource of a PCI device in virtual memory */
-static int
-pci_uio_map_resource(struct rte_pci_device *dev)
+void
+pci_uio_free_resource(struct rte_pci_device *dev,
+		struct mapped_pci_resource *uio_res)
 {
-	int i, j;
+	rte_free(uio_res);
+
+	if (dev->intr_handle.fd) {
+		close(dev->intr_handle.fd);
+		dev->intr_handle.fd = -1;
+		dev->intr_handle.type = RTE_INTR_HANDLE_UNKNOWN;
+	}
+}
+
+int
+pci_uio_alloc_resource(struct rte_pci_device *dev,
+		struct mapped_pci_resource **uio_res)
+{
 	char devname[PATH_MAX]; /* contains the /dev/uioX */
-	void *mapaddr;
-	uint64_t phaddr;
-	uint64_t offset;
-	uint64_t pagesz;
-	struct rte_pci_addr *loc = &dev->addr;
-	struct uio_resource *uio_res;
-	struct uio_res_list *uio_res_list = RTE_TAILQ_CAST(rte_uio_tailq.head, uio_res_list);
-	struct uio_map *maps;
+	struct rte_pci_addr *loc;
 
-	dev->intr_handle.fd = -1;
-	dev->intr_handle.type = RTE_INTR_HANDLE_UNKNOWN;
-
-	/* secondary processes - use already recorded details */
-	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
-		return (pci_uio_map_secondary(dev));
+	loc = &dev->addr;
 
 	snprintf(devname, sizeof(devname), "/dev/uio@pci:%u:%u:%u",
 			dev->addr.bus, dev->addr.devid, dev->addr.function);
@@ -225,56 +166,83 @@ pci_uio_map_resource(struct rte_pci_device *dev)
 	if (dev->intr_handle.fd < 0) {
 		RTE_LOG(ERR, EAL, "Cannot open %s: %s\n",
 			devname, strerror(errno));
-		return -1;
+		goto error;
 	}
 	dev->intr_handle.type = RTE_INTR_HANDLE_UIO;
 
 	/* allocate the mapping details for secondary processes*/
-	if ((uio_res = rte_zmalloc("UIO_RES", sizeof (*uio_res), 0)) == NULL) {
+	*uio_res = rte_zmalloc("UIO_RES", sizeof(**uio_res), 0);
+	if (*uio_res == NULL) {
 		RTE_LOG(ERR, EAL,
 			"%s(): cannot store uio mmap details\n", __func__);
-		return (-1);
+		goto error;
 	}
 
-	snprintf(uio_res->path, sizeof(uio_res->path), "%s", devname);
-	memcpy(&uio_res->pci_addr, &dev->addr, sizeof(uio_res->pci_addr));
+	snprintf((*uio_res)->path, sizeof((*uio_res)->path), "%s", devname);
+	memcpy(&(*uio_res)->pci_addr, &dev->addr, sizeof((*uio_res)->pci_addr));
 
+	return 0;
 
-	/* Map all BARs */
-	pagesz = sysconf(_SC_PAGESIZE);
-
-	maps = uio_res->maps;
-	for (i = uio_res->nb_maps = 0; i != PCI_MAX_RESOURCE; i++) {
-
-		j = uio_res->nb_maps;
-		/* skip empty BAR */
-		if ((phaddr = dev->mem_resource[i].phys_addr) == 0)
-			continue;
-
-		/* if matching map is found, then use it */
-		offset = i * pagesz;
-		maps[j].offset = offset;
-		maps[j].phaddr = dev->mem_resource[i].phys_addr;
-		maps[j].size = dev->mem_resource[i].len;
-		if (maps[j].addr != NULL ||
-		    (mapaddr = pci_map_resource(NULL, devname, (off_t)offset,
-						(size_t)maps[j].size)
-		    ) == NULL) {
-			rte_free(uio_res);
-			return (-1);
-		}
-
-		maps[j].addr = mapaddr;
-		uio_res->nb_maps++;
-		dev->mem_resource[i].addr = mapaddr;
-	}
-
-	TAILQ_INSERT_TAIL(uio_res_list, uio_res, next);
-
-	return (0);
+error:
+	pci_uio_free_resource(dev, *uio_res);
+	return -1;
 }
 
-/* Scan one pci sysfs entry, and fill the devices list from it. */
+int
+pci_uio_map_resource_by_index(struct rte_pci_device *dev, int res_idx,
+		struct mapped_pci_resource *uio_res, int map_idx)
+{
+	int fd;
+	char *devname;
+	void *mapaddr;
+	uint64_t offset;
+	uint64_t pagesz;
+	struct pci_map *maps;
+
+	maps = uio_res->maps;
+	devname = uio_res->path;
+	pagesz = sysconf(_SC_PAGESIZE);
+
+	/* allocate memory to keep path */
+	maps[map_idx].path = rte_malloc(NULL, strlen(devname) + 1, 0);
+	if (maps[map_idx].path == NULL) {
+		RTE_LOG(ERR, EAL, "Cannot allocate memory for path: %s\n",
+				strerror(errno));
+		return -1;
+	}
+
+	/*
+	 * open resource file, to mmap it
+	 */
+	fd = open(devname, O_RDWR);
+	if (fd < 0) {
+		RTE_LOG(ERR, EAL, "Cannot open %s: %s\n",
+				devname, strerror(errno));
+		goto error;
+	}
+
+	/* if matching map is found, then use it */
+	offset = res_idx * pagesz;
+	mapaddr = pci_map_resource(NULL, fd, (off_t)offset,
+			(size_t)dev->mem_resource[res_idx].len, 0);
+	close(fd);
+	if (mapaddr == MAP_FAILED)
+		goto error;
+
+	maps[map_idx].phaddr = dev->mem_resource[res_idx].phys_addr;
+	maps[map_idx].size = dev->mem_resource[res_idx].len;
+	maps[map_idx].addr = mapaddr;
+	maps[map_idx].offset = offset;
+	strcpy(maps[map_idx].path, devname);
+	dev->mem_resource[res_idx].addr = mapaddr;
+
+	return 0;
+
+error:
+	rte_free(maps[map_idx].path);
+	return -1;
+}
+
 static int
 pci_scan_one(int dev_pci_fd, struct pci_conf *conf)
 {
@@ -311,7 +279,10 @@ pci_scan_one(int dev_pci_fd, struct pci_conf *conf)
 	/* FreeBSD has no NUMA support (yet) */
 	dev->numa_node = 0;
 
-/* parse resources */
+	/* FreeBSD has only one pass through driver */
+	dev->kdrv = RTE_KDRV_NIC_UIO;
+
+	/* parse resources */
 	switch (conf->pc_hdr & PCIM_HDRTYPE) {
 	case PCIM_HDRTYPE_NORMAL:
 		max = PCIR_MAX_BAR_0;
@@ -379,8 +350,8 @@ skipdev:
  * Scan the content of the PCI bus, and add the devices in the devices
  * list. Call pci_scan_one() for each pci entry found.
  */
-static int
-pci_scan(void)
+int
+rte_eal_pci_scan(void)
 {
 	int fd;
 	unsigned dev_count = 0;
@@ -425,69 +396,87 @@ error:
 	return -1;
 }
 
-/*
- * If vendor/device ID match, call the devinit() function of the
- * driver.
- */
-int
-rte_eal_pci_probe_one_driver(struct rte_pci_driver *dr, struct rte_pci_device *dev)
+/* Read PCI config space. */
+int rte_eal_pci_read_config(const struct rte_pci_device *dev,
+			    void *buf, size_t len, off_t offset)
 {
-	const struct rte_pci_id *id_table;
-	int ret;
+	int fd = -1;
+	struct pci_io pi = {
+		.pi_sel = {
+			.pc_domain = dev->addr.domain,
+			.pc_bus = dev->addr.bus,
+			.pc_dev = dev->addr.devid,
+			.pc_func = dev->addr.function,
+		},
+		.pi_reg = offset,
+		.pi_width = len,
+	};
 
-	for (id_table = dr->id_table ; id_table->vendor_id != 0; id_table++) {
-
-		/* check if device's identifiers match the driver's ones */
-		if (id_table->vendor_id != dev->id.vendor_id &&
-				id_table->vendor_id != PCI_ANY_ID)
-			continue;
-		if (id_table->device_id != dev->id.device_id &&
-				id_table->device_id != PCI_ANY_ID)
-			continue;
-		if (id_table->subsystem_vendor_id != dev->id.subsystem_vendor_id &&
-				id_table->subsystem_vendor_id != PCI_ANY_ID)
-			continue;
-		if (id_table->subsystem_device_id != dev->id.subsystem_device_id &&
-				id_table->subsystem_device_id != PCI_ANY_ID)
-			continue;
-
-		struct rte_pci_addr *loc = &dev->addr;
-
-		RTE_LOG(DEBUG, EAL, "PCI device "PCI_PRI_FMT" on NUMA socket %i\n",
-				loc->domain, loc->bus, loc->devid, loc->function,
-				dev->numa_node);
-
-		RTE_LOG(DEBUG, EAL, "  probe driver: %x:%x %s\n", dev->id.vendor_id,
-				dev->id.device_id, dr->name);
-
-		/* no initialization when blacklisted, return without error */
-		if (dev->devargs != NULL &&
-			dev->devargs->type == RTE_DEVTYPE_BLACKLISTED_PCI) {
-
-			RTE_LOG(DEBUG, EAL, "  Device is blacklisted, not initializing\n");
-			return 0;
-		}
-
-		if (dr->drv_flags & RTE_PCI_DRV_NEED_MAPPING) {
-			/* map resources for devices that use igb_uio */
-			ret = pci_uio_map_resource(dev);
-			if (ret != 0)
-				return ret;
-		} else if (dr->drv_flags & RTE_PCI_DRV_FORCE_UNBIND &&
-		           rte_eal_process_type() == RTE_PROC_PRIMARY) {
-			/* unbind current driver */
-			if (pci_unbind_kernel_driver(dev) < 0)
-				return -1;
-		}
-
-		/* reference driver structure */
-		dev->driver = dr;
-
-		/* call the driver devinit() function */
-		return dr->devinit(dr, dev);
+	if (len == 3 || len > sizeof(pi.pi_data)) {
+		RTE_LOG(ERR, EAL, "%s(): invalid pci read length\n", __func__);
+		goto error;
 	}
-	/* return positive value if driver is not found */
-	return 1;
+
+	fd = open("/dev/pci", O_RDONLY);
+	if (fd < 0) {
+		RTE_LOG(ERR, EAL, "%s(): error opening /dev/pci\n", __func__);
+		goto error;
+	}
+
+	if (ioctl(fd, PCIOCREAD, &pi) < 0)
+		goto error;
+	close(fd);
+
+	memcpy(buf, &pi.pi_data, len);
+	return 0;
+
+ error:
+	if (fd >= 0)
+		close(fd);
+	return -1;
+}
+
+/* Write PCI config space. */
+int rte_eal_pci_write_config(const struct rte_pci_device *dev,
+			     const void *buf, size_t len, off_t offset)
+{
+	int fd = -1;
+
+	struct pci_io pi = {
+		.pi_sel = {
+			.pc_domain = dev->addr.domain,
+			.pc_bus = dev->addr.bus,
+			.pc_dev = dev->addr.devid,
+			.pc_func = dev->addr.function,
+		},
+		.pi_reg = offset,
+		.pi_data = *(const uint32_t *)buf,
+		.pi_width = len,
+	};
+
+	if (len == 3 || len > sizeof(pi.pi_data)) {
+		RTE_LOG(ERR, EAL, "%s(): invalid pci read length\n", __func__);
+		goto error;
+	}
+
+	memcpy(&pi.pi_data, buf, len);
+
+	fd = open("/dev/pci", O_RDONLY);
+	if (fd < 0) {
+		RTE_LOG(ERR, EAL, "%s(): error opening /dev/pci\n", __func__);
+		goto error;
+	}
+
+	if (ioctl(fd, PCIOCWRITE, &pi) < 0)
+		goto error;
+
+	close(fd);
+	return 0;
+
+ error:
+	if (fd >= 0)
+		close(fd);
+	return -1;
 }
 
 /* Init the PCI EAL subsystem */
@@ -501,7 +490,7 @@ rte_eal_pci_init(void)
 	if (internal_config.no_pci)
 		return 0;
 
-	if (pci_scan() < 0) {
+	if (rte_eal_pci_scan() < 0) {
 		RTE_LOG(ERR, EAL, "%s(): Cannot scan PCI bus\n", __func__);
 		return -1;
 	}

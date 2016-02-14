@@ -196,6 +196,9 @@ struct rte_table_hash_key8_lru_params {
 
 	/** Byte offset within packet meta-data where the key is located */
 	uint32_t key_offset;
+
+	/** Bit-mask to be AND-ed to the key on lookup */
+	uint8_t *key_mask;
 };
 
 /** LRU hash table operations for pre-computed key signature */
@@ -226,6 +229,9 @@ struct rte_table_hash_key8_ext_params {
 
 	/** Byte offset within packet meta-data where the key is located */
 	uint32_t key_offset;
+
+	/** Bit-mask to be AND-ed to the key on lookup */
+	uint8_t *key_mask;
 };
 
 /** Extendible bucket hash table operations for pre-computed key signature */
@@ -257,10 +263,17 @@ struct rte_table_hash_key16_lru_params {
 
 	/** Byte offset within packet meta-data where the key is located */
 	uint32_t key_offset;
+
+	/** Bit-mask to be AND-ed to the key on lookup */
+	uint8_t *key_mask;
 };
 
 /** LRU hash table operations for pre-computed key signature */
 extern struct rte_table_ops rte_table_hash_key16_lru_ops;
+
+/** LRU hash table operations for key signature computed on lookup
+    ("do-sig") */
+extern struct rte_table_ops rte_table_hash_key16_lru_dosig_ops;
 
 /** Extendible bucket hash table parameters */
 struct rte_table_hash_key16_ext_params {
@@ -284,10 +297,17 @@ struct rte_table_hash_key16_ext_params {
 
 	/** Byte offset within packet meta-data where the key is located */
 	uint32_t key_offset;
+
+	/** Bit-mask to be AND-ed to the key on lookup */
+	uint8_t *key_mask;
 };
 
 /** Extendible bucket operations for pre-computed key signature */
 extern struct rte_table_ops rte_table_hash_key16_ext_ops;
+
+/** Extendible bucket hash table operations for key signature computed on
+    lookup ("do-sig") */
+extern struct rte_table_ops rte_table_hash_key16_ext_dosig_ops;
 
 /**
  * 32-byte key hash tables

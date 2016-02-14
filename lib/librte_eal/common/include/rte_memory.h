@@ -52,13 +52,19 @@
 extern "C" {
 #endif
 
+#include <rte_common.h>
+
 enum rte_page_sizes {
-	RTE_PGSIZE_4K = 1ULL << 12,
-	RTE_PGSIZE_2M = 1ULL << 21,
-	RTE_PGSIZE_1G = 1ULL << 30,
-	RTE_PGSIZE_64K = 1ULL << 16,
-	RTE_PGSIZE_16M = 1ULL << 24,
-	RTE_PGSIZE_16G = 1ULL << 34
+	RTE_PGSIZE_4K    = 1ULL << 12,
+	RTE_PGSIZE_64K   = 1ULL << 16,
+	RTE_PGSIZE_256K  = 1ULL << 18,
+	RTE_PGSIZE_2M    = 1ULL << 21,
+	RTE_PGSIZE_16M   = 1ULL << 24,
+	RTE_PGSIZE_256M  = 1ULL << 28,
+	RTE_PGSIZE_512M  = 1ULL << 29,
+	RTE_PGSIZE_1G    = 1ULL << 30,
+	RTE_PGSIZE_4G    = 1ULL << 32,
+	RTE_PGSIZE_16G   = 1ULL << 34,
 };
 
 #define SOCKET_ID_ANY -1                    /**< Any NUMA socket. */
@@ -74,7 +80,7 @@ enum rte_page_sizes {
 /**
  * Force alignment to cache line.
  */
-#define __rte_cache_aligned __attribute__((__aligned__(RTE_CACHE_LINE_SIZE)))
+#define __rte_cache_aligned __rte_aligned(RTE_CACHE_LINE_SIZE)
 
 typedef uint64_t phys_addr_t; /**< Physical address definition. */
 #define RTE_BAD_PHYS_ADDR ((phys_addr_t)-1)
@@ -100,7 +106,7 @@ struct rte_memseg {
 	 /**< store segment MFNs */
 	uint64_t mfn[DOM0_NUM_MEMBLOCK];
 #endif
-} __attribute__((__packed__));
+} __rte_packed;
 
 /**
  * Lock page in physical memory and prevent from swapping.
@@ -176,6 +182,13 @@ unsigned rte_memory_get_nchannel(void);
 unsigned rte_memory_get_nrank(void);
 
 #ifdef RTE_LIBRTE_XEN_DOM0
+
+/**< Internal use only - should DOM0 memory mapping be used */
+extern int rte_xen_dom0_supported(void);
+
+/**< Internal use only - phys to virt mapping for xen */
+phys_addr_t rte_xen_mem_phy2mch(uint32_t, const phys_addr_t);
+
 /**
  * Return the physical address of elt, which is an element of the pool mp.
  *
@@ -187,7 +200,14 @@ unsigned rte_memory_get_nrank(void);
  * @return
  *   The physical address or error.
  */
-phys_addr_t rte_mem_phy2mch(uint32_t memseg_id, const phys_addr_t phy_addr);
+static inline phys_addr_t
+rte_mem_phy2mch(uint32_t memseg_id, const phys_addr_t phy_addr)
+{
+	if (rte_xen_dom0_supported())
+		return rte_xen_mem_phy2mch(memseg_id, phy_addr);
+	else
+		return phy_addr;
+}
 
 /**
  * Memory init for supporting application running on Xen domain0.
@@ -196,7 +216,7 @@ phys_addr_t rte_mem_phy2mch(uint32_t memseg_id, const phys_addr_t phy_addr);
  *
  * @return
  *       0: successfully
- *    	 negative: error
+ *	 negative: error
  */
 int rte_xen_dom0_memory_init(void);
 
@@ -210,7 +230,19 @@ int rte_xen_dom0_memory_init(void);
  *       negative: error
  */
 int rte_xen_dom0_memory_attach(void);
+#else
+static inline int rte_xen_dom0_supported(void)
+{
+	return 0;
+}
+
+static inline phys_addr_t
+rte_mem_phy2mch(uint32_t memseg_id __rte_unused, const phys_addr_t phy_addr)
+{
+	return phy_addr;
+}
 #endif
+
 #ifdef __cplusplus
 }
 #endif

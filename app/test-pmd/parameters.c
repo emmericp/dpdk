@@ -398,9 +398,9 @@ parse_portnuma_config(const char *q_arg)
 			return -1;
 		}
 		socket_id = (uint8_t)int_fld[FLD_SOCKET];
-		if(socket_id >= MAX_SOCKET) {
+		if(socket_id >= max_socket) {
 			printf("Invalid socket id, range is [0, %d]\n",
-				 MAX_SOCKET - 1);
+				 max_socket - 1);
 			return -1;
 		}
 		port_numa[port_id] = socket_id;
@@ -458,9 +458,9 @@ parse_ringnuma_config(const char *q_arg)
 			return -1;
 		}
 		socket_id = (uint8_t)int_fld[FLD_SOCKET];
-		if (socket_id >= MAX_SOCKET) {
+		if (socket_id >= max_socket) {
 			printf("Invalid socket id, range is [0, %d]\n",
-				MAX_SOCKET - 1);
+				max_socket - 1);
 			return -1;
 		}
 		ring_flag = (uint8_t)int_fld[FLD_FLAG];
@@ -667,12 +667,12 @@ launch_args_parse(int argc, char** argv)
 					   "invalid ring-numa configuration\n");
 			if (!strcmp(lgopts[opt_idx].name, "socket-num")) {
 				n = atoi(optarg);
-				if(n < MAX_SOCKET)
+				if((uint8_t)n < max_socket)
 					socket_num = (uint8_t)n;
 				else
 					rte_exit(EXIT_FAILURE,
 						"The socket number should be < %d\n",
-						MAX_SOCKET);
+						max_socket);
 			}
 			if (!strcmp(lgopts[opt_idx].name, "mbuf-size")) {
 				n = atoi(optarg);
@@ -707,12 +707,17 @@ launch_args_parse(int argc, char** argv)
 						RTE_FDIR_MODE_SIGNATURE;
 				else if (!strcmp(optarg, "perfect"))
 					fdir_conf.mode = RTE_FDIR_MODE_PERFECT;
+				else if (!strcmp(optarg, "perfect-mac-vlan"))
+					fdir_conf.mode = RTE_FDIR_MODE_PERFECT_MAC_VLAN;
+				else if (!strcmp(optarg, "perfect-tunnel"))
+					fdir_conf.mode = RTE_FDIR_MODE_PERFECT_TUNNEL;
 				else if (!strcmp(optarg, "none"))
 					fdir_conf.mode = RTE_FDIR_MODE_NONE;
 				else
 					rte_exit(EXIT_FAILURE,
 						 "pkt-mode-invalid %s invalid - must be: "
-						 "none, signature or perfect\n",
+						 "none, signature, perfect, perfect-mac-vlan"
+						 " or perfect-tunnel\n",
 						 optarg);
 			}
 			if (!strcmp(lgopts[opt_idx].name,

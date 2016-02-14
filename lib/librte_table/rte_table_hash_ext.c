@@ -74,6 +74,20 @@ do									\
 	(bucket)->next = (bucket2)->next;				\
 while (0)
 
+#ifdef RTE_TABLE_STATS_COLLECT
+
+#define RTE_TABLE_HASH_EXT_STATS_PKTS_IN_ADD(table, val) \
+	table->stats.n_pkts_in += val
+#define RTE_TABLE_HASH_EXT_STATS_PKTS_LOOKUP_MISS(table, val) \
+	table->stats.n_pkts_lookup_miss += val
+
+#else
+
+#define RTE_TABLE_HASH_EXT_STATS_PKTS_IN_ADD(table, val)
+#define RTE_TABLE_HASH_EXT_STATS_PKTS_LOOKUP_MISS(table, val)
+
+#endif
+
 struct grinder {
 	struct bucket *bkt;
 	uint64_t sig;
@@ -82,6 +96,8 @@ struct grinder {
 };
 
 struct rte_table_hash {
+	struct rte_table_stats stats;
+
 	/* Input parameters */
 	uint32_t key_size;
 	uint32_t entry_size;
@@ -146,19 +162,6 @@ check_params_create(struct rte_table_hash_ext_params *params)
 	/* f_hash */
 	if (params->f_hash == NULL) {
 		RTE_LOG(ERR, TABLE, "%s: f_hash invalid value\n", __func__);
-		return -EINVAL;
-	}
-
-	/* signature offset */
-	if ((params->signature_offset & 0x3) != 0) {
-		RTE_LOG(ERR, TABLE, "%s: signature_offset invalid value\n",
-			__func__);
-		return -EINVAL;
-	}
-
-	/* key offset */
-	if ((params->key_offset & 0x7) != 0) {
-		RTE_LOG(ERR, TABLE, "%s: key_offset invalid value\n", __func__);
 		return -EINVAL;
 	}
 
@@ -440,6 +443,9 @@ static int rte_table_hash_ext_lookup_unoptimized(
 	struct rte_table_hash *t = (struct rte_table_hash *) table;
 	uint64_t pkts_mask_out = 0;
 
+	__rte_unused uint32_t n_pkts_in = __builtin_popcountll(pkts_mask);
+	RTE_TABLE_HASH_EXT_STATS_PKTS_IN_ADD(t, n_pkts_in);
+
 	for ( ; pkts_mask; ) {
 		struct bucket *bkt0, *bkt;
 		struct rte_mbuf *pkt;
@@ -484,6 +490,7 @@ static int rte_table_hash_ext_lookup_unoptimized(
 	}
 
 	*lookup_hit_mask = pkts_mask_out;
+	RTE_TABLE_HASH_EXT_STATS_PKTS_LOOKUP_MISS(t, n_pkts_in - __builtin_popcountll(pkts_mask_out));
 	return 0;
 }
 
@@ -641,6 +648,7 @@ static int rte_table_hash_ext_lookup_unoptimized(
 {									\
 	uint64_t pkt00_mask, pkt01_mask;				\
 	struct rte_mbuf *mbuf00, *mbuf01;				\
+	uint32_t key_offset = t->key_offset;			\
 									\
 	pkt00_index = __builtin_ctzll(pkts_mask);			\
 	pkt00_mask = 1LLU << pkt00_index;				\
@@ -652,8 +660,8 @@ static int rte_table_hash_ext_lookup_unoptimized(
 	pkts_mask &= ~pkt01_mask;					\
 	mbuf01 = pkts[pkt01_index];					\
 									\
-	rte_prefetch0(RTE_MBUF_METADATA_UINT8_PTR(mbuf00, 0));		\
-	rte_prefetch0(RTE_MBUF_METADATA_UINT8_PTR(mbuf01, 0));		\
+	rte_prefetch0(RTE_MBUF_METADATA_UINT8_PTR(mbuf00, key_offset));\
+	rte_prefetch0(RTE_MBUF_METADATA_UINT8_PTR(mbuf01, key_offset));\
 }
 
 #define lookup2_stage0_with_odd_support(t, g, pkts, pkts_mask, pkt00_index, \
@@ -661,6 +669,7 @@ static int rte_table_hash_ext_lookup_unoptimized(
 {									\
 	uint64_t pkt00_mask, pkt01_mask;				\
 	struct rte_mbuf *mbuf00, *mbuf01;				\
+	uint32_t key_offset = t->key_offset;			\
 									\
 	pkt00_index = __builtin_ctzll(pkts_mask);			\
 	pkt00_mask = 1LLU << pkt00_index;				\
@@ -674,8 +683,8 @@ static int rte_table_hash_ext_lookup_unoptimized(
 	pkts_mask &= ~pkt01_mask;					\
 	mbuf01 = pkts[pkt01_index];					\
 									\
-	rte_prefetch0(RTE_MBUF_METADATA_UINT8_PTR(mbuf00, 0));		\
-	rte_prefetch0(RTE_MBUF_METADATA_UINT8_PTR(mbuf01, 0));		\
+	rte_prefetch0(RTE_MBUF_METADATA_UINT8_PTR(mbuf00, key_offset));\
+	rte_prefetch0(RTE_MBUF_METADATA_UINT8_PTR(mbuf01, key_offset));\
 }
 
 #define lookup2_stage1(t, g, pkts, pkt10_index, pkt11_index)		\
@@ -861,6 +870,9 @@ static int rte_table_hash_ext_lookup(
 	uint64_t pkts_mask_out = 0, pkts_mask_match_many = 0;
 	int status = 0;
 
+	__rte_unused uint32_t n_pkts_in = __builtin_popcountll(pkts_mask);
+	RTE_TABLE_HASH_EXT_STATS_PKTS_IN_ADD(t, n_pkts_in);
+
 	/* Cannot run the pipeline with less than 7 packets */
 	if (__builtin_popcountll(pkts_mask) < 7)
 		return rte_table_hash_ext_lookup_unoptimized(table, pkts,
@@ -973,6 +985,7 @@ static int rte_table_hash_ext_lookup(
 	}
 
 	*lookup_hit_mask = pkts_mask_out;
+	RTE_TABLE_HASH_EXT_STATS_PKTS_LOOKUP_MISS(t, n_pkts_in - __builtin_popcountll(pkts_mask_out));
 	return status;
 }
 
@@ -989,6 +1002,9 @@ static int rte_table_hash_ext_lookup_dosig(
 	uint64_t pkt20_index, pkt21_index, pkt30_index, pkt31_index;
 	uint64_t pkts_mask_out = 0, pkts_mask_match_many = 0;
 	int status = 0;
+
+	__rte_unused uint32_t n_pkts_in = __builtin_popcountll(pkts_mask);
+	RTE_TABLE_HASH_EXT_STATS_PKTS_IN_ADD(t, n_pkts_in);
 
 	/* Cannot run the pipeline with less than 7 packets */
 	if (__builtin_popcountll(pkts_mask) < 7)
@@ -1102,7 +1118,22 @@ static int rte_table_hash_ext_lookup_dosig(
 	}
 
 	*lookup_hit_mask = pkts_mask_out;
+	RTE_TABLE_HASH_EXT_STATS_PKTS_LOOKUP_MISS(t, n_pkts_in - __builtin_popcountll(pkts_mask_out));
 	return status;
+}
+
+static int
+rte_table_hash_ext_stats_read(void *table, struct rte_table_stats *stats, int clear)
+{
+	struct rte_table_hash *t = (struct rte_table_hash *) table;
+
+	if (stats != NULL)
+		memcpy(stats, &t->stats, sizeof(t->stats));
+
+	if (clear)
+		memset(&t->stats, 0, sizeof(t->stats));
+
+	return 0;
 }
 
 struct rte_table_ops rte_table_hash_ext_ops	 = {
@@ -1110,7 +1141,10 @@ struct rte_table_ops rte_table_hash_ext_ops	 = {
 	.f_free = rte_table_hash_ext_free,
 	.f_add = rte_table_hash_ext_entry_add,
 	.f_delete = rte_table_hash_ext_entry_delete,
+	.f_add_bulk = NULL,
+	.f_delete_bulk = NULL,
 	.f_lookup = rte_table_hash_ext_lookup,
+	.f_stats = rte_table_hash_ext_stats_read,
 };
 
 struct rte_table_ops rte_table_hash_ext_dosig_ops  = {
@@ -1118,5 +1152,8 @@ struct rte_table_ops rte_table_hash_ext_dosig_ops  = {
 	.f_free = rte_table_hash_ext_free,
 	.f_add = rte_table_hash_ext_entry_add,
 	.f_delete = rte_table_hash_ext_entry_delete,
+	.f_add_bulk = NULL,
+	.f_delete_bulk = NULL,
 	.f_lookup = rte_table_hash_ext_lookup_dosig,
+	.f_stats = rte_table_hash_ext_stats_read,
 };

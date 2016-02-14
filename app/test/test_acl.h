@@ -35,15 +35,74 @@
 #define TEST_ACL_H_
 
 struct ipv4_7tuple {
-    	uint16_t vlan;
-    	uint16_t domain;
-        uint8_t proto;
-        uint32_t ip_src;
-        uint32_t ip_dst;
-        uint16_t port_src;
-        uint16_t port_dst;
-        uint32_t allow;
-        uint32_t deny;
+	uint16_t vlan;
+	uint16_t domain;
+	uint8_t proto;
+	uint32_t ip_src;
+	uint32_t ip_dst;
+	uint16_t port_src;
+	uint16_t port_dst;
+	uint32_t allow;
+	uint32_t deny;
+};
+
+/**
+ * Legacy support for 7-tuple IPv4 and VLAN rule.
+ * This structure and corresponding API is deprecated.
+ */
+struct rte_acl_ipv4vlan_rule {
+	struct rte_acl_rule_data data; /**< Miscellaneous data for the rule. */
+	uint8_t proto;                 /**< IPv4 protocol ID. */
+	uint8_t proto_mask;            /**< IPv4 protocol ID mask. */
+	uint16_t vlan;                 /**< VLAN ID. */
+	uint16_t vlan_mask;            /**< VLAN ID mask. */
+	uint16_t domain;               /**< VLAN domain. */
+	uint16_t domain_mask;          /**< VLAN domain mask. */
+	uint32_t src_addr;             /**< IPv4 source address. */
+	uint32_t src_mask_len;         /**< IPv4 source address mask. */
+	uint32_t dst_addr;             /**< IPv4 destination address. */
+	uint32_t dst_mask_len;         /**< IPv4 destination address mask. */
+	uint16_t src_port_low;         /**< L4 source port low. */
+	uint16_t src_port_high;        /**< L4 source port high. */
+	uint16_t dst_port_low;         /**< L4 destination port low. */
+	uint16_t dst_port_high;        /**< L4 destination port high. */
+};
+
+/**
+ * Specifies fields layout inside rte_acl_rule for rte_acl_ipv4vlan_rule.
+ */
+enum {
+	RTE_ACL_IPV4VLAN_PROTO_FIELD,
+	RTE_ACL_IPV4VLAN_VLAN1_FIELD,
+	RTE_ACL_IPV4VLAN_VLAN2_FIELD,
+	RTE_ACL_IPV4VLAN_SRC_FIELD,
+	RTE_ACL_IPV4VLAN_DST_FIELD,
+	RTE_ACL_IPV4VLAN_SRCP_FIELD,
+	RTE_ACL_IPV4VLAN_DSTP_FIELD,
+	RTE_ACL_IPV4VLAN_NUM_FIELDS
+};
+
+/**
+ * Macro to define rule size for rte_acl_ipv4vlan_rule.
+ */
+#define	RTE_ACL_IPV4VLAN_RULE_SZ	\
+	RTE_ACL_RULE_SZ(RTE_ACL_IPV4VLAN_NUM_FIELDS)
+
+/*
+ * That effectively defines order of IPV4VLAN classifications:
+ *  - PROTO
+ *  - VLAN (TAG and DOMAIN)
+ *  - SRC IP ADDRESS
+ *  - DST IP ADDRESS
+ *  - PORTS (SRC and DST)
+ */
+enum {
+	RTE_ACL_IPV4VLAN_PROTO,
+	RTE_ACL_IPV4VLAN_VLAN,
+	RTE_ACL_IPV4VLAN_SRC,
+	RTE_ACL_IPV4VLAN_DST,
+	RTE_ACL_IPV4VLAN_PORTS,
+	RTE_ACL_IPV4VLAN_NUM
 };
 
 /* rules for invalid layout test */
@@ -105,7 +164,7 @@ struct rte_acl_ipv4vlan_rule acl_test_rules[] = {
 		/* matches all packets traveling to 192.168.0.0/16 */
 		{
 				.data = {.userdata = 1, .category_mask = ACL_ALLOW_MASK,
-						.priority = 2},
+						.priority = 230},
 				.dst_addr = IPv4(192,168,0,0),
 				.dst_mask_len = 16,
 				.src_port_low = 0,
@@ -116,7 +175,7 @@ struct rte_acl_ipv4vlan_rule acl_test_rules[] = {
 		/* matches all packets traveling to 192.168.1.0/24 */
 		{
 				.data = {.userdata = 2, .category_mask = ACL_ALLOW_MASK,
-						.priority = 3},
+						.priority = 330},
 				.dst_addr = IPv4(192,168,1,0),
 				.dst_mask_len = 24,
 				.src_port_low = 0,
@@ -127,7 +186,7 @@ struct rte_acl_ipv4vlan_rule acl_test_rules[] = {
 		/* matches all packets traveling to 192.168.1.50 */
 		{
 				.data = {.userdata = 3, .category_mask = ACL_DENY_MASK,
-						.priority = 2},
+						.priority = 230},
 				.dst_addr = IPv4(192,168,1,50),
 				.dst_mask_len = 32,
 				.src_port_low = 0,
@@ -140,7 +199,7 @@ struct rte_acl_ipv4vlan_rule acl_test_rules[] = {
 		/* matches all packets traveling from 10.0.0.0/8 */
 		{
 				.data = {.userdata = 4, .category_mask = ACL_ALLOW_MASK,
-						.priority = 2},
+						.priority = 240},
 				.src_addr = IPv4(10,0,0,0),
 				.src_mask_len = 8,
 				.src_port_low = 0,
@@ -151,7 +210,7 @@ struct rte_acl_ipv4vlan_rule acl_test_rules[] = {
 		/* matches all packets traveling from 10.1.1.0/24 */
 		{
 				.data = {.userdata = 5, .category_mask = ACL_ALLOW_MASK,
-						.priority = 3},
+						.priority = 340},
 				.src_addr = IPv4(10,1,1,0),
 				.src_mask_len = 24,
 				.src_port_low = 0,
@@ -162,7 +221,7 @@ struct rte_acl_ipv4vlan_rule acl_test_rules[] = {
 		/* matches all packets traveling from 10.1.1.1 */
 		{
 				.data = {.userdata = 6, .category_mask = ACL_DENY_MASK,
-						.priority = 2},
+						.priority = 240},
 				.src_addr = IPv4(10,1,1,1),
 				.src_mask_len = 32,
 				.src_port_low = 0,
@@ -175,7 +234,7 @@ struct rte_acl_ipv4vlan_rule acl_test_rules[] = {
 		/* matches all packets with lower 7 bytes of VLAN tag equal to 0x64  */
 		{
 				.data = {.userdata = 7, .category_mask = ACL_ALLOW_MASK,
-						.priority = 2},
+						.priority = 260},
 				.vlan = 0x64,
 				.vlan_mask = 0x7f,
 				.src_port_low = 0,
@@ -186,7 +245,7 @@ struct rte_acl_ipv4vlan_rule acl_test_rules[] = {
 		/* matches all packets with VLAN tags that have 0x5 in them */
 		{
 				.data = {.userdata = 8, .category_mask = ACL_ALLOW_MASK,
-						.priority = 2},
+						.priority = 260},
 				.vlan = 0x5,
 				.vlan_mask = 0x5,
 				.src_port_low = 0,
@@ -197,7 +256,7 @@ struct rte_acl_ipv4vlan_rule acl_test_rules[] = {
 		/* matches all packets with VLAN tag 5 */
 		{
 				.data = {.userdata = 9, .category_mask = ACL_DENY_MASK,
-						.priority = 3},
+						.priority = 360},
 				.vlan = 0x5,
 				.vlan_mask = 0xffff,
 				.src_port_low = 0,
@@ -210,7 +269,7 @@ struct rte_acl_ipv4vlan_rule acl_test_rules[] = {
 		/* matches all packets with lower 7 bytes of domain equal to 0x64  */
 		{
 				.data = {.userdata = 10, .category_mask = ACL_ALLOW_MASK,
-						.priority = 2},
+						.priority = 250},
 				.domain = 0x64,
 				.domain_mask = 0x7f,
 				.src_port_low = 0,
@@ -221,7 +280,7 @@ struct rte_acl_ipv4vlan_rule acl_test_rules[] = {
 		/* matches all packets with domains that have 0x5 in them */
 		{
 				.data = {.userdata = 11, .category_mask = ACL_ALLOW_MASK,
-						.priority = 3},
+						.priority = 350},
 				.domain = 0x5,
 				.domain_mask = 0x5,
 				.src_port_low = 0,
@@ -232,7 +291,7 @@ struct rte_acl_ipv4vlan_rule acl_test_rules[] = {
 		/* matches all packets with domain 5 */
 		{
 				.data = {.userdata = 12, .category_mask = ACL_DENY_MASK,
-						.priority = 3},
+						.priority = 350},
 				.domain = 0x5,
 				.domain_mask = 0xffff,
 				.src_port_low = 0,
@@ -245,7 +304,7 @@ struct rte_acl_ipv4vlan_rule acl_test_rules[] = {
 		/* matches everything with dst port 80 */
 		{
 				.data = {.userdata = 13, .category_mask = ACL_ALLOW_MASK,
-						.priority = 3},
+						.priority = 310},
 				.dst_port_low = 80,
 				.dst_port_high = 80,
 				.src_port_low = 0,
@@ -254,7 +313,7 @@ struct rte_acl_ipv4vlan_rule acl_test_rules[] = {
 		/* matches everything with dst port 22-1023 */
 		{
 				.data = {.userdata = 14, .category_mask = ACL_ALLOW_MASK,
-						.priority = 2},
+						.priority = 210},
 				.dst_port_low = 22,
 				.dst_port_high = 1023,
 				.src_port_low = 0,
@@ -263,7 +322,7 @@ struct rte_acl_ipv4vlan_rule acl_test_rules[] = {
 		/* matches everything with dst port 1020 */
 		{
 				.data = {.userdata = 15, .category_mask = ACL_DENY_MASK,
-						.priority = 3},
+						.priority = 310},
 				.dst_port_low = 1020,
 				.dst_port_high = 1020,
 				.src_port_low = 0,
@@ -272,7 +331,7 @@ struct rte_acl_ipv4vlan_rule acl_test_rules[] = {
 		/* matches everything with dst portrange  1000-2000 */
 		{
 				.data = {.userdata = 16, .category_mask = ACL_DENY_MASK,
-						.priority = 2},
+						.priority = 210},
 				.dst_port_low = 1000,
 				.dst_port_high = 2000,
 				.src_port_low = 0,
@@ -283,7 +342,7 @@ struct rte_acl_ipv4vlan_rule acl_test_rules[] = {
 		/* matches everything with src port 80 */
 		{
 				.data = {.userdata = 17, .category_mask = ACL_ALLOW_MASK,
-						.priority = 3},
+						.priority = 320},
 				.src_port_low = 80,
 				.src_port_high = 80,
 				.dst_port_low = 0,
@@ -292,7 +351,7 @@ struct rte_acl_ipv4vlan_rule acl_test_rules[] = {
 		/* matches everything with src port 22-1023 */
 		{
 				.data = {.userdata = 18, .category_mask = ACL_ALLOW_MASK,
-						.priority = 2},
+						.priority = 220},
 				.src_port_low = 22,
 				.src_port_high = 1023,
 				.dst_port_low = 0,
@@ -301,7 +360,7 @@ struct rte_acl_ipv4vlan_rule acl_test_rules[] = {
 		/* matches everything with src port 1020 */
 		{
 				.data = {.userdata = 19, .category_mask = ACL_DENY_MASK,
-						.priority = 3},
+						.priority = 320},
 				.src_port_low = 1020,
 				.src_port_high = 1020,
 				.dst_port_low = 0,
@@ -310,7 +369,7 @@ struct rte_acl_ipv4vlan_rule acl_test_rules[] = {
 		/* matches everything with src portrange  1000-2000 */
 		{
 				.data = {.userdata = 20, .category_mask = ACL_DENY_MASK,
-						.priority = 2},
+						.priority = 220},
 				.src_port_low = 1000,
 				.src_port_high = 2000,
 				.dst_port_low = 0,
@@ -321,7 +380,7 @@ struct rte_acl_ipv4vlan_rule acl_test_rules[] = {
 		/* matches all packets with protocol number either 0x64 or 0xE4 */
 		{
 				.data = {.userdata = 21, .category_mask = ACL_ALLOW_MASK,
-						.priority = 2},
+						.priority = 270},
 				.proto = 0x64,
 				.proto_mask = 0x7f,
 				.src_port_low = 0,
@@ -343,7 +402,7 @@ struct rte_acl_ipv4vlan_rule acl_test_rules[] = {
 		/* matches all packets with protocol 5 */
 		{
 				.data = {.userdata = 23, .category_mask = ACL_DENY_MASK,
-						.priority = 3},
+						.priority = 370},
 				.proto = 0x5,
 				.proto_mask = 0xff,
 				.src_port_low = 0,
@@ -355,7 +414,7 @@ struct rte_acl_ipv4vlan_rule acl_test_rules[] = {
 /* rules combining various fields */
 		{
 				.data = {.userdata = 24, .category_mask = ACL_ALLOW_MASK,
-						.priority = 4},
+						.priority = 400},
 				/** make sure that unmasked bytes don't fail! */
 				.dst_addr = IPv4(1,2,3,4),
 				.dst_mask_len = 16,
@@ -374,7 +433,7 @@ struct rte_acl_ipv4vlan_rule acl_test_rules[] = {
 		},
 		{
 				.data = {.userdata = 25, .category_mask = ACL_DENY_MASK,
-						.priority = 4},
+						.priority = 400},
 				.dst_addr = IPv4(5,6,7,8),
 				.dst_mask_len = 24,
 				.src_addr = IPv4(1,2,3,4),
@@ -392,7 +451,7 @@ struct rte_acl_ipv4vlan_rule acl_test_rules[] = {
 		},
 		{
 				.data = {.userdata = 26, .category_mask = ACL_ALLOW_MASK,
-						.priority = 5},
+						.priority = 500},
 				.dst_addr = IPv4(1,2,3,4),
 				.dst_mask_len = 8,
 				.src_addr = IPv4(5,6,7,8),
@@ -408,7 +467,7 @@ struct rte_acl_ipv4vlan_rule acl_test_rules[] = {
 		},
 		{
 				.data = {.userdata = 27, .category_mask = ACL_DENY_MASK,
-						.priority = 5},
+						.priority = 500},
 				.dst_addr = IPv4(5,6,7,8),
 				.dst_mask_len = 32,
 				.src_addr = IPv4(1,2,3,4),

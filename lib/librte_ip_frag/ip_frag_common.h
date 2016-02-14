@@ -90,7 +90,7 @@ static inline int
 ip_frag_key_is_empty(const struct ip_frag_key * key)
 {
 	uint32_t i;
-	for (i = 0; i < key->key_len; i++)
+	for (i = 0; i < RTE_MIN(key->key_len, RTE_DIM(key->src_dst)); i++)
 		if (key->src_dst[i] != 0)
 			return 0;
 	return 1;
@@ -165,28 +165,5 @@ ip_frag_reset(struct ip_frag_pkt *fp, uint64_t tms)
 	fp->frags[IP_LAST_FRAG_IDX] = zero_frag;
 	fp->frags[IP_FIRST_FRAG_IDX] = zero_frag;
 }
-
-/* chain two mbufs */
-static inline void
-ip_frag_chain(struct rte_mbuf *mn, struct rte_mbuf *mp)
-{
-	struct rte_mbuf *ms;
-
-	/* adjust start of the last fragment data. */
-	rte_pktmbuf_adj(mp, (uint16_t)(mp->l2_len + mp->l3_len));
-
-	/* chain two fragments. */
-	ms = rte_pktmbuf_lastseg(mn);
-	ms->next = mp;
-
-	/* accumulate number of segments and total length. */
-	mn->nb_segs = (uint8_t)(mn->nb_segs + mp->nb_segs);
-	mn->pkt_len += mp->pkt_len;
-
-	/* reset pkt_len and nb_segs for chained fragment. */
-	mp->pkt_len = mp->data_len;
-	mp->nb_segs = 1;
-}
-
 
 #endif /* _IP_FRAG_COMMON_H_ */

@@ -66,6 +66,8 @@ struct connfd_ctx {
 struct _vhost_server {
 	struct vhost_server *server[MAX_VHOST_SERVER];
 	struct fdset fdset;
+	int vserver_cnt;
+	pthread_mutex_t server_mutex;
 };
 
 static struct _vhost_server g_vhost_server = {
@@ -74,9 +76,9 @@ static struct _vhost_server g_vhost_server = {
 		.fd_mutex = PTHREAD_MUTEX_INITIALIZER,
 		.num = 0
 	},
+	.vserver_cnt = 0,
+	.server_mutex = PTHREAD_MUTEX_INITIALIZER,
 };
-
-static int vserver_idx;
 
 static const char *vhost_message_str[VHOST_USER_MAX] = {
 	[VHOST_USER_NONE] = "VHOST_USER_NONE",
@@ -93,7 +95,11 @@ static const char *vhost_message_str[VHOST_USER_MAX] = {
 	[VHOST_USER_GET_VRING_BASE] = "VHOST_USER_GET_VRING_BASE",
 	[VHOST_USER_SET_VRING_KICK] = "VHOST_USER_SET_VRING_KICK",
 	[VHOST_USER_SET_VRING_CALL] = "VHOST_USER_SET_VRING_CALL",
-	[VHOST_USER_SET_VRING_ERR]  = "VHOST_USER_SET_VRING_ERR"
+	[VHOST_USER_SET_VRING_ERR]  = "VHOST_USER_SET_VRING_ERR",
+	[VHOST_USER_GET_PROTOCOL_FEATURES]  = "VHOST_USER_GET_PROTOCOL_FEATURES",
+	[VHOST_USER_SET_PROTOCOL_FEATURES]  = "VHOST_USER_SET_PROTOCOL_FEATURES",
+	[VHOST_USER_GET_QUEUE_NUM]  = "VHOST_USER_GET_QUEUE_NUM",
+	[VHOST_USER_SET_VRING_ENABLE]  = "VHOST_USER_SET_VRING_ENABLE",
 };
 
 /**
@@ -120,8 +126,11 @@ uds_socket(const char *path)
 	un.sun_family = AF_UNIX;
 	snprintf(un.sun_path, sizeof(un.sun_path), "%s", path);
 	ret = bind(sockfd, (struct sockaddr *)&un, sizeof(un));
-	if (ret == -1)
+	if (ret == -1) {
+		RTE_LOG(ERR, VHOST_CONFIG, "fail to bind fd:%d, remove file:%s and try again.\n",
+			sockfd, path);
 		goto err;
+	}
 	RTE_LOG(INFO, VHOST_CONFIG, "bind to %s\n", path);
 
 	ret = listen(sockfd, MAX_VIRTIO_BACKLOG);
@@ -324,32 +333,16 @@ vserver_message_handler(int connfd, void *dat, int *remove)
 
 	ctx.fh = cfd_ctx->fh;
 	ret = read_vhost_message(connfd, &msg);
-	if (ret < 0) {
-		RTE_LOG(ERR, VHOST_CONFIG,
-			"vhost read message failed\n");
-
-		close(connfd);
-		*remove = 1;
-		free(cfd_ctx);
-		user_destroy_device(ctx);
-		ops->destroy_device(ctx);
-
-		return;
-	} else if (ret == 0) {
-		RTE_LOG(INFO, VHOST_CONFIG,
-			"vhost peer closed\n");
-
-		close(connfd);
-		*remove = 1;
-		free(cfd_ctx);
-		user_destroy_device(ctx);
-		ops->destroy_device(ctx);
-
-		return;
-	}
-	if (msg.request > VHOST_USER_MAX) {
-		RTE_LOG(ERR, VHOST_CONFIG,
-			"vhost read incorrect message\n");
+	if (ret <= 0 || msg.request >= VHOST_USER_MAX) {
+		if (ret < 0)
+			RTE_LOG(ERR, VHOST_CONFIG,
+				"vhost read message failed\n");
+		else if (ret == 0)
+			RTE_LOG(INFO, VHOST_CONFIG,
+				"vhost peer closed\n");
+		else
+			RTE_LOG(ERR, VHOST_CONFIG,
+				"vhost read incorrect message\n");
 
 		close(connfd);
 		*remove = 1;
@@ -374,6 +367,15 @@ vserver_message_handler(int connfd, void *dat, int *remove)
 		ops->set_features(ctx, &features);
 		break;
 
+	case VHOST_USER_GET_PROTOCOL_FEATURES:
+		msg.payload.u64 = VHOST_USER_PROTOCOL_FEATURES;
+		msg.size = sizeof(msg.payload.u64);
+		send_vhost_message(connfd, &msg);
+		break;
+	case VHOST_USER_SET_PROTOCOL_FEATURES:
+		user_set_protocol_features(ctx, msg.payload.u64);
+		break;
+
 	case VHOST_USER_SET_OWNER:
 		ops->set_owner(ctx);
 		break;
@@ -387,6 +389,8 @@ vserver_message_handler(int connfd, void *dat, int *remove)
 
 	case VHOST_USER_SET_LOG_BASE:
 		RTE_LOG(INFO, VHOST_CONFIG, "not implemented.\n");
+		break;
+
 	case VHOST_USER_SET_LOG_FD:
 		close(msg.fds[0]);
 		RTE_LOG(INFO, VHOST_CONFIG, "not implemented.\n");
@@ -421,12 +425,21 @@ vserver_message_handler(int connfd, void *dat, int *remove)
 		RTE_LOG(INFO, VHOST_CONFIG, "not implemented\n");
 		break;
 
+	case VHOST_USER_GET_QUEUE_NUM:
+		msg.payload.u64 = VHOST_MAX_QUEUE_PAIRS;
+		msg.size = sizeof(msg.payload.u64);
+		send_vhost_message(connfd, &msg);
+		break;
+
+	case VHOST_USER_SET_VRING_ENABLE:
+		user_set_vring_enable(ctx, &msg.payload.state);
+		break;
+
 	default:
 		break;
 
 	}
 }
-
 
 /**
  * Creates and initialise the vhost server.
@@ -436,33 +449,76 @@ rte_vhost_driver_register(const char *path)
 {
 	struct vhost_server *vserver;
 
-	if (vserver_idx == 0)
+	pthread_mutex_lock(&g_vhost_server.server_mutex);
+	if (ops == NULL)
 		ops = get_virtio_net_callbacks();
-	if (vserver_idx == MAX_VHOST_SERVER)
+
+	if (g_vhost_server.vserver_cnt == MAX_VHOST_SERVER) {
+		RTE_LOG(ERR, VHOST_CONFIG,
+			"error: the number of servers reaches maximum\n");
+		pthread_mutex_unlock(&g_vhost_server.server_mutex);
 		return -1;
+	}
 
 	vserver = calloc(sizeof(struct vhost_server), 1);
-	if (vserver == NULL)
+	if (vserver == NULL) {
+		pthread_mutex_unlock(&g_vhost_server.server_mutex);
 		return -1;
-
-	unlink(path);
+	}
 
 	vserver->listenfd = uds_socket(path);
 	if (vserver->listenfd < 0) {
 		free(vserver);
+		pthread_mutex_unlock(&g_vhost_server.server_mutex);
 		return -1;
 	}
-	vserver->path = path;
+
+	vserver->path = strdup(path);
 
 	fdset_add(&g_vhost_server.fdset, vserver->listenfd,
-		vserver_new_vq_conn, NULL,
-		vserver);
+		vserver_new_vq_conn, NULL, vserver);
 
-	g_vhost_server.server[vserver_idx++] = vserver;
+	g_vhost_server.server[g_vhost_server.vserver_cnt++] = vserver;
+	pthread_mutex_unlock(&g_vhost_server.server_mutex);
 
 	return 0;
 }
 
+
+/**
+ * Unregister the specified vhost server
+ */
+int
+rte_vhost_driver_unregister(const char *path)
+{
+	int i;
+	int count;
+
+	pthread_mutex_lock(&g_vhost_server.server_mutex);
+
+	for (i = 0; i < g_vhost_server.vserver_cnt; i++) {
+		if (!strcmp(g_vhost_server.server[i]->path, path)) {
+			fdset_del(&g_vhost_server.fdset,
+				g_vhost_server.server[i]->listenfd);
+
+			close(g_vhost_server.server[i]->listenfd);
+			free(g_vhost_server.server[i]->path);
+			free(g_vhost_server.server[i]);
+
+			unlink(path);
+
+			count = --g_vhost_server.vserver_cnt;
+			g_vhost_server.server[i] = g_vhost_server.server[count];
+			g_vhost_server.server[count] = NULL;
+			pthread_mutex_unlock(&g_vhost_server.server_mutex);
+
+			return 0;
+		}
+	}
+	pthread_mutex_unlock(&g_vhost_server.server_mutex);
+
+	return -1;
+}
 
 int
 rte_vhost_driver_session_start(void)

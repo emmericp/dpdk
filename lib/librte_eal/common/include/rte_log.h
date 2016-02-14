@@ -77,6 +77,8 @@ extern struct rte_logs rte_logs;
 #define RTE_LOGTYPE_PORT    0x00002000 /**< Log related to port. */
 #define RTE_LOGTYPE_TABLE   0x00004000 /**< Log related to table. */
 #define RTE_LOGTYPE_PIPELINE 0x00008000 /**< Log related to pipeline. */
+#define RTE_LOGTYPE_MBUF    0x00010000 /**< Log related to mbuf. */
+#define RTE_LOGTYPE_CRYPTODEV 0x00020000 /**< Log related to cryptodev. */
 
 /* these log types can be used in an application */
 #define RTE_LOGTYPE_USER1   0x01000000 /**< User-defined log type 1. */
@@ -289,11 +291,9 @@ int rte_vlog(uint32_t level, uint32_t logtype, const char *format, va_list ap)
  * @param t
  *   The log type, for example, EAL. The short name is expanded by the
  *   macro, so it cannot be an integer value.
- * @param fmt
+ * @param ...
  *   The fmt string, as in printf(3), followed by the variable arguments
  *   required by the format.
- * @param args
- *   The variable list of arguments according to the format string.
  * @return
  *   - 0: Success.
  *   - Negative on error.

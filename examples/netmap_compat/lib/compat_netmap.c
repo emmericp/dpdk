@@ -73,6 +73,14 @@ struct fd_port {
 	uint32_t port;
 };
 
+#ifndef POLLRDNORM
+#define POLLRDNORM	0x0040
+#endif
+
+#ifndef POLLWRNORM
+#define POLLWRNORM	0x0100
+#endif
+
 #define	FD_PORT_FREE	UINT32_MAX
 #define	FD_PORT_RSRV	(FD_PORT_FREE - 1)
 
@@ -550,7 +558,7 @@ tx_sync_ring(struct netmap_ring *ring, uint8_t port, uint16_t ring_number,
 		burst_size = (uint16_t)RTE_MIN(n_used_slots, RTE_DIM(tx_mbufs));
 
 		for (i = 0; i < burst_size; i++) {
- 			tx_mbufs[i] = rte_pktmbuf_alloc(pool);
+			tx_mbufs[i] = rte_pktmbuf_alloc(pool);
 			if (tx_mbufs[i] == NULL)
 				goto err;
 
@@ -638,7 +646,7 @@ rte_netmap_init(const struct rte_netmap_conf *conf)
 	port_num = RTE_MAX_ETHPORTS;
 	port_rings = 2 * conf->max_rings;
 	port_slots = port_rings * conf->max_slots;
-    	port_bufs = port_slots;
+	port_bufs = port_slots;
 
 	nmif_sz = NETMAP_IF_RING_OFS(port_rings, port_rings, port_slots);
 	sz = nmif_sz * port_num;
@@ -824,7 +832,7 @@ rte_netmap_mmap(void *addr, size_t length,
 		return (MAP_FAILED);
 	}
 
-	return ((void *)((uintptr_t)netmap.mem + offset));
+	return (void *)((uintptr_t)netmap.mem + (uintptr_t)offset);
 }
 
 /**
@@ -870,7 +878,7 @@ rte_netmap_poll(struct pollfd *fds, nfds_t nfds, int timeout)
 
 			idx = FD_TO_IDX(fds[i].fd);
 			if ((port = fd_port[idx].port) >= RTE_DIM(ports) ||
-                        		ports[port].fd != idx) {
+		ports[port].fd != idx) {
 
 				fds[i].revents |= POLLERR;
 				ret++;

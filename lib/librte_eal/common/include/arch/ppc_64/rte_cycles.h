@@ -39,6 +39,8 @@ extern "C" {
 
 #include "generic/rte_cycles.h"
 
+#include <rte_byteorder.h>
+
 /**
  * Read the time base register.
  *
@@ -51,8 +53,13 @@ rte_rdtsc(void)
 	union {
 		uint64_t tsc_64;
 		struct {
+#if RTE_BYTE_ORDER == RTE_BIG_ENDIAN
 			uint32_t hi_32;
 			uint32_t lo_32;
+#else
+			uint32_t lo_32;
+			uint32_t hi_32;
+#endif
 		};
 	} tsc;
 	uint32_t tmp;

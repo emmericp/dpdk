@@ -101,6 +101,10 @@ static const struct acl_alg acl_alg[] = {
 		.name = "avx2",
 		.alg = RTE_ACL_CLASSIFY_AVX2,
 	},
+	{
+		.name = "neon",
+		.alg = RTE_ACL_CLASSIFY_NEON,
+	},
 };
 
 static struct {
@@ -160,6 +164,23 @@ enum {
 	SRCP_FIELD_IPV4,
 	DSTP_FIELD_IPV4,
 	NUM_FIELDS_IPV4
+};
+
+/*
+ * That effectively defines order of IPV4VLAN classifications:
+ *  - PROTO
+ *  - VLAN (TAG and DOMAIN)
+ *  - SRC IP ADDRESS
+ *  - DST IP ADDRESS
+ *  - PORTS (SRC and DST)
+ */
+enum {
+	RTE_ACL_IPV4VLAN_PROTO,
+	RTE_ACL_IPV4VLAN_VLAN,
+	RTE_ACL_IPV4VLAN_SRC,
+	RTE_ACL_IPV4VLAN_DST,
+	RTE_ACL_IPV4VLAN_PORTS,
+	RTE_ACL_IPV4VLAN_NUM
 };
 
 struct rte_acl_field_def ipv4_defs[NUM_FIELDS_IPV4] = {
@@ -739,7 +760,8 @@ add_cb_rules(FILE *f, struct rte_acl_ctx *ctx)
 			return rc;
 		}
 
-		v.data.category_mask = LEN2MASK(RTE_ACL_MAX_CATEGORIES);
+		v.data.category_mask = RTE_LEN2MASK(RTE_ACL_MAX_CATEGORIES,
+			typeof(v.data.category_mask));
 		v.data.priority = RTE_ACL_MAX_PRIORITY - n;
 		v.data.userdata = n;
 

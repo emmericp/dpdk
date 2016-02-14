@@ -39,6 +39,10 @@
 #include <limits.h>
 #include <errno.h>
 #include <getopt.h>
+#include <dlfcn.h>
+#include <sys/types.h>
+#include <sys/stat.h>
+#include <dirent.h>
 
 #include <rte_eal.h>
 #include <rte_log.h>
@@ -74,6 +78,7 @@ eal_long_options[] = {
 	{OPT_FILE_PREFIX,       1, NULL, OPT_FILE_PREFIX_NUM      },
 	{OPT_HELP,              0, NULL, OPT_HELP_NUM             },
 	{OPT_HUGE_DIR,          1, NULL, OPT_HUGE_DIR_NUM         },
+	{OPT_HUGE_UNLINK,       0, NULL, OPT_HUGE_UNLINK_NUM      },
 	{OPT_LCORES,            1, NULL, OPT_LCORES_NUM           },
 	{OPT_LOG_LEVEL,         1, NULL, OPT_LOG_LEVEL_NUM        },
 	{OPT_MASTER_LCORE,      1, NULL, OPT_MASTER_LCORE_NUM     },
@@ -93,7 +98,23 @@ eal_long_options[] = {
 	{0,                     0, NULL, 0                        }
 };
 
-static int lcores_parsed;
+TAILQ_HEAD(shared_driver_list, shared_driver);
+
+/* Definition for shared object drivers. */
+struct shared_driver {
+	TAILQ_ENTRY(shared_driver) next;
+
+	char    name[PATH_MAX];
+	void*   lib_handle;
+};
+
+/* List of external loadable drivers */
+static struct shared_driver_list solib_list =
+TAILQ_HEAD_INITIALIZER(solib_list);
+
+/* Default path of external loadable drivers */
+static const char *default_solib_dir = RTE_EAL_PMD_PATH;
+
 static int master_lcore_parsed;
 static int mem_parsed;
 
@@ -132,6 +153,91 @@ eal_reset_internal_config(struct internal_config *internal_cfg)
 #endif
 	internal_cfg->vmware_tsc_map = 0;
 	internal_cfg->create_uio_dev = 0;
+}
+
+static int
+eal_plugin_add(const char *path)
+{
+	struct shared_driver *solib;
+
+	solib = malloc(sizeof(*solib));
+	if (solib == NULL) {
+		RTE_LOG(ERR, EAL, "malloc(solib) failed\n");
+		return -1;
+	}
+	memset(solib, 0, sizeof(*solib));
+	strncpy(solib->name, path, PATH_MAX-1);
+	solib->name[PATH_MAX-1] = 0;
+	TAILQ_INSERT_TAIL(&solib_list, solib, next);
+
+	return 0;
+}
+
+static int
+eal_plugindir_init(const char *path)
+{
+	DIR *d = NULL;
+	struct dirent *dent = NULL;
+	char sopath[PATH_MAX];
+
+	if (path == NULL || *path == '\0')
+		return 0;
+
+	d = opendir(path);
+	if (d == NULL) {
+		RTE_LOG(ERR, EAL, "failed to open directory %s: %s\n",
+			path, strerror(errno));
+		return -1;
+	}
+
+	while ((dent = readdir(d)) != NULL) {
+		struct stat sb;
+
+		snprintf(sopath, PATH_MAX-1, "%s/%s", path, dent->d_name);
+		sopath[PATH_MAX-1] = 0;
+
+		if (!(stat(sopath, &sb) == 0 && S_ISREG(sb.st_mode)))
+			continue;
+
+		if (eal_plugin_add(sopath) == -1)
+			break;
+	}
+
+	closedir(d);
+	/* XXX this ignores failures from readdir() itself */
+	return (dent == NULL) ? 0 : -1;
+}
+
+int
+eal_plugins_init(void)
+{
+	struct shared_driver *solib = NULL;
+
+	if (*default_solib_dir != '\0')
+		eal_plugin_add(default_solib_dir);
+
+	TAILQ_FOREACH(solib, &solib_list, next) {
+		struct stat sb;
+
+		if (stat(solib->name, &sb) == 0 && S_ISDIR(sb.st_mode)) {
+			if (eal_plugindir_init(solib->name) == -1) {
+				RTE_LOG(ERR, EAL,
+					"Cannot init plugin directory %s\n",
+					solib->name);
+				return -1;
+			}
+		} else {
+			RTE_LOG(DEBUG, EAL, "open shared lib %s\n",
+				solib->name);
+			solib->lib_handle = dlopen(solib->name, RTLD_NOW);
+			if (solib->lib_handle == NULL) {
+				RTE_LOG(ERR, EAL, "%s\n", dlerror());
+				return -1;
+			}
+		}
+
+	}
+	return 0;
 }
 
 /*
@@ -212,7 +318,6 @@ eal_parse_coremask(const char *coremask)
 		return -1;
 	/* Update the count of enabled logical cores of the EAL configuration */
 	cfg->lcore_count = count;
-	lcores_parsed = 1;
 	return 0;
 }
 
@@ -279,7 +384,6 @@ eal_parse_corelist(const char *corelist)
 	/* Update the count of enabled logical cores of the EAL configuration */
 	cfg->lcore_count = count;
 
-	lcores_parsed = 1;
 	return 0;
 }
 
@@ -569,7 +673,6 @@ eal_parse_lcores(const char *lcores)
 		goto err;
 
 	cfg->lcore_count = count;
-	lcores_parsed = 1;
 	ret = 0;
 
 err:
@@ -709,6 +812,11 @@ eal_parse_common_option(int opt, const char *optarg,
 			return -1;
 		}
 		break;
+	/* force loading of external driver */
+	case 'd':
+		if (eal_plugin_add(optarg) == -1)
+			return -1;
+		break;
 	case 'v':
 		/* since message is explicitly requested by user, we
 		 * write message at highest log level so it can always
@@ -718,6 +826,10 @@ eal_parse_common_option(int opt, const char *optarg,
 		break;
 
 	/* long options */
+	case OPT_HUGE_UNLINK_NUM:
+		conf->hugepage_unlink = 1;
+		break;
+
 	case OPT_NO_HUGE_NUM:
 		conf->no_hugetlbfs = 1;
 		break;
@@ -820,11 +932,6 @@ eal_check_common_options(struct internal_config *internal_cfg)
 {
 	struct rte_config *cfg = rte_eal_get_configuration();
 
-	if (!lcores_parsed) {
-		RTE_LOG(ERR, EAL, "CPU cores must be enabled with options "
-			"-c, -l or --lcores\n");
-		return -1;
-	}
 	if (cfg->lcore_role[cfg->master_lcore] != ROLE_RTE) {
 		RTE_LOG(ERR, EAL, "Master lcore is not enabled for DPDK\n");
 		return -1;
@@ -832,12 +939,6 @@ eal_check_common_options(struct internal_config *internal_cfg)
 
 	if (internal_cfg->process_type == RTE_PROC_INVALID) {
 		RTE_LOG(ERR, EAL, "Invalid process type specified\n");
-		return -1;
-	}
-	if (internal_cfg->process_type == RTE_PROC_PRIMARY &&
-			internal_cfg->force_nchannel == 0) {
-		RTE_LOG(ERR, EAL, "Number of memory channels (-n) not "
-			"specified\n");
 		return -1;
 	}
 	if (index(internal_cfg->hugefile_prefix, '%') != NULL) {
@@ -850,9 +951,14 @@ eal_check_common_options(struct internal_config *internal_cfg)
 			"be specified at the same time\n");
 		return -1;
 	}
-	if (internal_cfg->no_hugetlbfs &&
-			(mem_parsed || internal_cfg->force_sockets == 1)) {
-		RTE_LOG(ERR, EAL, "Options -m or --"OPT_SOCKET_MEM" cannot "
+	if (internal_cfg->no_hugetlbfs && internal_cfg->force_sockets == 1) {
+		RTE_LOG(ERR, EAL, "Option --"OPT_SOCKET_MEM" cannot "
+			"be specified together with --"OPT_NO_HUGE"\n");
+		return -1;
+	}
+
+	if (internal_cfg->no_hugetlbfs && internal_cfg->hugepage_unlink) {
+		RTE_LOG(ERR, EAL, "Option --"OPT_HUGE_UNLINK" cannot "
 			"be specified together with --"OPT_NO_HUGE"\n");
 		return -1;
 	}
@@ -870,7 +976,7 @@ eal_check_common_options(struct internal_config *internal_cfg)
 void
 eal_common_usage(void)
 {
-	printf("-c COREMASK|-l CORELIST -n CHANNELS [options]\n\n"
+	printf("[options]\n\n"
 	       "EAL common options:\n"
 	       "  -c COREMASK         Hexadecimal bitmask of cores to run on\n"
 	       "  -l CORELIST         List of cores to run on\n"
@@ -899,6 +1005,8 @@ eal_common_usage(void)
 	       "  --"OPT_VDEV"              Add a virtual device.\n"
 	       "                      The argument format is <driver><id>[,key=val,...]\n"
 	       "                      (ex: --vdev=eth_pcap0,iface=eth2).\n"
+	       "  -d LIB.so|DIR       Add a driver or driver directory\n"
+	       "                      (can be used multiple times)\n"
 	       "  --"OPT_VMWARE_TSC_MAP"    Use VMware TSC map instead of native RDTSC\n"
 	       "  --"OPT_PROC_TYPE"         Type of this process (primary|secondary|auto)\n"
 	       "  --"OPT_SYSLOG"            Set syslog facility\n"
@@ -906,6 +1014,7 @@ eal_common_usage(void)
 	       "  -v                  Display version information on startup\n"
 	       "  -h, --help          This help\n"
 	       "\nEAL options for DEBUG use only:\n"
+	       "  --"OPT_HUGE_UNLINK"       Unlink hugepage files after init\n"
 	       "  --"OPT_NO_HUGE"           Use malloc instead of hugetlbfs\n"
 	       "  --"OPT_NO_PCI"            Disable PCI\n"
 	       "  --"OPT_NO_HPET"           Disable HPET\n"

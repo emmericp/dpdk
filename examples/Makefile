@@ -43,6 +43,7 @@ DIRS-$(CONFIG_RTE_LIBRTE_DISTRIBUTOR) += distributor
 ifneq ($(ICP_ROOT),)
 DIRS-y += dpdk_qat
 endif
+DIRS-y += ethtool
 DIRS-y += exception_path
 DIRS-y += helloworld
 DIRS-y += ip_pipeline
@@ -53,6 +54,7 @@ DIRS-$(CONFIG_RTE_LIBRTE_KNI) += kni
 DIRS-y += l2fwd
 DIRS-$(CONFIG_RTE_LIBRTE_IVSHMEM) += l2fwd-ivshmem
 DIRS-$(CONFIG_RTE_LIBRTE_JOBSTATS) += l2fwd-jobstats
+DIRS-y += l2fwd-keepalive
 DIRS-y += l3fwd
 DIRS-$(CONFIG_RTE_LIBRTE_ACL) += l3fwd-acl
 DIRS-$(CONFIG_RTE_LIBRTE_POWER) += l3fwd-power
@@ -62,16 +64,19 @@ DIRS-y += load_balancer
 DIRS-y += multi_process
 DIRS-y += netmap_compat/bridge
 DIRS-$(CONFIG_RTE_LIBRTE_REORDER) += packet_ordering
+DIRS-$(CONFIG_RTE_LIBRTE_IEEE1588) += ptpclient
 DIRS-$(CONFIG_RTE_LIBRTE_METER) += qos_meter
 DIRS-$(CONFIG_RTE_LIBRTE_SCHED) += qos_sched
 DIRS-y += quota_watermark
 DIRS-$(CONFIG_RTE_ETHDEV_RXTX_CALLBACKS) += rxtx_callbacks
 DIRS-y += skeleton
-DIRS-y += timer
+DIRS-$(CONFIG_RTE_LIBRTE_VHOST) += tep_termination
+DIRS-$(CONFIG_RTE_LIBRTE_TIMER) += timer
 DIRS-$(CONFIG_RTE_LIBRTE_VHOST) += vhost
 DIRS-$(CONFIG_RTE_LIBRTE_XEN_DOM0) += vhost_xen
 DIRS-y += vmdq
 DIRS-y += vmdq_dcb
-DIRS-y += vm_power_manager
+DIRS-$(CONFIG_RTE_LIBRTE_POWER) += vm_power_manager
+DIRS-$(CONFIG_RTE_LIBRTE_CRYPTODEV) += l2fwd-crypto
 
 include $(RTE_SDK)/mk/rte.extsubdir.mk

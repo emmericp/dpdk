@@ -112,6 +112,45 @@ struct rte_pipeline_params {
 	uint32_t offset_port_id;
 };
 
+/** Pipeline port in stats. */
+struct rte_pipeline_port_in_stats {
+	/** Port in stats. */
+	struct rte_port_in_stats stats;
+
+	/** Number of packets dropped by action handler. */
+	uint64_t n_pkts_dropped_by_ah;
+
+};
+
+/** Pipeline port out stats. */
+struct rte_pipeline_port_out_stats {
+	/** Port out stats. */
+	struct rte_port_out_stats stats;
+
+	/** Number of packets dropped by action handler. */
+	uint64_t n_pkts_dropped_by_ah;
+};
+
+/** Pipeline table stats. */
+struct rte_pipeline_table_stats {
+	/** Table stats. */
+	struct rte_table_stats stats;
+
+	/** Number of packets dropped by lookup hit action handler. */
+	uint64_t n_pkts_dropped_by_lkp_hit_ah;
+
+	/** Number of packets dropped by lookup miss action handler. */
+	uint64_t n_pkts_dropped_by_lkp_miss_ah;
+
+	/** Number of packets dropped by pipeline in behalf of this table based on
+	 * on action specified in table entry. */
+	uint64_t n_pkts_dropped_lkp_hit;
+
+	/** Number of packets dropped by pipeline in behalf of this table based on
+	 * on action specified in table entry. */
+	uint64_t n_pkts_dropped_lkp_miss;
+};
+
 /**
  * Pipeline create
  *
@@ -426,6 +465,90 @@ int rte_pipeline_table_entry_delete(struct rte_pipeline *p,
 	int *key_found,
 	struct rte_pipeline_table_entry *entry);
 
+/**
+ * Pipeline table entry add bulk
+ *
+ * @param p
+ *   Handle to pipeline instance
+ * @param table_id
+ *   Table ID (returned by previous invocation of pipeline table create)
+ * @param keys
+ *   Array containing table entry keys
+ * @param entries
+ *   Array containung new contents for every table entry identified by key
+ * @param n_keys
+ *   Number of keys to add
+ * @param key_found
+ *   On successful invocation, key_found for every item in the array is set to
+ *   TRUE (value different than 0) if key was already present in the table
+ *   before the add operation and to FALSE (value 0) if not
+ * @param entries_ptr
+ *   On successful invocation, array *entries_ptr stores pointer to every table
+ *   entry associated with key. This can be used for further read-write accesses
+ *   to this table entry and is valid until the key is deleted from the table or
+ *   re-added (usually for associating different actions and/or action meta-data
+ *   to the current key)
+ * @return
+ *   0 on success, error code otherwise
+ */
+int rte_pipeline_table_entry_add_bulk(struct rte_pipeline *p,
+	uint32_t table_id,
+	void **keys,
+	struct rte_pipeline_table_entry **entries,
+	uint32_t n_keys,
+	int *key_found,
+	struct rte_pipeline_table_entry **entries_ptr);
+
+/**
+ * Pipeline table entry delete bulk
+ *
+ * @param p
+ *   Handle to pipeline instance
+ * @param table_id
+ *   Table ID (returned by previous invocation of pipeline table create)
+ * @param keys
+ *   Array containing table entry keys
+ * @param n_keys
+ *   Number of keys to delete
+ * @param key_found
+ *   On successful invocation, key_found for every item in the array is set to
+ *   TRUE (value different than 0) if key was found in the table before the
+ *   delete operation and to FALSE (value 0) if not
+ * @param entries
+ *   If entries pointer is NULL, this pointer is ignored for every entry found.
+ *   Else, after successful invocation, if specific key is found in the table
+ *   and entry points to a valid buffer, the table entry contents (as it was
+ *   before the delete was performed) is copied to this buffer.
+ * @return
+ *   0 on success, error code otherwise
+ */
+int rte_pipeline_table_entry_delete_bulk(struct rte_pipeline *p,
+	uint32_t table_id,
+	void **keys,
+	uint32_t n_keys,
+	int *key_found,
+	struct rte_pipeline_table_entry **entries);
+
+/**
+ * Read pipeline table stats.
+ *
+ * This function reads table statistics identified by *table_id* of given
+ * pipeline *p*.
+ *
+ * @param p
+ *   Handle to pipeline instance.
+ * @param table_id
+ *   Port ID what stats will be returned.
+ * @param stats
+ *   Statistics buffer.
+ * @param clear
+ *   If not 0 clear stats after reading.
+ * @return
+ *   0 on success, error code otherwise
+ */
+int rte_pipeline_table_stats_read(struct rte_pipeline *p, uint32_t table_id,
+	struct rte_pipeline_table_stats *stats, int clear);
+
 /*
  * Port IN
  *
@@ -539,6 +662,26 @@ int rte_pipeline_port_in_enable(struct rte_pipeline *p,
  */
 int rte_pipeline_port_in_disable(struct rte_pipeline *p,
 	uint32_t port_id);
+
+/**
+ * Read pipeline port in stats.
+ *
+ * This function reads port in statistics identified by *port_id* of given
+ * pipeline *p*.
+ *
+ * @param p
+ *   Handle to pipeline instance.
+ * @param port_id
+ *   Port ID what stats will be returned.
+ * @param stats
+ *   Statistics buffer.
+ * @param clear
+ *   If not 0 clear stats after reading.
+ * @return
+ *   0 on success, error code otherwise
+ */
+int rte_pipeline_port_in_stats_read(struct rte_pipeline *p, uint32_t port_id,
+	struct rte_pipeline_port_in_stats *stats, int clear);
 
 /*
  * Port OUT
@@ -658,6 +801,25 @@ int rte_pipeline_port_out_packet_insert(struct rte_pipeline *p,
 	uint32_t port_id,
 	struct rte_mbuf *pkt);
 
+/**
+ * Read pipeline port out stats.
+ *
+ * This function reads port out statistics identified by *port_id* of given
+ * pipeline *p*.
+ *
+ * @param p
+ *   Handle to pipeline instance.
+ * @param port_id
+ *   Port ID what stats will be returned.
+ * @param stats
+ *   Statistics buffer.
+ * @param clear
+ *   If not 0 clear stats after reading.
+ * @return
+ *   0 on success, error code otherwise
+ */
+int rte_pipeline_port_out_stats_read(struct rte_pipeline *p, uint32_t port_id,
+	struct rte_pipeline_port_out_stats *stats, int clear);
 #ifdef __cplusplus
 }
 #endif

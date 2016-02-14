@@ -1,6 +1,6 @@
 #   BSD LICENSE
 #
-#   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
+#   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
 #   All rights reserved.
 #
 #   Redistribution and use in source and binary forms, with or without
@@ -28,8 +28,6 @@
 #   THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 #   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 #   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
-# If DESTDIR variable is given, install binary dpdk
 
 #
 # include rte.vars.mk if config file exists
@@ -60,21 +58,7 @@ CLEANDIRS = $(addsuffix _clean,$(ROOTDIRS-y) $(ROOTDIRS-n) $(ROOTDIRS-))
 
 .PHONY: build
 build: $(ROOTDIRS-y)
-	@echo Build complete
-ifneq ($(DESTDIR),)
-	$(Q)mkdir -p $(DESTDIR)
-	$(Q)tar -C $(RTE_SDK) -cf - mk scripts/*.sh | tar -C $(DESTDIR) -x \
-	  --keep-newer-files --warning=no-ignore-newer -f -
-	$(Q)mkdir -p $(DESTDIR)/`basename $(RTE_OUTPUT)`
-	$(Q)tar -C $(RTE_OUTPUT) -chf - \
-	  --exclude app --exclude hostapp --exclude build \
-	  --exclude Makefile --exclude .depdirs . | \
-	  tar -C $(DESTDIR)/`basename $(RTE_OUTPUT)` -x --keep-newer-files \
-	  --warning=no-ignore-newer -f -
-	$(Q)install -D $(RTE_OUTPUT)/app/testpmd \
-	  $(DESTDIR)/`basename $(RTE_OUTPUT)`/app/testpmd
-	@echo Installation in $(DESTDIR) complete
-endif
+	@echo "Build complete [$(RTE_TARGET)]"
 
 .PHONY: clean
 clean: $(CLEANDIRS)
@@ -93,7 +77,7 @@ $(ROOTDIRS-y):
 	@[ -d $(BUILDDIR)/$@ ] || mkdir -p $(BUILDDIR)/$@
 	@echo "== Build $@"
 	$(Q)$(MAKE) S=$@ -f $(RTE_SRCDIR)/$@/Makefile -C $(BUILDDIR)/$@ all
-	@if [ $@ = lib -a $(RTE_BUILD_COMBINE_LIBS) = y ]; then \
+	@if [ $@ = drivers -a $(CONFIG_RTE_BUILD_COMBINE_LIBS) = y ]; then \
 		$(MAKE) -f $(RTE_SDK)/lib/Makefile sharelib; \
 	fi
 

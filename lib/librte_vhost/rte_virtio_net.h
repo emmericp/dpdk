@@ -87,23 +87,50 @@ struct vhost_virtqueue {
 	uint16_t		vhost_hlen;		/**< Vhost header length (varies depending on RX merge buffers. */
 	volatile uint16_t	last_used_idx;		/**< Last index used on the available ring */
 	volatile uint16_t	last_used_idx_res;	/**< Used for multiple devices reserving buffers. */
-	eventfd_t		callfd;			/**< Used to notify the guest (trigger interrupt). */
-	eventfd_t		kickfd;			/**< Currently unused as polling mode is enabled. */
+	int			callfd;			/**< Used to notify the guest (trigger interrupt). */
+	int			kickfd;			/**< Currently unused as polling mode is enabled. */
+	int			enabled;
+	uint64_t		reserved[16];		/**< Reserve some spaces for future extension. */
 	struct buf_vector	buf_vec[BUF_VECTOR_MAX];	/**< for scatter RX. */
 } __rte_cache_aligned;
+
+
+/*
+ * Make an extra wrapper for VIRTIO_NET_F_MQ and
+ * VIRTIO_NET_CTRL_MQ_VQ_PAIRS_MAX as they are
+ * introduced since kernel v3.8. This makes our
+ * code buildable for older kernel.
+ */
+#ifdef VIRTIO_NET_F_MQ
+ #define VHOST_MAX_QUEUE_PAIRS	VIRTIO_NET_CTRL_MQ_VQ_PAIRS_MAX
+ #define VHOST_SUPPORTS_MQ	(1ULL << VIRTIO_NET_F_MQ)
+#else
+ #define VHOST_MAX_QUEUE_PAIRS	1
+ #define VHOST_SUPPORTS_MQ	0
+#endif
+
+/*
+ * Define virtio 1.0 for older kernels
+ */
+#ifndef VIRTIO_F_VERSION_1
+ #define VIRTIO_F_VERSION_1 32
+#endif
 
 /**
  * Device structure contains all configuration information relating to the device.
  */
 struct virtio_net {
-	struct vhost_virtqueue	*virtqueue[VIRTIO_QNUM];	/**< Contains all virtqueue information. */
 	struct virtio_memory	*mem;		/**< QEMU memory and memory region information. */
 	uint64_t		features;	/**< Negotiated feature set. */
+	uint64_t		protocol_features;	/**< Negotiated protocol feature set. */
 	uint64_t		device_fh;	/**< device identifier. */
 	uint32_t		flags;		/**< Device flags. Only used to check if device is running on data core. */
 #define IF_NAME_SZ (PATH_MAX > IFNAMSIZ ? PATH_MAX : IFNAMSIZ)
 	char			ifname[IF_NAME_SZ];	/**< Name of the tap device or socket path. */
+	uint32_t		virt_qp_nb;	/**< number of queue pair we have allocated */
 	void			*priv;		/**< private context */
+	uint64_t		reserved[64];	/**< Reserve some spaces for future extension. */
+	struct vhost_virtqueue	*virtqueue[VHOST_MAX_QUEUE_PAIRS * 2];	/**< Contains all virtqueue information. */
 } __rte_cache_aligned;
 
 /**
@@ -130,7 +157,7 @@ struct virtio_memory {
 };
 
 /**
- * Device operations to add/remove device.
+ * Device and vring operations.
  *
  * Make sure to set VIRTIO_DEV_RUNNING to the device flags in new_device and
  * remove it in destroy_device.
@@ -139,12 +166,18 @@ struct virtio_memory {
 struct virtio_net_device_ops {
 	int (*new_device)(struct virtio_net *);	/**< Add device. */
 	void (*destroy_device)(volatile struct virtio_net *);	/**< Remove device. */
+
+	int (*vring_state_changed)(struct virtio_net *dev, uint16_t queue_id, int enable);	/**< triggered when a vring is enabled or disabled */
 };
 
 static inline uint16_t __attribute__((always_inline))
 rte_vring_available_entries(struct virtio_net *dev, uint16_t queue_id)
 {
 	struct vhost_virtqueue *vq = dev->virtqueue[queue_id];
+
+	if (!vq->enabled)
+		return 0;
+
 	return *(volatile uint16_t *)&vq->avail->idx - vq->last_used_idx_res;
 }
 
@@ -188,6 +221,9 @@ int rte_vhost_enable_guest_notification(struct virtio_net *dev, uint16_t queue_i
 /* Register vhost driver. dev_name could be different for multiple instance support. */
 int rte_vhost_driver_register(const char *dev_name);
 
+/* Unregister vhost driver. This is only meaningful to vhost user. */
+int rte_vhost_driver_unregister(const char *dev_name);
+
 /* Register callbacks. */
 int rte_vhost_driver_callback_register(struct virtio_net_device_ops const * const);
 /* Start vhost driver session blocking loop. */
@@ -198,8 +234,14 @@ int rte_vhost_driver_session_start(void);
  * be received from the physical port or from another virtual device. A packet
  * count is returned to indicate the number of packets that were succesfully
  * added to the RX queue.
+ * @param dev
+ *  virtio-net device
  * @param queue_id
  *  virtio queue index in mq case
+ * @param pkts
+ *  array to contain packets to be enqueued
+ * @param count
+ *  packets num to be enqueued
  * @return
  *  num of packets enqueued
  */
@@ -210,10 +252,16 @@ uint16_t rte_vhost_enqueue_burst(struct virtio_net *dev, uint16_t queue_id,
  * This function gets guest buffers from the virtio device TX virtqueue,
  * construct host mbufs, copies guest buffer content to host mbufs and
  * store them in pkts to be processed.
+ * @param dev
+ *  virtio-net device
+ * @param queue_id
+ *  virtio queue index in mq case
  * @param mbuf_pool
  *  mbuf_pool where host mbuf is allocated.
- * @param queue_id
- *  virtio queue index in mq case.
+ * @param pkts
+ *  array to contain packets to be dequeued
+ * @param count
+ *  packets num to be dequeued
  * @return
  *  num of packets dequeued
  */

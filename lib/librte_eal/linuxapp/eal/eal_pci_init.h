@@ -36,47 +36,23 @@
 
 #include "eal_vfio.h"
 
-struct pci_map {
-	void *addr;
-	char *path;
-	uint64_t offset;
-	uint64_t size;
-	uint64_t phaddr;
-};
-
-/*
- * For multi-process we need to reproduce all PCI mappings in secondary
- * processes, so save them in a tailq.
- */
-struct mapped_pci_resource {
-	TAILQ_ENTRY(mapped_pci_resource) next;
-
-	struct rte_pci_addr pci_addr;
-	char path[PATH_MAX];
-	int nb_maps;
-	struct pci_map maps[PCI_MAX_RESOURCE];
-};
-
-TAILQ_HEAD(mapped_pci_res_list, mapped_pci_resource);
-
 /*
  * Helper function to map PCI resources right after hugepages in virtual memory
  */
 extern void *pci_map_addr;
 void *pci_find_max_end_va(void);
 
-void *pci_map_resource(void *requested_addr, int fd, off_t offset,
-	       size_t size, int additional_flags);
+int pci_uio_alloc_resource(struct rte_pci_device *dev,
+		struct mapped_pci_resource **uio_res);
+void pci_uio_free_resource(struct rte_pci_device *dev,
+		struct mapped_pci_resource *uio_res);
+int pci_uio_map_resource_by_index(struct rte_pci_device *dev, int res_idx,
+		struct mapped_pci_resource *uio_res, int map_idx);
 
-/* map IGB_UIO resource prototype */
-int pci_uio_map_resource(struct rte_pci_device *dev);
-
-void pci_unmap_resource(void *requested_addr, size_t size);
-
-#ifdef RTE_LIBRTE_EAL_HOTPLUG
-/* unmap IGB_UIO resource prototype */
-void pci_uio_unmap_resource(struct rte_pci_device *dev);
-#endif /* RTE_LIBRTE_EAL_HOTPLUG */
+int pci_uio_read_config(const struct rte_intr_handle *intr_handle,
+			void *buf, size_t len, off_t offs);
+int pci_uio_write_config(const struct rte_intr_handle *intr_handle,
+			 const void *buf, size_t len, off_t offs);
 
 #ifdef VFIO_PRESENT
 
@@ -85,6 +61,12 @@ void pci_uio_unmap_resource(struct rte_pci_device *dev);
 int pci_vfio_enable(void);
 int pci_vfio_is_enabled(void);
 int pci_vfio_mp_sync_setup(void);
+
+/* access config space */
+int pci_vfio_read_config(const struct rte_intr_handle *intr_handle,
+			 void *buf, size_t len, off_t offs);
+int pci_vfio_write_config(const struct rte_intr_handle *intr_handle,
+			  const void *buf, size_t len, off_t offs);
 
 /* map VFIO resource prototype */
 int pci_vfio_map_resource(struct rte_pci_device *dev);

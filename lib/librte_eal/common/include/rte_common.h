@@ -59,6 +59,29 @@ extern "C" {
 #define asm __asm__
 #endif
 
+#ifdef RTE_ARCH_STRICT_ALIGN
+typedef uint64_t unaligned_uint64_t __attribute__ ((aligned(1)));
+typedef uint32_t unaligned_uint32_t __attribute__ ((aligned(1)));
+typedef uint16_t unaligned_uint16_t __attribute__ ((aligned(1)));
+#else
+typedef uint64_t unaligned_uint64_t;
+typedef uint32_t unaligned_uint32_t;
+typedef uint16_t unaligned_uint16_t;
+#endif
+
+/**
+ * Force alignment
+ */
+#define __rte_aligned(a) __attribute__((__aligned__(a)))
+
+/**
+ * Force a structure to be packed
+ */
+#define __rte_packed __attribute__((__packed__))
+
+/******* Macro to mark functions and fields scheduled for removal *****/
+#define __rte_deprecated	__attribute__((__deprecated__))
+
 /*********** Macros to eliminate unused variable warnings ********/
 
 /**
@@ -220,8 +243,8 @@ rte_align32pow2(uint32_t x)
 /**
  * Aligns 64b input parameter to the next power of 2
  *
- * @param x
- *   The 64b value to algin
+ * @param v
+ *   The 64b value to align
  *
  * @return
  *   Input parameter aligned to the next power of 2
@@ -291,7 +314,7 @@ rte_pause(void) {}
 static inline uint32_t
 rte_bsf32(uint32_t v)
 {
-	return (__builtin_ctz(v));
+	return __builtin_ctz(v);
 }
 
 #ifndef offsetof
@@ -303,7 +326,7 @@ rte_bsf32(uint32_t v)
 /** Take a macro value and get a string version of it */
 #define RTE_STR(x) _RTE_STR(x)
 
-/** Mask value of type <tp> for the first <ln> bit set. */
+/** Mask value of type "tp" for the first "ln" bit set. */
 #define	RTE_LEN2MASK(ln, tp)	\
 	((tp)((uint64_t)-1 >> (sizeof(uint64_t) * CHAR_BIT - (ln))))
 

@@ -67,6 +67,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <sys/queue.h>
+#include <sys/mman.h>
 
 #include <rte_interrupts.h>
 #include <rte_log.h>
@@ -98,6 +99,170 @@ static struct rte_devargs *pci_devargs_lookup(struct rte_pci_device *dev)
 	return NULL;
 }
 
+/* map a particular resource from a file */
+void *
+pci_map_resource(void *requested_addr, int fd, off_t offset, size_t size,
+		 int additional_flags)
+{
+	void *mapaddr;
+
+	/* Map the PCI memory resource of device */
+	mapaddr = mmap(requested_addr, size, PROT_READ | PROT_WRITE,
+			MAP_SHARED | additional_flags, fd, offset);
+	if (mapaddr == MAP_FAILED) {
+		RTE_LOG(ERR, EAL, "%s(): cannot mmap(%d, %p, 0x%lx, 0x%lx): %s (%p)\n",
+			__func__, fd, requested_addr,
+			(unsigned long)size, (unsigned long)offset,
+			strerror(errno), mapaddr);
+	} else
+		RTE_LOG(DEBUG, EAL, "  PCI memory mapped at %p\n", mapaddr);
+
+	return mapaddr;
+}
+
+/* unmap a particular resource */
+void
+pci_unmap_resource(void *requested_addr, size_t size)
+{
+	if (requested_addr == NULL)
+		return;
+
+	/* Unmap the PCI memory resource of device */
+	if (munmap(requested_addr, size)) {
+		RTE_LOG(ERR, EAL, "%s(): cannot munmap(%p, 0x%lx): %s\n",
+			__func__, requested_addr, (unsigned long)size,
+			strerror(errno));
+	} else
+		RTE_LOG(DEBUG, EAL, "  PCI memory unmapped at %p\n",
+				requested_addr);
+}
+
+/*
+ * If vendor/device ID match, call the devinit() function of the
+ * driver.
+ */
+static int
+rte_eal_pci_probe_one_driver(struct rte_pci_driver *dr, struct rte_pci_device *dev)
+{
+	int ret;
+	const struct rte_pci_id *id_table;
+
+	for (id_table = dr->id_table; id_table->vendor_id != 0; id_table++) {
+
+		/* check if device's identifiers match the driver's ones */
+		if (id_table->vendor_id != dev->id.vendor_id &&
+				id_table->vendor_id != PCI_ANY_ID)
+			continue;
+		if (id_table->device_id != dev->id.device_id &&
+				id_table->device_id != PCI_ANY_ID)
+			continue;
+		if (id_table->subsystem_vendor_id != dev->id.subsystem_vendor_id &&
+				id_table->subsystem_vendor_id != PCI_ANY_ID)
+			continue;
+		if (id_table->subsystem_device_id != dev->id.subsystem_device_id &&
+				id_table->subsystem_device_id != PCI_ANY_ID)
+			continue;
+
+		struct rte_pci_addr *loc = &dev->addr;
+
+		RTE_LOG(DEBUG, EAL, "PCI device "PCI_PRI_FMT" on NUMA socket %i\n",
+				loc->domain, loc->bus, loc->devid, loc->function,
+				dev->numa_node);
+
+		RTE_LOG(DEBUG, EAL, "  probe driver: %x:%x %s\n", dev->id.vendor_id,
+				dev->id.device_id, dr->name);
+
+		/* no initialization when blacklisted, return without error */
+		if (dev->devargs != NULL &&
+			dev->devargs->type == RTE_DEVTYPE_BLACKLISTED_PCI) {
+			RTE_LOG(DEBUG, EAL, "  Device is blacklisted, not initializing\n");
+			return 1;
+		}
+
+		if (dr->drv_flags & RTE_PCI_DRV_NEED_MAPPING) {
+#ifdef RTE_PCI_CONFIG
+			/*
+			 * Set PCIe config space for high performance.
+			 * Return value can be ignored.
+			 */
+			pci_config_space_set(dev);
+#endif
+			/* map resources for devices that use igb_uio */
+			ret = pci_map_device(dev);
+			if (ret != 0)
+				return ret;
+		} else if (dr->drv_flags & RTE_PCI_DRV_FORCE_UNBIND &&
+				rte_eal_process_type() == RTE_PROC_PRIMARY) {
+			/* unbind current driver */
+			if (pci_unbind_kernel_driver(dev) < 0)
+				return -1;
+		}
+
+		/* reference driver structure */
+		dev->driver = dr;
+
+		/* call the driver devinit() function */
+		return dr->devinit(dr, dev);
+	}
+	/* return positive value if driver is not found */
+	return 1;
+}
+
+/*
+ * If vendor/device ID match, call the devuninit() function of the
+ * driver.
+ */
+static int
+rte_eal_pci_detach_dev(struct rte_pci_driver *dr,
+		struct rte_pci_device *dev)
+{
+	const struct rte_pci_id *id_table;
+
+	if ((dr == NULL) || (dev == NULL))
+		return -EINVAL;
+
+	for (id_table = dr->id_table; id_table->vendor_id != 0; id_table++) {
+
+		/* check if device's identifiers match the driver's ones */
+		if (id_table->vendor_id != dev->id.vendor_id &&
+				id_table->vendor_id != PCI_ANY_ID)
+			continue;
+		if (id_table->device_id != dev->id.device_id &&
+				id_table->device_id != PCI_ANY_ID)
+			continue;
+		if (id_table->subsystem_vendor_id != dev->id.subsystem_vendor_id &&
+				id_table->subsystem_vendor_id != PCI_ANY_ID)
+			continue;
+		if (id_table->subsystem_device_id != dev->id.subsystem_device_id &&
+				id_table->subsystem_device_id != PCI_ANY_ID)
+			continue;
+
+		struct rte_pci_addr *loc = &dev->addr;
+
+		RTE_LOG(DEBUG, EAL, "PCI device "PCI_PRI_FMT" on NUMA socket %i\n",
+				loc->domain, loc->bus, loc->devid,
+				loc->function, dev->numa_node);
+
+		RTE_LOG(DEBUG, EAL, "  remove driver: %x:%x %s\n", dev->id.vendor_id,
+				dev->id.device_id, dr->name);
+
+		if (dr->devuninit && (dr->devuninit(dev) < 0))
+			return -1;	/* negative value is an error */
+
+		/* clear driver structure */
+		dev->driver = NULL;
+
+		if (dr->drv_flags & RTE_PCI_DRV_NEED_MAPPING)
+			/* unmap resources for devices that use igb_uio */
+			pci_unmap_device(dev);
+
+		return 0;
+	}
+
+	/* return positive value if driver is not found */
+	return 1;
+}
+
 /*
  * If vendor/device ID match, call the devinit() function of all
  * registered driver for the given device. Return -1 if initialization
@@ -125,14 +290,13 @@ pci_probe_all_drivers(struct rte_pci_device *dev)
 	return 1;
 }
 
-#ifdef RTE_LIBRTE_EAL_HOTPLUG
 /*
  * If vendor/device ID match, call the devuninit() function of all
  * registered driver for the given device. Return -1 if initialization
  * failed, return 1 if no driver is found for this device.
  */
 static int
-pci_close_all_drivers(struct rte_pci_device *dev)
+pci_detach_all_drivers(struct rte_pci_device *dev)
 {
 	struct rte_pci_driver *dr = NULL;
 	int rc = 0;
@@ -141,7 +305,7 @@ pci_close_all_drivers(struct rte_pci_device *dev)
 		return -1;
 
 	TAILQ_FOREACH(dr, &pci_driver_list, next) {
-		rc = rte_eal_pci_close_one_driver(dr, dev);
+		rc = rte_eal_pci_detach_dev(dr, dev);
 		if (rc < 0)
 			/* negative value is an error */
 			return -1;
@@ -185,11 +349,10 @@ err_return:
 }
 
 /*
- * Find the pci device specified by pci address, then invoke close function of
- * the driver of the devive.
+ * Detach device specified by its pci address.
  */
 int
-rte_eal_pci_close_one(const struct rte_pci_addr *addr)
+rte_eal_pci_detach(const struct rte_pci_addr *addr)
 {
 	struct rte_pci_device *dev = NULL;
 	int ret = 0;
@@ -201,7 +364,7 @@ rte_eal_pci_close_one(const struct rte_pci_addr *addr)
 		if (rte_eal_compare_pci_addr(&dev->addr, addr))
 			continue;
 
-		ret = pci_close_all_drivers(dev);
+		ret = pci_detach_all_drivers(dev);
 		if (ret < 0)
 			goto err_return;
 
@@ -216,7 +379,6 @@ err_return:
 			dev->addr.devid, dev->addr.function);
 	return -1;
 }
-#endif /* RTE_LIBRTE_EAL_HOTPLUG */
 
 /*
  * Scan the content of the PCI bus, and call the devinit() function for

@@ -373,6 +373,9 @@ rte_vhost_driver_register(const char *dev_name)
 		return -1;
 	}
 
+	if (eventfd_init() < 0)
+		return -1;
+
 	/*
 	 * The device name is created. This is passed to QEMU so that it can
 	 * register the device with our application.
@@ -401,6 +404,15 @@ rte_vhost_driver_register(const char *dev_name)
 	if (session == NULL)
 		return -1;
 
+	return 0;
+}
+
+/**
+ * An empty function for unregister
+ */
+int
+rte_vhost_driver_unregister(const char *dev_name __rte_unused)
+{
 	return 0;
 }
 

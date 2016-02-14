@@ -41,7 +41,7 @@
 #include "fd_man.h"
 
 struct vhost_server {
-	const char *path; /**< The path the uds is bind to. */
+	char *path; /**< The path the uds is bind to. */
 	int listenfd;     /**< The listener sockfd. */
 };
 
@@ -63,6 +63,10 @@ typedef enum VhostUserRequest {
 	VHOST_USER_SET_VRING_KICK = 12,
 	VHOST_USER_SET_VRING_CALL = 13,
 	VHOST_USER_SET_VRING_ERR = 14,
+	VHOST_USER_GET_PROTOCOL_FEATURES = 15,
+	VHOST_USER_SET_PROTOCOL_FEATURES = 16,
+	VHOST_USER_GET_QUEUE_NUM = 17,
+	VHOST_USER_SET_VRING_ENABLE = 18,
 	VHOST_USER_MAX
 } VhostUserRequest;
 

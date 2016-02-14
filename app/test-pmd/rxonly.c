@@ -91,7 +91,7 @@ pkt_burst_receive(struct fwd_stream *fs)
 	uint64_t ol_flags;
 	uint16_t nb_rx;
 	uint16_t i, packet_type;
-	uint64_t is_encapsulation;
+	uint16_t is_encapsulation;
 
 #ifdef RTE_TEST_PMD_RECORD_CORE_CYCLES
 	uint64_t start_tsc;
@@ -134,9 +134,7 @@ pkt_burst_receive(struct fwd_stream *fs)
 		eth_type = RTE_BE_TO_CPU_16(eth_hdr->ether_type);
 		ol_flags = mb->ol_flags;
 		packet_type = mb->packet_type;
-
-		is_encapsulation = ol_flags & (PKT_RX_TUNNEL_IPV4_HDR |
-				PKT_RX_TUNNEL_IPV6_HDR);
+		is_encapsulation = RTE_ETH_IS_TUNNEL_PKT(packet_type);
 
 		print_ether_addr("  src=", &eth_hdr->s_addr);
 		print_ether_addr(" - dst=", &eth_hdr->d_addr);
@@ -160,6 +158,178 @@ pkt_burst_receive(struct fwd_stream *fs)
 		}
 		if (ol_flags & PKT_RX_VLAN_PKT)
 			printf(" - VLAN tci=0x%x", mb->vlan_tci);
+		if (ol_flags & PKT_RX_QINQ_PKT)
+			printf(" - QinQ VLAN tci=0x%x, VLAN tci outer=0x%x",
+					mb->vlan_tci, mb->vlan_tci_outer);
+		if (mb->packet_type) {
+			uint32_t ptype;
+
+			/* (outer) L2 packet type */
+			ptype = mb->packet_type & RTE_PTYPE_L2_MASK;
+			switch (ptype) {
+			case RTE_PTYPE_L2_ETHER:
+				printf(" - (outer) L2 type: ETHER");
+				break;
+			case RTE_PTYPE_L2_ETHER_TIMESYNC:
+				printf(" - (outer) L2 type: ETHER_Timesync");
+				break;
+			case RTE_PTYPE_L2_ETHER_ARP:
+				printf(" - (outer) L2 type: ETHER_ARP");
+				break;
+			case RTE_PTYPE_L2_ETHER_LLDP:
+				printf(" - (outer) L2 type: ETHER_LLDP");
+				break;
+			default:
+				printf(" - (outer) L2 type: Unknown");
+				break;
+			}
+
+			/* (outer) L3 packet type */
+			ptype = mb->packet_type & RTE_PTYPE_L3_MASK;
+			switch (ptype) {
+			case RTE_PTYPE_L3_IPV4:
+				printf(" - (outer) L3 type: IPV4");
+				break;
+			case RTE_PTYPE_L3_IPV4_EXT:
+				printf(" - (outer) L3 type: IPV4_EXT");
+				break;
+			case RTE_PTYPE_L3_IPV6:
+				printf(" - (outer) L3 type: IPV6");
+				break;
+			case RTE_PTYPE_L3_IPV4_EXT_UNKNOWN:
+				printf(" - (outer) L3 type: IPV4_EXT_UNKNOWN");
+				break;
+			case RTE_PTYPE_L3_IPV6_EXT:
+				printf(" - (outer) L3 type: IPV6_EXT");
+				break;
+			case RTE_PTYPE_L3_IPV6_EXT_UNKNOWN:
+				printf(" - (outer) L3 type: IPV6_EXT_UNKNOWN");
+				break;
+			default:
+				printf(" - (outer) L3 type: Unknown");
+				break;
+			}
+
+			/* (outer) L4 packet type */
+			ptype = mb->packet_type & RTE_PTYPE_L4_MASK;
+			switch (ptype) {
+			case RTE_PTYPE_L4_TCP:
+				printf(" - (outer) L4 type: TCP");
+				break;
+			case RTE_PTYPE_L4_UDP:
+				printf(" - (outer) L4 type: UDP");
+				break;
+			case RTE_PTYPE_L4_FRAG:
+				printf(" - (outer) L4 type: L4_FRAG");
+				break;
+			case RTE_PTYPE_L4_SCTP:
+				printf(" - (outer) L4 type: SCTP");
+				break;
+			case RTE_PTYPE_L4_ICMP:
+				printf(" - (outer) L4 type: ICMP");
+				break;
+			case RTE_PTYPE_L4_NONFRAG:
+				printf(" - (outer) L4 type: L4_NONFRAG");
+				break;
+			default:
+				printf(" - (outer) L4 type: Unknown");
+				break;
+			}
+
+			/* packet tunnel type */
+			ptype = mb->packet_type & RTE_PTYPE_TUNNEL_MASK;
+			switch (ptype) {
+			case RTE_PTYPE_TUNNEL_IP:
+				printf(" - Tunnel type: IP");
+				break;
+			case RTE_PTYPE_TUNNEL_GRE:
+				printf(" - Tunnel type: GRE");
+				break;
+			case RTE_PTYPE_TUNNEL_VXLAN:
+				printf(" - Tunnel type: VXLAN");
+				break;
+			case RTE_PTYPE_TUNNEL_NVGRE:
+				printf(" - Tunnel type: NVGRE");
+				break;
+			case RTE_PTYPE_TUNNEL_GENEVE:
+				printf(" - Tunnel type: GENEVE");
+				break;
+			case RTE_PTYPE_TUNNEL_GRENAT:
+				printf(" - Tunnel type: GRENAT");
+				break;
+			default:
+				printf(" - Tunnel type: Unknown");
+				break;
+			}
+
+			/* inner L2 packet type */
+			ptype = mb->packet_type & RTE_PTYPE_INNER_L2_MASK;
+			switch (ptype) {
+			case RTE_PTYPE_INNER_L2_ETHER:
+				printf(" - Inner L2 type: ETHER");
+				break;
+			case RTE_PTYPE_INNER_L2_ETHER_VLAN:
+				printf(" - Inner L2 type: ETHER_VLAN");
+				break;
+			default:
+				printf(" - Inner L2 type: Unknown");
+				break;
+			}
+
+			/* inner L3 packet type */
+			ptype = mb->packet_type & RTE_PTYPE_INNER_L3_MASK;
+			switch (ptype) {
+			case RTE_PTYPE_INNER_L3_IPV4:
+				printf(" - Inner L3 type: IPV4");
+				break;
+			case RTE_PTYPE_INNER_L3_IPV4_EXT:
+				printf(" - Inner L3 type: IPV4_EXT");
+				break;
+			case RTE_PTYPE_INNER_L3_IPV6:
+				printf(" - Inner L3 type: IPV6");
+				break;
+			case RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN:
+				printf(" - Inner L3 type: IPV4_EXT_UNKNOWN");
+				break;
+			case RTE_PTYPE_INNER_L3_IPV6_EXT:
+				printf(" - Inner L3 type: IPV6_EXT");
+				break;
+			case RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN:
+				printf(" - Inner L3 type: IPV6_EXT_UNKNOWN");
+				break;
+			default:
+				printf(" - Inner L3 type: Unknown");
+				break;
+			}
+
+			/* inner L4 packet type */
+			ptype = mb->packet_type & RTE_PTYPE_INNER_L4_MASK;
+			switch (ptype) {
+			case RTE_PTYPE_INNER_L4_TCP:
+				printf(" - Inner L4 type: TCP");
+				break;
+			case RTE_PTYPE_INNER_L4_UDP:
+				printf(" - Inner L4 type: UDP");
+				break;
+			case RTE_PTYPE_INNER_L4_FRAG:
+				printf(" - Inner L4 type: L4_FRAG");
+				break;
+			case RTE_PTYPE_INNER_L4_SCTP:
+				printf(" - Inner L4 type: SCTP");
+				break;
+			case RTE_PTYPE_INNER_L4_ICMP:
+				printf(" - Inner L4 type: ICMP");
+				break;
+			case RTE_PTYPE_INNER_L4_NONFRAG:
+				printf(" - Inner L4 type: L4_NONFRAG");
+				break;
+			default:
+				printf(" - Inner L4 type: Unknown");
+				break;
+			}
+			printf("\n");
+		} else
+			printf("Unknown packet type\n");
 		if (is_encapsulation) {
 			struct ipv4_hdr *ipv4_hdr;
 			struct ipv6_hdr *ipv6_hdr;
@@ -173,24 +343,27 @@ pkt_burst_receive(struct fwd_stream *fs)
 			l2_len  = sizeof(struct ether_hdr);
 
 			 /* Do not support ipv4 option field */
-			if (ol_flags & PKT_RX_TUNNEL_IPV4_HDR) {
+			if (RTE_ETH_IS_IPV4_HDR(packet_type)) {
 				l3_len = sizeof(struct ipv4_hdr);
-				ipv4_hdr = (struct ipv4_hdr *) (rte_pktmbuf_mtod(mb,
-						unsigned char *) + l2_len);
+				ipv4_hdr = rte_pktmbuf_mtod_offset(mb,
+								   struct ipv4_hdr *,
+								   l2_len);
 				l4_proto = ipv4_hdr->next_proto_id;
 			} else {
 				l3_len = sizeof(struct ipv6_hdr);
-				ipv6_hdr = (struct ipv6_hdr *) (rte_pktmbuf_mtod(mb,
-						unsigned char *) + l2_len);
+				ipv6_hdr = rte_pktmbuf_mtod_offset(mb,
+								   struct ipv6_hdr *,
+								   l2_len);
 				l4_proto = ipv6_hdr->proto;
 			}
 			if (l4_proto == IPPROTO_UDP) {
-				udp_hdr = (struct udp_hdr *) (rte_pktmbuf_mtod(mb,
-						unsigned char *) + l2_len + l3_len);
+				udp_hdr = rte_pktmbuf_mtod_offset(mb,
+								  struct udp_hdr *,
+								  l2_len + l3_len);
 				l4_len = sizeof(struct udp_hdr);
-				vxlan_hdr = (struct vxlan_hdr *) (rte_pktmbuf_mtod(mb,
-						unsigned char *) + l2_len + l3_len
-						 + l4_len);
+				vxlan_hdr = rte_pktmbuf_mtod_offset(mb,
+								    struct vxlan_hdr *,
+								    l2_len + l3_len + l4_len);
 
 				printf(" - VXLAN packet: packet type =%d, "
 					"Destination UDP port =%d, VNI = %d",

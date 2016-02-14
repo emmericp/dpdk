@@ -353,10 +353,15 @@ except:
 }
 
 static int
+#ifdef HAVE_KIOCB_MSG_PARAM
 kni_sock_sndmsg(struct kiocb *iocb, struct socket *sock,
 	   struct msghdr *m, size_t total_len)
+#else
+kni_sock_sndmsg(struct socket *sock,
+	   struct msghdr *m, size_t total_len)
+#endif /* HAVE_KIOCB_MSG_PARAM */
 {
- 	struct kni_vhost_queue *q =
+	struct kni_vhost_queue *q =
 		container_of(sock->sk, struct kni_vhost_queue, sk);
 	int vnet_hdr_len = 0;
 	unsigned long len = total_len;
@@ -387,8 +392,13 @@ kni_sock_sndmsg(struct kiocb *iocb, struct socket *sock,
 }
 
 static int
+#ifdef HAVE_KIOCB_MSG_PARAM
 kni_sock_rcvmsg(struct kiocb *iocb, struct socket *sock,
 	   struct msghdr *m, size_t len, int flags)
+#else
+kni_sock_rcvmsg(struct socket *sock,
+	   struct msghdr *m, size_t len, int flags)
+#endif /* HAVE_KIOCB_MSG_PARAM */
 {
 	int vnet_hdr_len = 0;
 	int pkt_len = 0;
@@ -417,10 +427,15 @@ kni_sock_rcvmsg(struct kiocb *iocb, struct socket *sock,
 
 #ifdef RTE_KNI_VHOST_VNET_HDR_EN
 	/* no need to copy hdr when no pkt received */
+#ifdef HAVE_IOV_ITER_MSGHDR
+	if (unlikely(copy_to_iter((void *)&vnet_hdr, vnet_hdr_len,
+		&m->msg_iter)))
+#else
 	if (unlikely(memcpy_toiovecend(m->msg_iov,
 		(void *)&vnet_hdr, 0, vnet_hdr_len)))
+#endif /* HAVE_IOV_ITER_MSGHDR */
 		return -EFAULT;
-#endif
+#endif /* RTE_KNI_VHOST_VNET_HDR_EN */
 	KNI_DBG_RX("kni_rcvmsg expect_len %ld, flags 0x%08x, pkt_len %d\n",
 		   (unsigned long)len, q->flags, pkt_len);
 
@@ -666,14 +681,12 @@ kni_vhost_backend_init(struct kni_dev *kni)
 	}
 
 	/* cache init */
-	q->cache = (struct sk_buff*)
-		kzalloc(RTE_KNI_VHOST_MAX_CACHE_SIZE * sizeof(struct sk_buff),
-			GFP_KERNEL);
+	q->cache = kzalloc(RTE_KNI_VHOST_MAX_CACHE_SIZE * sizeof(struct sk_buff),
+			   GFP_KERNEL);
 	if (!q->cache)
 		goto free_fd;
 
-	fifo = (struct rte_kni_fifo*)
-		kzalloc(RTE_KNI_VHOST_MAX_CACHE_SIZE * sizeof(void *)
+	fifo = kzalloc(RTE_KNI_VHOST_MAX_CACHE_SIZE * sizeof(void *)
 			+ sizeof(struct rte_kni_fifo), GFP_KERNEL);
 	if (!fifo)
 		goto free_cache;
@@ -829,4 +842,3 @@ kni_vhost_init(struct kni_dev *kni)
 
 	return 0;
 }
-

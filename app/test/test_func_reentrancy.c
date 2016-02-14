@@ -226,9 +226,8 @@ hash_create_free(__attribute__((unused)) void *arg)
 	struct rte_hash_parameters hash_params = {
 		.name = NULL,
 		.entries = 16,
-		.bucket_entries = 4,
 		.key_len = 4,
-		.hash_func = (rte_hash_function)rte_jhash2,
+		.hash_func = (rte_hash_function)rte_jhash_32b,
 		.hash_func_init_val = 0,
 		.socket_id = 0,
 	};
@@ -367,7 +366,7 @@ lpm_create_free(__attribute__((unused)) void *arg)
 
 	/* create the same lpm simultaneously on all threads */
 	for (i = 0; i < MAX_ITER_TIMES; i++) {
-		lpm = rte_lpm_create("fr_test_once",  SOCKET_ID_ANY, 4, RTE_LPM_HEAP);
+		lpm = rte_lpm_create("fr_test_once",  SOCKET_ID_ANY, 4, 0);
 		if ((NULL == lpm) && (rte_lpm_find_existing("fr_test_once") == NULL))
 			return -1;
 	}
@@ -375,7 +374,7 @@ lpm_create_free(__attribute__((unused)) void *arg)
 	/* create mutiple fbk tables simultaneously */
 	for (i = 0; i < MAX_LPM_ITER_TIMES; i++) {
 		snprintf(lpm_name, sizeof(lpm_name), "fr_test_%d_%d", lcore_self, i);
-		lpm = rte_lpm_create(lpm_name, SOCKET_ID_ANY, 4, RTE_LPM_HEAP);
+		lpm = rte_lpm_create(lpm_name, SOCKET_ID_ANY, 4, 0);
 		if (NULL == lpm)
 			return -1;
 

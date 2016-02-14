@@ -86,7 +86,9 @@ ipv6_frag_reassemble(const struct ip_frag_pkt *fp)
 			/* previous fragment found. */
 			if (fp->frags[i].ofs + fp->frags[i].len == ofs) {
 
-				ip_frag_chain(fp->frags[i].mb, m);
+				/* adjust start of the last fragment data. */
+				rte_pktmbuf_adj(m, (uint16_t)(m->l2_len + m->l3_len));
+				rte_pktmbuf_chain(fp->frags[i].mb, m);
 
 				/* update our last fragment and offset. */
 				m = fp->frags[i].mb;
@@ -101,15 +103,15 @@ ipv6_frag_reassemble(const struct ip_frag_pkt *fp)
 	}
 
 	/* chain with the first fragment. */
-	ip_frag_chain(fp->frags[IP_FIRST_FRAG_IDX].mb, m);
+	rte_pktmbuf_adj(m, (uint16_t)(m->l2_len + m->l3_len));
+	rte_pktmbuf_chain(fp->frags[IP_FIRST_FRAG_IDX].mb, m);
 	m = fp->frags[IP_FIRST_FRAG_IDX].mb;
 
 	/* update mbuf fields for reassembled packet. */
 	m->ol_flags |= PKT_TX_IP_CKSUM;
 
 	/* update ipv6 header for the reassembled datagram */
-	ip_hdr = (struct ipv6_hdr *) (rte_pktmbuf_mtod(m, uint8_t *) +
-								  m->l2_len);
+	ip_hdr = rte_pktmbuf_mtod_offset(m, struct ipv6_hdr *, m->l2_len);
 
 	ip_hdr->payload_len = rte_cpu_to_be_16(payload_len);
 
@@ -124,7 +126,7 @@ ipv6_frag_reassemble(const struct ip_frag_pkt *fp)
 	frag_hdr = (struct ipv6_extension_fragment *) (ip_hdr + 1);
 	ip_hdr->proto = frag_hdr->next_header;
 
-	ip_frag_memmove(rte_pktmbuf_mtod(m, char*) + sizeof(*frag_hdr),
+	ip_frag_memmove(rte_pktmbuf_mtod_offset(m, char *, sizeof(*frag_hdr)),
 			rte_pktmbuf_mtod(m, char*), move_len);
 
 	rte_pktmbuf_adj(m, sizeof(*frag_hdr));
@@ -182,7 +184,8 @@ rte_ipv6_frag_reassemble_packet(struct rte_ip_frag_tbl *tbl,
 		"tbl: %p, max_cycles: %" PRIu64 ", entry_mask: %#x, "
 		"max_entries: %u, use_entries: %u\n\n",
 		__func__, __LINE__,
-		mb, tms, IPv6_KEY_BYTES(key.src_dst), key.id, ip_ofs, ip_len, frag_hdr->more_frags,
+		mb, tms, IPv6_KEY_BYTES(key.src_dst), key.id, ip_ofs, ip_len,
+		RTE_IPV6_GET_MF(frag_hdr->frag_data),
 		tbl, tbl->max_cycles, tbl->entry_mask, tbl->max_entries,
 		tbl->use_entries);
 

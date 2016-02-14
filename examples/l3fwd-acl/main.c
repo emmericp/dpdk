@@ -216,9 +216,9 @@ send_single_packet(struct rte_mbuf *m, uint8_t port);
 #define OFF_IPV42PROTO (offsetof(struct ipv4_hdr, next_proto_id))
 #define OFF_IPV62PROTO (offsetof(struct ipv6_hdr, proto))
 #define MBUF_IPV4_2PROTO(m)	\
-	(rte_pktmbuf_mtod((m), uint8_t *) + OFF_ETHHEAD + OFF_IPV42PROTO)
+	rte_pktmbuf_mtod_offset((m), uint8_t *, OFF_ETHHEAD + OFF_IPV42PROTO)
 #define MBUF_IPV6_2PROTO(m)	\
-	(rte_pktmbuf_mtod((m), uint8_t *) + OFF_ETHHEAD + OFF_IPV62PROTO)
+	rte_pktmbuf_mtod_offset((m), uint8_t *, OFF_ETHHEAD + OFF_IPV62PROTO)
 
 #define GET_CB_FIELD(in, fd, base, lim, dlm)	do {            \
 	unsigned long val;                                      \
@@ -259,6 +259,23 @@ enum {
 	SRCP_FIELD_IPV4,
 	DSTP_FIELD_IPV4,
 	NUM_FIELDS_IPV4
+};
+
+/*
+ * That effectively defines order of IPV4VLAN classifications:
+ *  - PROTO
+ *  - VLAN (TAG and DOMAIN)
+ *  - SRC IP ADDRESS
+ *  - DST IP ADDRESS
+ *  - PORTS (SRC and DST)
+ */
+enum {
+	RTE_ACL_IPV4VLAN_PROTO,
+	RTE_ACL_IPV4VLAN_VLAN,
+	RTE_ACL_IPV4VLAN_SRC,
+	RTE_ACL_IPV4VLAN_DST,
+	RTE_ACL_IPV4VLAN_PORTS,
+	RTE_ACL_IPV4VLAN_NUM
 };
 
 struct rte_acl_field_def ipv4_defs[NUM_FIELDS_IPV4] = {
@@ -564,9 +581,9 @@ dump_acl4_rule(struct rte_mbuf *m, uint32_t sig)
 {
 	uint32_t offset = sig & ~ACL_DENY_SIGNATURE;
 	unsigned char a, b, c, d;
-	struct ipv4_hdr *ipv4_hdr = (struct ipv4_hdr *)
-					(rte_pktmbuf_mtod(m, unsigned char *) +
-					sizeof(struct ether_hdr));
+	struct ipv4_hdr *ipv4_hdr = rte_pktmbuf_mtod_offset(m,
+							    struct ipv4_hdr *,
+							    sizeof(struct ether_hdr));
 
 	uint32_t_to_char(rte_bswap32(ipv4_hdr->src_addr), &a, &b, &c, &d);
 	printf("Packet Src:%hhu.%hhu.%hhu.%hhu ", a, b, c, d);
@@ -588,9 +605,9 @@ dump_acl6_rule(struct rte_mbuf *m, uint32_t sig)
 {
 	unsigned i;
 	uint32_t offset = sig & ~ACL_DENY_SIGNATURE;
-	struct ipv6_hdr *ipv6_hdr = (struct ipv6_hdr *)
-					(rte_pktmbuf_mtod(m, unsigned char *) +
-					sizeof(struct ether_hdr));
+	struct ipv6_hdr *ipv6_hdr = rte_pktmbuf_mtod_offset(m,
+							    struct ipv6_hdr *,
+							    sizeof(struct ether_hdr));
 
 	printf("Packet Src");
 	for (i = 0; i < RTE_DIM(ipv6_hdr->src_addr); i += sizeof(uint16_t))
@@ -645,12 +662,9 @@ prepare_one_packet(struct rte_mbuf **pkts_in, struct acl_search_t *acl,
 	struct ipv4_hdr *ipv4_hdr;
 	struct rte_mbuf *pkt = pkts_in[index];
 
-	int type = pkt->ol_flags & (PKT_RX_IPV4_HDR | PKT_RX_IPV6_HDR);
-
-	if (type == PKT_RX_IPV4_HDR) {
-
-		ipv4_hdr = (struct ipv4_hdr *)(rte_pktmbuf_mtod(pkt,
-			unsigned char *) + sizeof(struct ether_hdr));
+	if (RTE_ETH_IS_IPV4_HDR(pkt->packet_type)) {
+		ipv4_hdr = rte_pktmbuf_mtod_offset(pkt, struct ipv4_hdr *,
+						   sizeof(struct ether_hdr));
 
 		/* Check to make sure the packet is valid (RFC1812) */
 		if (is_valid_ipv4_pkt(ipv4_hdr, pkt->pkt_len) >= 0) {
@@ -667,9 +681,7 @@ prepare_one_packet(struct rte_mbuf **pkts_in, struct acl_search_t *acl,
 			/* Not a valid IPv4 packet */
 			rte_pktmbuf_free(pkt);
 		}
-
-	} else if (type == PKT_RX_IPV6_HDR) {
-
+	} else if (RTE_ETH_IS_IPV6_HDR(pkt->packet_type)) {
 		/* Fill acl structure */
 		acl->data_ipv6[acl->num_ipv6] = MBUF_IPV6_2PROTO(pkt);
 		acl->m_ipv6[(acl->num_ipv6)++] = pkt;
@@ -687,17 +699,12 @@ prepare_one_packet(struct rte_mbuf **pkts_in, struct acl_search_t *acl,
 {
 	struct rte_mbuf *pkt = pkts_in[index];
 
-	int type = pkt->ol_flags & (PKT_RX_IPV4_HDR | PKT_RX_IPV6_HDR);
-
-	if (type == PKT_RX_IPV4_HDR) {
-
+	if (RTE_ETH_IS_IPV4_HDR(pkt->packet_type)) {
 		/* Fill acl structure */
 		acl->data_ipv4[acl->num_ipv4] = MBUF_IPV4_2PROTO(pkt);
 		acl->m_ipv4[(acl->num_ipv4)++] = pkt;
 
-
-	} else if (type == PKT_RX_IPV6_HDR) {
-
+	} else if (RTE_ETH_IS_IPV6_HDR(pkt->packet_type)) {
 		/* Fill acl structure */
 		acl->data_ipv6[acl->num_ipv6] = MBUF_IPV6_2PROTO(pkt);
 		acl->m_ipv6[(acl->num_ipv6)++] = pkt;
@@ -745,9 +752,9 @@ send_one_packet(struct rte_mbuf *m, uint32_t res)
 		/* in the ACL list, drop it */
 #ifdef L3FWDACL_DEBUG
 		if ((res & ACL_DENY_SIGNATURE) != 0) {
-			if (m->ol_flags & PKT_RX_IPV4_HDR)
+			if (RTE_ETH_IS_IPV4_HDR(m->packet_type))
 				dump_acl4_rule(m, res);
-			else
+			else if (RTE_ETH_IS_IPV6_HDR(m->packet_type))
 				dump_acl6_rule(m, res);
 		}
 #endif

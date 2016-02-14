@@ -74,7 +74,6 @@ free_mem_region(struct virtio_net *dev)
 {
 	struct orig_region_map *region;
 	unsigned int idx;
-	uint64_t alignment;
 
 	if (!dev || !dev->mem)
 		return;
@@ -82,12 +81,8 @@ free_mem_region(struct virtio_net *dev)
 	region = orig_region(dev->mem, dev->mem->nregions);
 	for (idx = 0; idx < dev->mem->nregions; idx++) {
 		if (region[idx].mapped_address) {
-			alignment = region[idx].blksz;
-			munmap((void *)(uintptr_t)
-				RTE_ALIGN_FLOOR(
-					region[idx].mapped_address, alignment),
-				RTE_ALIGN_CEIL(
-					region[idx].mapped_size, alignment));
+			munmap((void *)(uintptr_t)region[idx].mapped_address,
+					region[idx].mapped_size);
 			close(region[idx].fd);
 		}
 	}
@@ -147,6 +142,18 @@ user_set_mem_table(struct vhost_device_ctx ctx, struct VhostUserMsg *pmsg)
 		/* This is ugly */
 		mapped_size = memory.regions[idx].memory_size +
 			memory.regions[idx].mmap_offset;
+
+		/* mmap() without flag of MAP_ANONYMOUS, should be called
+		 * with length argument aligned with hugepagesz at older
+		 * longterm version Linux, like 2.6.32 and 3.2.72, or
+		 * mmap() will fail with EINVAL.
+		 *
+		 * to avoid failure, make sure in caller to keep length
+		 * aligned.
+		 */
+		alignment = get_blk_size(pmsg->fds[idx]);
+		mapped_size = RTE_ALIGN_CEIL(mapped_size, alignment);
+
 		mapped_address = (uint64_t)(uintptr_t)mmap(NULL,
 			mapped_size,
 			PROT_READ | PROT_WRITE, MAP_SHARED,
@@ -154,9 +161,11 @@ user_set_mem_table(struct vhost_device_ctx ctx, struct VhostUserMsg *pmsg)
 			0);
 
 		RTE_LOG(INFO, VHOST_CONFIG,
-			"mapped region %d fd:%d to %p sz:0x%"PRIx64" off:0x%"PRIx64"\n",
+			"mapped region %d fd:%d to:%p sz:0x%"PRIx64" "
+			"off:0x%"PRIx64" align:0x%"PRIx64"\n",
 			idx, pmsg->fds[idx], (void *)(uintptr_t)mapped_address,
-			mapped_size, memory.regions[idx].mmap_offset);
+			mapped_size, memory.regions[idx].mmap_offset,
+			alignment);
 
 		if (mapped_address == (uint64_t)(uintptr_t)MAP_FAILED) {
 			RTE_LOG(ERR, VHOST_CONFIG,
@@ -166,7 +175,7 @@ user_set_mem_table(struct vhost_device_ctx ctx, struct VhostUserMsg *pmsg)
 
 		pregion_orig[idx].mapped_address = mapped_address;
 		pregion_orig[idx].mapped_size = mapped_size;
-		pregion_orig[idx].blksz = get_blk_size(pmsg->fds[idx]);
+		pregion_orig[idx].blksz = alignment;
 		pregion_orig[idx].fd = pmsg->fds[idx];
 
 		mapped_address +=  memory.regions[idx].mmap_offset;
@@ -193,11 +202,8 @@ user_set_mem_table(struct vhost_device_ctx ctx, struct VhostUserMsg *pmsg)
 
 err_mmap:
 	while (idx--) {
-		alignment = pregion_orig[idx].blksz;
-		munmap((void *)(uintptr_t)RTE_ALIGN_FLOOR(
-			pregion_orig[idx].mapped_address, alignment),
-			RTE_ALIGN_CEIL(pregion_orig[idx].mapped_size,
-					alignment));
+		munmap((void *)(uintptr_t)pregion_orig[idx].mapped_address,
+				pregion_orig[idx].mapped_size);
 		close(pregion_orig[idx].fd);
 	}
 	free(dev->mem);
@@ -206,25 +212,33 @@ err_mmap:
 }
 
 static int
+vq_is_ready(struct vhost_virtqueue *vq)
+{
+	return vq && vq->desc   &&
+	       vq->kickfd != -1 &&
+	       vq->callfd != -1;
+}
+
+static int
 virtio_is_ready(struct virtio_net *dev)
 {
 	struct vhost_virtqueue *rvq, *tvq;
+	uint32_t i;
 
-	/* mq support in future.*/
-	rvq = dev->virtqueue[VIRTIO_RXQ];
-	tvq = dev->virtqueue[VIRTIO_TXQ];
-	if (rvq && tvq && rvq->desc && tvq->desc &&
-		(rvq->kickfd != (eventfd_t)-1) &&
-		(rvq->callfd != (eventfd_t)-1) &&
-		(tvq->kickfd != (eventfd_t)-1) &&
-		(tvq->callfd != (eventfd_t)-1)) {
-		RTE_LOG(INFO, VHOST_CONFIG,
-			"virtio is now ready for processing.\n");
-		return 1;
+	for (i = 0; i < dev->virt_qp_nb; i++) {
+		rvq = dev->virtqueue[i * VIRTIO_QNUM + VIRTIO_RXQ];
+		tvq = dev->virtqueue[i * VIRTIO_QNUM + VIRTIO_TXQ];
+
+		if (!vq_is_ready(rvq) || !vq_is_ready(tvq)) {
+			RTE_LOG(INFO, VHOST_CONFIG,
+				"virtio is not ready for processing.\n");
+			return 0;
+		}
 	}
+
 	RTE_LOG(INFO, VHOST_CONFIG,
-		"virtio isn't ready for processing.\n");
-	return 0;
+		"virtio is now ready for processing.\n");
+	return 1;
 }
 
 void
@@ -276,6 +290,8 @@ user_get_vring_base(struct vhost_device_ctx ctx,
 {
 	struct virtio_net *dev = get_device(ctx);
 
+	if (dev == NULL)
+		return -1;
 	/* We have to stop the queue (virtio) if it is running. */
 	if (dev->flags & VIRTIO_DEV_RUNNING)
 		notify_ops->destroy_device(dev);
@@ -290,14 +306,34 @@ user_get_vring_base(struct vhost_device_ctx ctx,
 	 * sent and only sent in vhost_vring_stop.
 	 * TODO: cleanup the vring, it isn't usable since here.
 	 */
-	if (((int)dev->virtqueue[VIRTIO_RXQ]->kickfd) >= 0) {
-		close(dev->virtqueue[VIRTIO_RXQ]->kickfd);
-		dev->virtqueue[VIRTIO_RXQ]->kickfd = (eventfd_t)-1;
+	if (dev->virtqueue[state->index]->kickfd >= 0) {
+		close(dev->virtqueue[state->index]->kickfd);
+		dev->virtqueue[state->index]->kickfd = -1;
 	}
-	if (((int)dev->virtqueue[VIRTIO_TXQ]->kickfd) >= 0) {
-		close(dev->virtqueue[VIRTIO_TXQ]->kickfd);
-		dev->virtqueue[VIRTIO_TXQ]->kickfd = (eventfd_t)-1;
+
+	return 0;
+}
+
+/*
+ * when virtio queues are ready to work, qemu will send us to
+ * enable the virtio queue pair.
+ */
+int
+user_set_vring_enable(struct vhost_device_ctx ctx,
+		      struct vhost_vring_state *state)
+{
+	struct virtio_net *dev = get_device(ctx);
+	int enable = (int)state->num;
+
+	RTE_LOG(INFO, VHOST_CONFIG,
+		"set queue enable: %d to qp idx: %d\n",
+		enable, state->index);
+
+	if (notify_ops->vring_state_changed) {
+		notify_ops->vring_state_changed(dev, state->index, enable);
 	}
+
+	dev->virtqueue[state->index]->enabled = enable;
 
 	return 0;
 }
@@ -315,4 +351,17 @@ user_destroy_device(struct vhost_device_ctx ctx)
 		free(dev->mem);
 		dev->mem = NULL;
 	}
+}
+
+void
+user_set_protocol_features(struct vhost_device_ctx ctx,
+			   uint64_t protocol_features)
+{
+	struct virtio_net *dev;
+
+	dev = get_device(ctx);
+	if (dev == NULL || protocol_features & ~VHOST_USER_PROTOCOL_FEATURES)
+		return;
+
+	dev->protocol_features = protocol_features;
 }
