@@ -420,7 +420,7 @@ mbuf_pool_find(unsigned int sock_id)
 	char pool_name[RTE_MEMPOOL_NAMESIZE];
 
 	mbuf_poolname_build(sock_id, pool_name, sizeof(pool_name));
-	return (rte_mempool_lookup((const char *)pool_name));
+	return rte_mempool_lookup((const char *)pool_name);
 }
 
 /**
@@ -462,6 +462,7 @@ unsigned int parse_item_list(char* str, const char* item_name,
 			unsigned int *parsed_items, int check_unique_values);
 void launch_args_parse(int argc, char** argv);
 void prompt(void);
+void prompt_exit(void);
 void nic_stats_display(portid_t port_id);
 void nic_stats_clear(portid_t port_id);
 void nic_xstats_display(portid_t port_id);

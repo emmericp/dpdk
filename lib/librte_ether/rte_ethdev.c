@@ -220,9 +220,6 @@ rte_eth_dev_create_unique_device_name(char *name, size_t size,
 {
 	int ret;
 
-	if ((name == NULL) || (pci_dev == NULL))
-		return -EINVAL;
-
 	ret = snprintf(name, size, "%d:%d.%d",
 			pci_dev->addr.bus, pci_dev->addr.devid,
 			pci_dev->addr.function);
@@ -505,9 +502,6 @@ rte_eth_dev_is_detachable(uint8_t port_id)
 static int
 rte_eth_dev_attach_pdev(struct rte_pci_addr *addr, uint8_t *port_id)
 {
-	if ((addr == NULL) || (port_id == NULL))
-		goto err;
-
 	/* re-construct pci_device_list */
 	if (rte_eal_pci_scan())
 		goto err;
@@ -520,7 +514,6 @@ rte_eth_dev_attach_pdev(struct rte_pci_addr *addr, uint8_t *port_id)
 
 	return 0;
 err:
-	RTE_LOG(ERR, EAL, "Driver, cannot attach the device\n");
 	return -1;
 }
 
@@ -530,13 +523,6 @@ rte_eth_dev_detach_pdev(uint8_t port_id, struct rte_pci_addr *addr)
 {
 	struct rte_pci_addr freed_addr;
 	struct rte_pci_addr vp;
-
-	if (addr == NULL)
-		goto err;
-
-	/* check whether the driver supports detach feature, or not */
-	if (rte_eth_dev_is_detachable(port_id))
-		goto err;
 
 	/* get pci address by port id */
 	if (rte_eth_dev_get_addr_by_port(port_id, &freed_addr))
@@ -555,7 +541,6 @@ rte_eth_dev_detach_pdev(uint8_t port_id, struct rte_pci_addr *addr)
 	*addr = freed_addr;
 	return 0;
 err:
-	RTE_LOG(ERR, EAL, "Driver, cannot detach the device\n");
 	return -1;
 }
 
@@ -565,9 +550,6 @@ rte_eth_dev_attach_vdev(const char *vdevargs, uint8_t *port_id)
 {
 	char *name = NULL, *args = NULL;
 	int ret = -1;
-
-	if ((vdevargs == NULL) || (port_id == NULL))
-		goto end;
 
 	/* parse vdevargs, then retrieve device name and args */
 	if (rte_eal_parse_devargs_str(vdevargs, &name, &args))
@@ -586,13 +568,9 @@ rte_eth_dev_attach_vdev(const char *vdevargs, uint8_t *port_id)
 
 	ret = 0;
 end:
-	if (name)
-		free(name);
-	if (args)
-		free(args);
+	free(name);
+	free(args);
 
-	if (ret < 0)
-		RTE_LOG(ERR, EAL, "Driver, cannot attach the device\n");
 	return ret;
 }
 
@@ -601,13 +579,6 @@ static int
 rte_eth_dev_detach_vdev(uint8_t port_id, char *vdevname)
 {
 	char name[RTE_ETH_NAME_MAX_LEN];
-
-	if (vdevname == NULL)
-		goto err;
-
-	/* check whether the driver supports detach feature, or not */
-	if (rte_eth_dev_is_detachable(port_id))
-		goto err;
 
 	/* get device name by port id */
 	if (rte_eth_dev_get_name_by_port(port_id, name))
@@ -620,7 +591,6 @@ rte_eth_dev_detach_vdev(uint8_t port_id, char *vdevname)
 	strncpy(vdevname, name, sizeof(name));
 	return 0;
 err:
-	RTE_LOG(ERR, EAL, "Driver, cannot detach the device\n");
 	return -1;
 }
 
@@ -629,14 +599,27 @@ int
 rte_eth_dev_attach(const char *devargs, uint8_t *port_id)
 {
 	struct rte_pci_addr addr;
+	int ret = -1;
 
-	if ((devargs == NULL) || (port_id == NULL))
-		return -EINVAL;
+	if ((devargs == NULL) || (port_id == NULL)) {
+		ret = -EINVAL;
+		goto err;
+	}
 
-	if (eal_parse_pci_DomBDF(devargs, &addr) == 0)
-		return rte_eth_dev_attach_pdev(&addr, port_id);
-	else
-		return rte_eth_dev_attach_vdev(devargs, port_id);
+	if (eal_parse_pci_DomBDF(devargs, &addr) == 0) {
+		ret = rte_eth_dev_attach_pdev(&addr, port_id);
+		if (ret < 0)
+			goto err;
+	} else {
+		ret = rte_eth_dev_attach_vdev(devargs, port_id);
+		if (ret < 0)
+			goto err;
+	}
+
+	return 0;
+err:
+	RTE_LOG(ERR, EAL, "Driver, cannot attach the device\n");
+	return ret;
 }
 
 /* detach the device, then store the name of the device */
@@ -644,26 +627,41 @@ int
 rte_eth_dev_detach(uint8_t port_id, char *name)
 {
 	struct rte_pci_addr addr;
-	int ret;
+	int ret = -1;
 
-	if (name == NULL)
-		return -EINVAL;
+	if (name == NULL) {
+		ret = -EINVAL;
+		goto err;
+	}
+
+	/* check whether the driver supports detach feature, or not */
+	if (rte_eth_dev_is_detachable(port_id))
+		goto err;
 
 	if (rte_eth_dev_get_device_type(port_id) == RTE_ETH_DEV_PCI) {
 		ret = rte_eth_dev_get_addr_by_port(port_id, &addr);
 		if (ret < 0)
-			return ret;
+			goto err;
 
 		ret = rte_eth_dev_detach_pdev(port_id, &addr);
-		if (ret == 0)
-			snprintf(name, RTE_ETH_NAME_MAX_LEN,
-				"%04x:%02x:%02x.%d",
-				addr.domain, addr.bus,
-				addr.devid, addr.function);
+		if (ret < 0)
+			goto err;
 
-		return ret;
-	} else
-		return rte_eth_dev_detach_vdev(port_id, name);
+		snprintf(name, RTE_ETH_NAME_MAX_LEN,
+			"%04x:%02x:%02x.%d",
+			addr.domain, addr.bus,
+			addr.devid, addr.function);
+	} else {
+		ret = rte_eth_dev_detach_vdev(port_id, name);
+		if (ret < 0)
+			goto err;
+	}
+
+	return 0;
+
+err:
+	RTE_LOG(ERR, EAL, "Driver, cannot detach the device\n");
+	return ret;
 }
 
 static int

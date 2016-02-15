@@ -135,3 +135,12 @@ DPDK_2.2 {
 	rte_xen_dom0_supported;
 
 } DPDK_2.1;
+
+DPDK_2.3 {
+	global:
+
+	rte_eal_pci_map_device;
+	rte_eal_pci_unmap_device;
+	rte_cpu_feature_table;
+
+} DPDK_2.2;

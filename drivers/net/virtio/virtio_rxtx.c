@@ -339,11 +339,6 @@ virtio_dev_vring_start(struct virtqueue *vq, int queue_type)
 		vq_update_avail_idx(vq);
 
 		PMD_INIT_LOG(DEBUG, "Allocated %d bufs", nbufs);
-
-		VIRTIO_WRITE_REG_2(vq->hw, VIRTIO_PCI_QUEUE_SEL,
-			vq->vq_queue_index);
-		VIRTIO_WRITE_REG_4(vq->hw, VIRTIO_PCI_QUEUE_PFN,
-			vq->mz->phys_addr >> VIRTIO_PCI_QUEUE_ADDR_SHIFT);
 	} else if (queue_type == VTNET_TQ) {
 		if (use_simple_rxtx) {
 			int mid_idx  = vq->vq_nentries >> 1;
@@ -362,16 +357,6 @@ virtio_dev_vring_start(struct virtqueue *vq, int queue_type)
 			for (i = mid_idx; i < vq->vq_nentries; i++)
 				vq->vq_ring.avail->ring[i] = i;
 		}
-
-		VIRTIO_WRITE_REG_2(vq->hw, VIRTIO_PCI_QUEUE_SEL,
-			vq->vq_queue_index);
-		VIRTIO_WRITE_REG_4(vq->hw, VIRTIO_PCI_QUEUE_PFN,
-			vq->mz->phys_addr >> VIRTIO_PCI_QUEUE_ADDR_SHIFT);
-	} else {
-		VIRTIO_WRITE_REG_2(vq->hw, VIRTIO_PCI_QUEUE_SEL,
-			vq->vq_queue_index);
-		VIRTIO_WRITE_REG_4(vq->hw, VIRTIO_PCI_QUEUE_PFN,
-			vq->mz->phys_addr >> VIRTIO_PCI_QUEUE_ADDR_SHIFT);
 	}
 }
 
@@ -575,7 +560,7 @@ virtio_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 	struct rte_mbuf *rcv_pkts[VIRTIO_MBUF_BURST_SZ];
 	int error;
 	uint32_t i, nb_enqueued;
-	const uint32_t hdr_size = sizeof(struct virtio_net_hdr);
+	uint32_t hdr_size;
 
 	nb_used = VIRTQUEUE_NUSED(rxvq);
 
@@ -595,6 +580,7 @@ virtio_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 	hw = rxvq->hw;
 	nb_rx = 0;
 	nb_enqueued = 0;
+	hdr_size = hw->vtnet_hdr_size;
 
 	for (i = 0; i < num ; i++) {
 		rxm = rcv_pkts[i];
@@ -679,7 +665,7 @@ virtio_recv_mergeable_pkts(void *rx_queue,
 	uint32_t seg_num;
 	uint16_t extra_idx;
 	uint32_t seg_res;
-	const uint32_t hdr_size = sizeof(struct virtio_net_hdr_mrg_rxbuf);
+	uint32_t hdr_size;
 
 	nb_used = VIRTQUEUE_NUSED(rxvq);
 
@@ -697,6 +683,7 @@ virtio_recv_mergeable_pkts(void *rx_queue,
 	seg_num = 0;
 	extra_idx = 0;
 	seg_res = 0;
+	hdr_size = hw->vtnet_hdr_size;
 
 	while (i < nb_used) {
 		struct virtio_net_hdr_mrg_rxbuf *header;

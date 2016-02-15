@@ -56,9 +56,6 @@ enum rte_cpu_flag_t {
 	RTE_CPUFLAG_NUMFLAGS /**< This should always be the last! */
 };
 
-static const struct feature_entry cpu_feature_table[] = {
-};
-
 /*
  * Read AUXV software register and get cpu features for Power
  */
