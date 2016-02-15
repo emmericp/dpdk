@@ -45,11 +45,11 @@ extern "C" {
  * The bitmap component provides a mechanism to manage large arrays of bits
  * through bit get/set/clear and bit array scan operations.
  *
- * The bitmap scan operation is optimized for 64-bit CPUs using 64-byte cache
+ * The bitmap scan operation is optimized for 64-bit CPUs using 64/128 byte cache
  * lines. The bitmap is hierarchically organized using two arrays (array1 and
  * array2), with each bit in array1 being associated with a full cache line
- * (512 bits) of bitmap bits, which are stored in array2: the bit in array1 is
- * set only when there is at least one bit set within its associated array2
+ * (512/1024 bits) of bitmap bits, which are stored in array2: the bit in array1
+ * is set only when there is at least one bit set within its associated array2
  * bits, otherwise the bit in array1 is cleared. The read and write operations
  * for array1 and array2 are always done in slabs of 64 bits.
  *
@@ -81,11 +81,11 @@ extern "C" {
 
 /* Cache line (CL) */
 #define RTE_BITMAP_CL_BIT_SIZE                   (RTE_CACHE_LINE_SIZE * 8)
-#define RTE_BITMAP_CL_BIT_SIZE_LOG2              9
+#define RTE_BITMAP_CL_BIT_SIZE_LOG2              (RTE_CACHE_LINE_SIZE_LOG2 + 3)
 #define RTE_BITMAP_CL_BIT_MASK                   (RTE_BITMAP_CL_BIT_SIZE - 1)
 
 #define RTE_BITMAP_CL_SLAB_SIZE                  (RTE_BITMAP_CL_BIT_SIZE / RTE_BITMAP_SLAB_BIT_SIZE)
-#define RTE_BITMAP_CL_SLAB_SIZE_LOG2             3
+#define RTE_BITMAP_CL_SLAB_SIZE_LOG2             (RTE_BITMAP_CL_BIT_SIZE_LOG2 - RTE_BITMAP_SLAB_BIT_SIZE_LOG2)
 #define RTE_BITMAP_CL_SLAB_MASK                  (RTE_BITMAP_CL_SLAB_SIZE - 1)
 
 /** Bitmap data structure */
@@ -115,7 +115,7 @@ __rte_bitmap_index1_inc(struct rte_bitmap *bmp)
 static inline uint64_t
 __rte_bitmap_mask1_get(struct rte_bitmap *bmp)
 {
-	return ((~1lu) << bmp->offset1);
+	return (~1lu) << bmp->offset1;
 }
 
 static inline void
@@ -344,7 +344,7 @@ rte_bitmap_get(struct rte_bitmap *bmp, uint32_t pos)
 	index2 = pos >> RTE_BITMAP_SLAB_BIT_SIZE_LOG2;
 	offset2 = pos & RTE_BITMAP_SLAB_BIT_MASK;
 	slab2 = bmp->array2 + index2;
-	return ((*slab2) & (1lu << offset2));
+	return (*slab2) & (1lu << offset2);
 }
 
 /**
@@ -412,7 +412,7 @@ __rte_bitmap_line_not_empty(uint64_t *slab2)
 	v1 |= v2;
 	v3 |= v4;
 
-	return (v1 | v3);
+	return v1 | v3;
 }
 
 /**

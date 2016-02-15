@@ -76,7 +76,6 @@
 #include <sys/mman.h>
 #include <sched.h>
 
-#include <rte_config.h>
 #include <rte_prefetch.h>
 #include <rte_per_lcore.h>
 #include <rte_atomic.h>
@@ -462,10 +461,10 @@ _sched_timer_cb(struct rte_timer *tim, void *arg)
  */
 static inline int _lthread_sched_isdone(struct lthread_sched *sched)
 {
-	return ((sched->run_flag == 0) &&
+	return (sched->run_flag == 0) &&
 			(_lthread_queue_empty(sched->ready)) &&
 			(_lthread_queue_empty(sched->pready)) &&
-			(sched->nb_blocked_threads == 0));
+			(sched->nb_blocked_threads == 0);
 }
 
 /*
