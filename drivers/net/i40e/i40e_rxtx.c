@@ -799,6 +799,11 @@ i40e_txd_enable_checksum(uint64_t ol_flags,
 		*td_offset |= (tx_offload.l2_len >> 1)
 			<< I40E_TX_DESC_LENGTH_MACLEN_SHIFT;
 
+	/* Enable L2 checksum offload */
+	if (!(ol_flags & PKT_TX_NO_CRC_CSUM))
+		*td_cmd |= I40E_TX_DESC_CMD_ICRC;
+
+
 	/* Enable L3 checksum offloads */
 	if (ol_flags & PKT_TX_IP_CKSUM) {
 		*td_cmd |= I40E_TX_DESC_CMD_IIPT_IPV4_CSUM;
@@ -1612,9 +1617,6 @@ i40e_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 			td_tag = (tx_flags & I40E_TX_FLAG_L2TAG1_MASK) >>
 						I40E_TX_FLAG_L2TAG1_SHIFT;
 		}
-
-		/* Always enable CRC offload insertion */
-		td_cmd |= I40E_TX_DESC_CMD_ICRC;
 
 		/* Enable checksum offloading */
 		cd_tunneling_params = 0;
