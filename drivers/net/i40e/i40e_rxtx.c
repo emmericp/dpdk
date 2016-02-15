@@ -50,6 +50,7 @@
 #include <rte_tcp.h>
 #include <rte_sctp.h>
 #include <rte_udp.h>
+#include <rte_branch_prediction.h>
 
 #include "i40e_logs.h"
 #include "base/i40e_prototype.h"
@@ -796,6 +797,7 @@ i40e_txd_enable_checksum(uint64_t ol_flags,
 	} else
 		*td_offset |= (tx_offload.l2_len >> 1)
 			<< I40E_TX_DESC_LENGTH_MACLEN_SHIFT;
+
 
 	/* Enable L3 checksum offloads */
 	if (ol_flags & PKT_TX_IP_CKSUM) {
@@ -1619,8 +1621,9 @@ i40e_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 						I40E_TX_FLAG_L2TAG1_SHIFT;
 		}
 
-		/* Always enable CRC offload insertion */
-		td_cmd |= I40E_TX_DESC_CMD_ICRC;
+		/* Enable L2 checksum offload */
+		if (likely(!(ol_flags & PKT_TX_NO_CRC_CSUM)))
+			td_cmd |= I40E_TX_DESC_CMD_ICRC;
 
 		/* Enable checksum offloading */
 		cd_tunneling_params = 0;
