@@ -266,8 +266,8 @@ l3fwd_simple_forward(struct rte_mbuf *m, struct lcore_queue_conf *qconf,
 		uint8_t queueid, uint8_t port_in)
 {
 	struct rx_queue *rxq;
-	uint32_t i, len;
-	uint8_t next_hop, port_out, ipv6;
+	uint32_t i, len, next_hop_ipv4;
+	uint8_t next_hop_ipv6, port_out, ipv6;
 	int32_t len2;
 
 	ipv6 = 0;
@@ -291,9 +291,9 @@ l3fwd_simple_forward(struct rte_mbuf *m, struct lcore_queue_conf *qconf,
 		ip_dst = rte_be_to_cpu_32(ip_hdr->dst_addr);
 
 		/* Find destination port */
-		if (rte_lpm_lookup(rxq->lpm, ip_dst, &next_hop) == 0 &&
-				(enabled_port_mask & 1 << next_hop) != 0) {
-			port_out = next_hop;
+		if (rte_lpm_lookup(rxq->lpm, ip_dst, &next_hop_ipv4) == 0 &&
+				(enabled_port_mask & 1 << next_hop_ipv4) != 0) {
+			port_out = next_hop_ipv4;
 
 			/* Build transmission burst for new port */
 			len = qconf->tx_mbufs[port_out].len;
@@ -327,9 +327,9 @@ l3fwd_simple_forward(struct rte_mbuf *m, struct lcore_queue_conf *qconf,
 		ip_hdr = rte_pktmbuf_mtod(m, struct ipv6_hdr *);
 
 		/* Find destination port */
-		if (rte_lpm6_lookup(rxq->lpm6, ip_hdr->dst_addr, &next_hop) == 0 &&
-				(enabled_port_mask & 1 << next_hop) != 0) {
-			port_out = next_hop;
+		if (rte_lpm6_lookup(rxq->lpm6, ip_hdr->dst_addr, &next_hop_ipv6) == 0 &&
+				(enabled_port_mask & 1 << next_hop_ipv6) != 0) {
+			port_out = next_hop_ipv6;
 
 			/* Build transmission burst for new port */
 			len = qconf->tx_mbufs[port_out].len;
@@ -631,7 +631,7 @@ check_all_ports_link_status(uint8_t port_num, uint32_t port_mask)
 				continue;
 			}
 			/* clear all_ports_up flag if any link down */
-			if (link.link_status == 0) {
+			if (link.link_status == ETH_LINK_DOWN) {
 				all_ports_up = 0;
 				break;
 			}
@@ -721,6 +721,7 @@ init_mem(void)
 	struct rte_mempool *mp;
 	struct rte_lpm *lpm;
 	struct rte_lpm6 *lpm6;
+	struct rte_lpm_config lpm_config;
 	int socket;
 	unsigned lcore_id;
 
@@ -768,7 +769,11 @@ init_mem(void)
 			RTE_LOG(INFO, IP_FRAG, "Creating LPM table on socket %i\n", socket);
 			snprintf(buf, sizeof(buf), "IP_FRAG_LPM_%i", socket);
 
-			lpm = rte_lpm_create(buf, socket, LPM_MAX_RULES, 0);
+			lpm_config.max_rules = LPM_MAX_RULES;
+			lpm_config.number_tbl8s = 256;
+			lpm_config.flags = 0;
+
+			lpm = rte_lpm_create(buf, socket, &lpm_config);
 			if (lpm == NULL) {
 				RTE_LOG(ERR, IP_FRAG, "Cannot create LPM table\n");
 				return -1;
@@ -819,9 +824,7 @@ main(int argc, char **argv)
 		rte_exit(EXIT_FAILURE, "Invalid arguments");
 
 	nb_ports = rte_eth_dev_count();
-	if (nb_ports > RTE_MAX_ETHPORTS)
-		nb_ports = RTE_MAX_ETHPORTS;
-	else if (nb_ports == 0)
+	if (nb_ports == 0)
 		rte_exit(EXIT_FAILURE, "No ports found!\n");
 
 	nb_lcores = rte_lcore_count();

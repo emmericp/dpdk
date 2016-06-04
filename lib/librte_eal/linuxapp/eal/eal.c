@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
+ *   Copyright(c) 2010-2016 Intel Corporation. All rights reserved.
  *   Copyright(c) 2012-2014 6WIND S.A.
  *   All rights reserved.
  *
@@ -50,7 +50,7 @@
 #include <sys/mman.h>
 #include <sys/queue.h>
 #include <sys/stat.h>
-#if defined(RTE_ARCH_X86_64) || defined(RTE_ARCH_I686)
+#if defined(RTE_ARCH_X86)
 #include <sys/io.h>
 #endif
 
@@ -712,10 +712,12 @@ rte_eal_mcfg_complete(void)
 int
 rte_eal_iopl_init(void)
 {
-#if defined(RTE_ARCH_X86_64) || defined(RTE_ARCH_I686)
+#if defined(RTE_ARCH_X86)
 	if (iopl(3) != 0)
 		return -1;
 	return 0;
+#elif defined(RTE_ARCH_ARM) || defined(RTE_ARCH_ARM64)
+	return 0; /* iopl syscall not supported for ARM/ARM64 */
 #else
 	return -1;
 #endif
@@ -819,8 +821,6 @@ rte_eal_init(int argc, char **argv)
 
 	eal_check_mem_on_local_socket();
 
-	rte_eal_mcfg_complete();
-
 	if (eal_plugins_init() < 0)
 		rte_panic("Cannot init plugins\n");
 
@@ -877,6 +877,8 @@ rte_eal_init(int argc, char **argv)
 	/* Probe & Initialize PCI devices */
 	if (rte_eal_pci_probe())
 		rte_panic("Cannot probe PCI\n");
+
+	rte_eal_mcfg_complete();
 
 	return fctret;
 }

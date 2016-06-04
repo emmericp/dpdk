@@ -231,6 +231,32 @@ rte_em_dev_atomic_write_link_status(struct rte_eth_dev *dev,
 	return 0;
 }
 
+/**
+ *  eth_em_dev_is_ich8 - Check for ICH8 device
+ *  @hw: pointer to the HW structure
+ *
+ *  return TRUE for ICH8, otherwise FALSE
+ **/
+static bool
+eth_em_dev_is_ich8(struct e1000_hw *hw)
+{
+	DEBUGFUNC("eth_em_dev_is_ich8");
+
+	switch (hw->device_id) {
+	case E1000_DEV_ID_PCH_LPT_I217_LM:
+	case E1000_DEV_ID_PCH_LPT_I217_V:
+	case E1000_DEV_ID_PCH_LPTLP_I218_LM:
+	case E1000_DEV_ID_PCH_LPTLP_I218_V:
+	case E1000_DEV_ID_PCH_I218_V2:
+	case E1000_DEV_ID_PCH_I218_LM2:
+	case E1000_DEV_ID_PCH_I218_V3:
+	case E1000_DEV_ID_PCH_I218_LM3:
+		return 1;
+	default:
+		return 0;
+	}
+}
+
 static int
 eth_em_dev_init(struct rte_eth_dev *eth_dev)
 {
@@ -265,6 +291,8 @@ eth_em_dev_init(struct rte_eth_dev *eth_dev)
 	adapter->stopped = 0;
 
 	/* For ICH8 support we'll need to map the flash memory BAR */
+	if (eth_em_dev_is_ich8(hw))
+		hw->flash_address = (void *)pci_dev->mem_resource[1].addr;
 
 	if (e1000_setup_init_funcs(hw, TRUE) != E1000_SUCCESS ||
 			em_hw_init(hw) != 0) {
@@ -490,6 +518,7 @@ em_set_pba(struct e1000_hw *hw)
 			break;
 		case e1000_pchlan:
 		case e1000_pch2lan:
+		case e1000_pch_lpt:
 			pba = E1000_PBA_26K;
 			break;
 		default:
@@ -509,6 +538,9 @@ eth_em_start(struct rte_eth_dev *dev)
 	struct rte_intr_handle *intr_handle = &dev->pci_dev->intr_handle;
 	int ret, mask;
 	uint32_t intr_vector = 0;
+	uint32_t *speeds;
+	int num_speeds;
+	bool autoneg;
 
 	PMD_INIT_FUNC_TRACE();
 
@@ -583,67 +615,58 @@ eth_em_start(struct rte_eth_dev *dev)
 	E1000_WRITE_REG(hw, E1000_ITR, UINT16_MAX);
 
 	/* Setup link speed and duplex */
-	switch (dev->data->dev_conf.link_speed) {
-	case ETH_LINK_SPEED_AUTONEG:
-		if (dev->data->dev_conf.link_duplex == ETH_LINK_AUTONEG_DUPLEX)
-			hw->phy.autoneg_advertised = E1000_ALL_SPEED_DUPLEX;
-		else if (dev->data->dev_conf.link_duplex ==
-					ETH_LINK_HALF_DUPLEX)
-			hw->phy.autoneg_advertised = E1000_ALL_HALF_DUPLEX;
-		else if (dev->data->dev_conf.link_duplex ==
-					ETH_LINK_FULL_DUPLEX)
-			hw->phy.autoneg_advertised = E1000_ALL_FULL_DUPLEX;
-		else
+	speeds = &dev->data->dev_conf.link_speeds;
+	if (*speeds == ETH_LINK_SPEED_AUTONEG) {
+		hw->phy.autoneg_advertised = E1000_ALL_SPEED_DUPLEX;
+	} else {
+		num_speeds = 0;
+		autoneg = (*speeds & ETH_LINK_SPEED_FIXED) == 0;
+
+		/* Reset */
+		hw->phy.autoneg_advertised = 0;
+
+		if (*speeds & ~(ETH_LINK_SPEED_10M_HD | ETH_LINK_SPEED_10M |
+				ETH_LINK_SPEED_100M_HD | ETH_LINK_SPEED_100M |
+				ETH_LINK_SPEED_1G | ETH_LINK_SPEED_FIXED)) {
+			num_speeds = -1;
 			goto error_invalid_config;
-		break;
-	case ETH_LINK_SPEED_10:
-		if (dev->data->dev_conf.link_duplex == ETH_LINK_AUTONEG_DUPLEX)
-			hw->phy.autoneg_advertised = E1000_ALL_10_SPEED;
-		else if (dev->data->dev_conf.link_duplex ==
-					ETH_LINK_HALF_DUPLEX)
-			hw->phy.autoneg_advertised = ADVERTISE_10_HALF;
-		else if (dev->data->dev_conf.link_duplex ==
-					ETH_LINK_FULL_DUPLEX)
-			hw->phy.autoneg_advertised = ADVERTISE_10_FULL;
-		else
+		}
+		if (*speeds & ETH_LINK_SPEED_10M_HD) {
+			hw->phy.autoneg_advertised |= ADVERTISE_10_HALF;
+			num_speeds++;
+		}
+		if (*speeds & ETH_LINK_SPEED_10M) {
+			hw->phy.autoneg_advertised |= ADVERTISE_10_FULL;
+			num_speeds++;
+		}
+		if (*speeds & ETH_LINK_SPEED_100M_HD) {
+			hw->phy.autoneg_advertised |= ADVERTISE_100_HALF;
+			num_speeds++;
+		}
+		if (*speeds & ETH_LINK_SPEED_100M) {
+			hw->phy.autoneg_advertised |= ADVERTISE_100_FULL;
+			num_speeds++;
+		}
+		if (*speeds & ETH_LINK_SPEED_1G) {
+			hw->phy.autoneg_advertised |= ADVERTISE_1000_FULL;
+			num_speeds++;
+		}
+		if (num_speeds == 0 || (!autoneg && (num_speeds > 1)))
 			goto error_invalid_config;
-		break;
-	case ETH_LINK_SPEED_100:
-		if (dev->data->dev_conf.link_duplex == ETH_LINK_AUTONEG_DUPLEX)
-			hw->phy.autoneg_advertised = E1000_ALL_100_SPEED;
-		else if (dev->data->dev_conf.link_duplex ==
-					ETH_LINK_HALF_DUPLEX)
-			hw->phy.autoneg_advertised = ADVERTISE_100_HALF;
-		else if (dev->data->dev_conf.link_duplex ==
-					ETH_LINK_FULL_DUPLEX)
-			hw->phy.autoneg_advertised = ADVERTISE_100_FULL;
-		else
-			goto error_invalid_config;
-		break;
-	case ETH_LINK_SPEED_1000:
-		if ((dev->data->dev_conf.link_duplex ==
-				ETH_LINK_AUTONEG_DUPLEX) ||
-			(dev->data->dev_conf.link_duplex ==
-					ETH_LINK_FULL_DUPLEX))
-			hw->phy.autoneg_advertised = ADVERTISE_1000_FULL;
-		else
-			goto error_invalid_config;
-		break;
-	case ETH_LINK_SPEED_10000:
-	default:
-		goto error_invalid_config;
 	}
+
 	e1000_setup_link(hw);
 
 	if (rte_intr_allow_others(intr_handle)) {
 		/* check if lsc interrupt is enabled */
-		if (dev->data->dev_conf.intr_conf.lsc != 0)
+		if (dev->data->dev_conf.intr_conf.lsc != 0) {
 			ret = eth_em_interrupt_setup(dev);
 			if (ret) {
 				PMD_INIT_LOG(ERR, "Unable to setup interrupts");
 				em_dev_clear_queues(dev);
 				return ret;
 			}
+		}
 	} else {
 		rte_intr_callback_unregister(intr_handle,
 						eth_em_interrupt_handler,
@@ -665,9 +688,8 @@ eth_em_start(struct rte_eth_dev *dev)
 	return 0;
 
 error_invalid_config:
-	PMD_INIT_LOG(ERR, "Invalid link_speed/link_duplex (%u/%u) for port %u",
-		     dev->data->dev_conf.link_speed,
-		     dev->data->dev_conf.link_duplex, dev->data->port_id);
+	PMD_INIT_LOG(ERR, "Invalid advertised speeds (%u) for port %u",
+		     dev->data->dev_conf.link_speeds, dev->data->port_id);
 	em_dev_clear_queues(dev);
 	return -EINVAL;
 }
@@ -798,6 +820,8 @@ em_hardware_init(struct e1000_hw *hw)
 		hw->fc.low_water = 0x5048;
 		hw->fc.pause_time = 0x0650;
 		hw->fc.refresh_time = 0x0400;
+	} else if (hw->mac.type == e1000_pch_lpt) {
+		hw->fc.requested_mode = e1000_fc_full;
 	}
 
 	diag = e1000_init_hw(hw);
@@ -914,7 +938,6 @@ eth_em_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *rte_stats)
 	rte_stats->imissed = stats->mpc;
 	rte_stats->ierrors = stats->crcerrs +
 	                     stats->rlec + stats->ruc + stats->roc +
-	                     rte_stats->imissed +
 	                     stats->rxerrc + stats->algnerrc + stats->cexterr;
 
 	/* Tx Errors */
@@ -969,6 +992,7 @@ em_get_max_pktlen(const struct e1000_hw *hw)
 	case e1000_ich9lan:
 	case e1000_ich10lan:
 	case e1000_pch2lan:
+	case e1000_pch_lpt:
 	case e1000_82574:
 	case e1000_80003es2lan: /* 9K Jumbo Frame size */
 	case e1000_82583:
@@ -1023,6 +1047,10 @@ eth_em_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 		.nb_min = E1000_MIN_RING_DESC,
 		.nb_align = EM_TXD_ALIGN,
 	};
+
+	dev_info->speed_capa = ETH_LINK_SPEED_10M_HD | ETH_LINK_SPEED_10M |
+			ETH_LINK_SPEED_100M_HD | ETH_LINK_SPEED_100M |
+			ETH_LINK_SPEED_1G;
 }
 
 /* return 0 means link status changed, -1 means not changed */
@@ -1070,14 +1098,21 @@ eth_em_link_update(struct rte_eth_dev *dev, int wait_to_complete)
 	old = link;
 
 	/* Now we check if a transition has happened */
-	if (link_check && (link.link_status == 0)) {
-		hw->mac.ops.get_link_up_info(hw, &link.link_speed,
-			&link.link_duplex);
-		link.link_status = 1;
-	} else if (!link_check && (link.link_status == 1)) {
+	if (link_check && (link.link_status == ETH_LINK_DOWN)) {
+		uint16_t duplex, speed;
+		hw->mac.ops.get_link_up_info(hw, &speed, &duplex);
+		link.link_duplex = (duplex == FULL_DUPLEX) ?
+				ETH_LINK_FULL_DUPLEX :
+				ETH_LINK_HALF_DUPLEX;
+		link.link_speed = speed;
+		link.link_status = ETH_LINK_UP;
+		link.link_autoneg = !(dev->data->dev_conf.link_speeds &
+				ETH_LINK_SPEED_FIXED);
+	} else if (!link_check && (link.link_status == ETH_LINK_UP)) {
 		link.link_speed = 0;
-		link.link_duplex = 0;
-		link.link_status = 0;
+		link.link_duplex = ETH_LINK_HALF_DUPLEX;
+		link.link_status = ETH_LINK_DOWN;
+		link.link_autoneg = ETH_LINK_SPEED_FIXED;
 	}
 	rte_em_dev_atomic_write_link_status(dev, &link);
 

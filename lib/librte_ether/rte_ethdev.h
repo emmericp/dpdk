@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
+ *   Copyright(c) 2010-2016 Intel Corporation. All rights reserved.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -200,27 +200,9 @@ struct rte_eth_stats {
 	/**< Total of RX packets dropped by the HW,
 	 * because there are no available mbufs (i.e. RX queues are full).
 	 */
-	uint64_t ibadcrc __rte_deprecated;
-	/**< Deprecated; Total of RX packets with CRC error. */
-	uint64_t ibadlen __rte_deprecated;
-	/**< Deprecated; Total of RX packets with bad length. */
 	uint64_t ierrors;   /**< Total number of erroneous received packets. */
 	uint64_t oerrors;   /**< Total number of failed transmitted packets. */
-	uint64_t imcasts;
-	/**< Deprecated; Total number of multicast received packets. */
 	uint64_t rx_nombuf; /**< Total number of RX mbuf allocation failures. */
-	uint64_t fdirmatch __rte_deprecated;
-	/**< Deprecated; Total number of RX packets matching a filter. */
-	uint64_t fdirmiss __rte_deprecated;
-	/**< Deprecated; Total number of RX packets not matching any filter. */
-	uint64_t tx_pause_xon __rte_deprecated;
-	 /**< Deprecated; Total nb. of XON pause frame sent. */
-	uint64_t rx_pause_xon __rte_deprecated;
-	/**< Deprecated; Total nb. of XON pause frame received. */
-	uint64_t tx_pause_xoff __rte_deprecated;
-	/**< Deprecated; Total nb. of XOFF pause frame sent. */
-	uint64_t rx_pause_xoff __rte_deprecated;
-	/**< Deprecated; Total nb. of XOFF pause frame received. */
 	uint64_t q_ipackets[RTE_ETHDEV_QUEUE_STAT_CNTRS];
 	/**< Total number of queue RX packets. */
 	uint64_t q_opackets[RTE_ETHDEV_QUEUE_STAT_CNTRS];
@@ -231,37 +213,62 @@ struct rte_eth_stats {
 	/**< Total number of successfully transmitted queue bytes. */
 	uint64_t q_errors[RTE_ETHDEV_QUEUE_STAT_CNTRS];
 	/**< Total number of queue packets received that are dropped. */
-	uint64_t ilbpackets;
-	/**< Total number of good packets received from loopback,VF Only */
-	uint64_t olbpackets;
-	/**< Total number of good packets transmitted to loopback,VF Only */
-	uint64_t ilbbytes;
-	/**< Total number of good bytes received from loopback,VF Only */
-	uint64_t olbbytes;
-	/**< Total number of good bytes transmitted to loopback,VF Only */
 };
+
+/**
+ * Device supported speeds bitmap flags
+ */
+#define ETH_LINK_SPEED_AUTONEG  (0 <<  0)  /**< Autonegotiate (all speeds) */
+#define ETH_LINK_SPEED_FIXED    (1 <<  0)  /**< Disable autoneg (fixed speed) */
+#define ETH_LINK_SPEED_10M_HD   (1 <<  1)  /**<  10 Mbps half-duplex */
+#define ETH_LINK_SPEED_10M      (1 <<  2)  /**<  10 Mbps full-duplex */
+#define ETH_LINK_SPEED_100M_HD  (1 <<  3)  /**< 100 Mbps half-duplex */
+#define ETH_LINK_SPEED_100M     (1 <<  4)  /**< 100 Mbps full-duplex */
+#define ETH_LINK_SPEED_1G       (1 <<  5)  /**<   1 Gbps */
+#define ETH_LINK_SPEED_2_5G     (1 <<  6)  /**< 2.5 Gbps */
+#define ETH_LINK_SPEED_5G       (1 <<  7)  /**<   5 Gbps */
+#define ETH_LINK_SPEED_10G      (1 <<  8)  /**<  10 Gbps */
+#define ETH_LINK_SPEED_20G      (1 <<  9)  /**<  20 Gbps */
+#define ETH_LINK_SPEED_25G      (1 << 10)  /**<  25 Gbps */
+#define ETH_LINK_SPEED_40G      (1 << 11)  /**<  40 Gbps */
+#define ETH_LINK_SPEED_50G      (1 << 12)  /**<  50 Gbps */
+#define ETH_LINK_SPEED_56G      (1 << 13)  /**<  56 Gbps */
+#define ETH_LINK_SPEED_100G     (1 << 14)  /**< 100 Gbps */
+
+/**
+ * Ethernet numeric link speeds in Mbps
+ */
+#define ETH_SPEED_NUM_NONE         0 /**< Not defined */
+#define ETH_SPEED_NUM_10M         10 /**<  10 Mbps */
+#define ETH_SPEED_NUM_100M       100 /**< 100 Mbps */
+#define ETH_SPEED_NUM_1G        1000 /**<   1 Gbps */
+#define ETH_SPEED_NUM_2_5G      2500 /**< 2.5 Gbps */
+#define ETH_SPEED_NUM_5G        5000 /**<   5 Gbps */
+#define ETH_SPEED_NUM_10G      10000 /**<  10 Gbps */
+#define ETH_SPEED_NUM_20G      20000 /**<  20 Gbps */
+#define ETH_SPEED_NUM_25G      25000 /**<  25 Gbps */
+#define ETH_SPEED_NUM_40G      40000 /**<  40 Gbps */
+#define ETH_SPEED_NUM_50G      50000 /**<  50 Gbps */
+#define ETH_SPEED_NUM_56G      56000 /**<  56 Gbps */
+#define ETH_SPEED_NUM_100G    100000 /**< 100 Gbps */
 
 /**
  * A structure used to retrieve link-level information of an Ethernet port.
  */
 struct rte_eth_link {
-	uint16_t link_speed;      /**< ETH_LINK_SPEED_[10, 100, 1000, 10000] */
-	uint16_t link_duplex;     /**< ETH_LINK_[HALF_DUPLEX, FULL_DUPLEX] */
-	uint8_t  link_status : 1; /**< 1 -> link up, 0 -> link down */
-}__attribute__((aligned(8)));     /**< aligned for atomic64 read/write */
+	uint32_t link_speed;        /**< ETH_SPEED_NUM_ */
+	uint16_t link_duplex  : 1;  /**< ETH_LINK_[HALF/FULL]_DUPLEX */
+	uint16_t link_autoneg : 1;  /**< ETH_LINK_SPEED_[AUTONEG/FIXED] */
+	uint16_t link_status  : 1;  /**< ETH_LINK_[DOWN/UP] */
+} __attribute__((aligned(8)));      /**< aligned for atomic64 read/write */
 
-#define ETH_LINK_SPEED_AUTONEG  0       /**< Auto-negotiate link speed. */
-#define ETH_LINK_SPEED_10       10      /**< 10 megabits/second. */
-#define ETH_LINK_SPEED_100      100     /**< 100 megabits/second. */
-#define ETH_LINK_SPEED_1000     1000    /**< 1 gigabits/second. */
-#define ETH_LINK_SPEED_10000    10000   /**< 10 gigabits/second. */
-#define ETH_LINK_SPEED_10G      10000   /**< alias of 10 gigabits/second. */
-#define ETH_LINK_SPEED_20G      20000   /**< 20 gigabits/second. */
-#define ETH_LINK_SPEED_40G      40000   /**< 40 gigabits/second. */
-
-#define ETH_LINK_AUTONEG_DUPLEX 0       /**< Auto-negotiate duplex. */
-#define ETH_LINK_HALF_DUPLEX    1       /**< Half-duplex connection. */
-#define ETH_LINK_FULL_DUPLEX    2       /**< Full-duplex connection. */
+/* Utility constants */
+#define ETH_LINK_HALF_DUPLEX    0 /**< Half-duplex connection. */
+#define ETH_LINK_FULL_DUPLEX    1 /**< Full-duplex connection. */
+#define ETH_LINK_DOWN           0 /**< Link is down. */
+#define ETH_LINK_UP             1 /**< Link is up. */
+#define ETH_LINK_FIXED          0 /**< No autonegotiation. */
+#define ETH_LINK_AUTONEG        1 /**< Autonegotiated. */
 
 /**
  * A structure used to configure the ring threshold registers of an RX/TX
@@ -348,6 +355,17 @@ struct rte_eth_rxmode {
 		hw_strip_crc     : 1, /**< Enable CRC stripping by hardware. */
 		enable_scatter   : 1, /**< Enable scatter packets rx handler */
 		enable_lro       : 1; /**< Enable LRO */
+};
+
+/**
+ * VLAN types to indicate if it is for single VLAN, inner VLAN or outer VLAN.
+ * Note that single VLAN is treated the same as inner VLAN.
+ */
+enum rte_vlan_type {
+	ETH_VLAN_TYPE_UNKNOWN = 0,
+	ETH_VLAN_TYPE_INNER, /**< Single VLAN, or inner VLAN. */
+	ETH_VLAN_TYPE_OUTER, /**< Outer VLAN. */
+	ETH_VLAN_TYPE_MAX,
 };
 
 /**
@@ -520,7 +538,7 @@ struct rte_eth_mirror_conf {
 struct rte_eth_rss_reta_entry64 {
 	uint64_t mask;
 	/**< Mask bits indicate which entries need to be updated/queried. */
-	uint8_t reta[RTE_RETA_GROUP_SIZE];
+	uint16_t reta[RTE_RETA_GROUP_SIZE];
 	/**< Group of 64 redirection table entries. */
 };
 
@@ -738,10 +756,14 @@ struct rte_fdir_conf {
 
 /**
  * UDP tunneling configuration.
+ * Used to config the UDP port for a type of tunnel.
+ * NICs need the UDP port to identify the tunnel type.
+ * Normally a type of tunnel has a default UDP port, this structure can be used
+ * in case if the users want to change or support more UDP port.
  */
 struct rte_eth_udp_tunnel {
-	uint16_t udp_port;
-	uint8_t prot_type;
+	uint16_t udp_port; /**< UDP port used for the tunnel. */
+	uint8_t prot_type; /**< Tunnel type. Defined in rte_eth_tunnel_type. */
 };
 
 /**
@@ -760,10 +782,13 @@ struct rte_intr_conf {
  * configuration settings may be needed.
  */
 struct rte_eth_conf {
-	uint16_t link_speed;
-	/**< ETH_LINK_SPEED_10[0|00|000], or 0 for autonegotation */
-	uint16_t link_duplex;
-	/**< ETH_LINK_[HALF_DUPLEX|FULL_DUPLEX], or 0 for autonegotation */
+	uint32_t link_speeds; /**< bitmap of ETH_LINK_SPEED_XXX of speeds to be
+				used. ETH_LINK_SPEED_FIXED disables link
+				autonegotiation, and a unique speed shall be
+				set. Otherwise, the bitmap defines the set of
+				speeds to be advertised. If the special value
+				ETH_LINK_SPEED_AUTONEG (0) is used, all speeds
+				supported are advertised. */
 	struct rte_eth_rxmode rxmode; /**< Port RX configuration. */
 	struct rte_eth_txmode txmode; /**< Port TX configuration. */
 	uint32_t lpbk_mode; /**< Loopback operation mode. By default the value
@@ -810,6 +835,7 @@ struct rte_eth_conf {
 #define DEV_RX_OFFLOAD_TCP_CKSUM   0x00000008
 #define DEV_RX_OFFLOAD_TCP_LRO     0x00000010
 #define DEV_RX_OFFLOAD_QINQ_STRIP  0x00000020
+#define DEV_RX_OFFLOAD_OUTER_IPV4_CKSUM 0x00000040
 
 /**
  * TX offload capabilities of a device.
@@ -824,6 +850,9 @@ struct rte_eth_conf {
 #define DEV_TX_OFFLOAD_OUTER_IPV4_CKSUM 0x00000080 /**< Used for tunneling packet. */
 #define DEV_TX_OFFLOAD_QINQ_INSERT 0x00000100
 
+/**
+ * Ethernet device information
+ */
 struct rte_eth_dev_info {
 	struct rte_pci_device *pci_dev; /**< Device PCI information. */
 	const char *driver_name; /**< Device Driver name. */
@@ -852,6 +881,7 @@ struct rte_eth_dev_info {
 	uint16_t vmdq_pool_base;  /**< First ID of VMDQ pools. */
 	struct rte_eth_desc_lim rx_desc_lim;  /**< RX descriptors limits */
 	struct rte_eth_desc_lim tx_desc_lim;  /**< TX descriptors limits */
+	uint32_t speed_capa;  /**< Supported speeds bitmap (ETH_LINK_SPEED_). */
 };
 
 /**
@@ -957,6 +987,19 @@ TAILQ_HEAD(rte_eth_dev_cb_list, rte_eth_dev_callback);
 	} \
 } while (0)
 
+/**
+ * l2 tunnel configuration.
+ */
+
+/**< l2 tunnel enable mask */
+#define ETH_L2_TUNNEL_ENABLE_MASK       0x00000001
+/**< l2 tunnel insertion mask */
+#define ETH_L2_TUNNEL_INSERTION_MASK    0x00000002
+/**< l2 tunnel stripping mask */
+#define ETH_L2_TUNNEL_STRIPPING_MASK    0x00000004
+/**< l2 tunnel forwarding mask */
+#define ETH_L2_TUNNEL_FORWARDING_MASK   0x00000008
+
 /*
  * Definitions of all functions exported by an Ethernet driver through the
  * the generic structure of type *eth_dev_ops* supplied in the *rte_eth_dev*
@@ -1021,6 +1064,9 @@ typedef void (*eth_dev_infos_get_t)(struct rte_eth_dev *dev,
 				    struct rte_eth_dev_info *dev_info);
 /**< @internal Get specific informations of an Ethernet device. */
 
+typedef const uint32_t *(*eth_dev_supported_ptypes_get_t)(struct rte_eth_dev *dev);
+/**< @internal Get supported ptypes of an Ethernet device. */
+
 typedef int (*eth_queue_start_t)(struct rte_eth_dev *dev,
 				    uint16_t queue_id);
 /**< @internal Start rx and tx of a queue of an Ethernet device. */
@@ -1076,8 +1122,8 @@ typedef int (*vlan_filter_set_t)(struct rte_eth_dev *dev,
 				  int on);
 /**< @internal filtering of a VLAN Tag Identifier by an Ethernet device. */
 
-typedef void (*vlan_tpid_set_t)(struct rte_eth_dev *dev,
-				  uint16_t tpid);
+typedef int (*vlan_tpid_set_t)(struct rte_eth_dev *dev,
+			       enum rte_vlan_type type, uint16_t tpid);
 /**< @internal set the outer VLAN-TPID by an Ethernet device. */
 
 typedef void (*vlan_offload_set_t)(struct rte_eth_dev *dev, int mask);
@@ -1204,13 +1250,13 @@ typedef int (*eth_mirror_rule_reset_t)(struct rte_eth_dev *dev,
 				  uint8_t rule_id);
 /**< @internal Remove a traffic mirroring rule on an Ethernet device */
 
-typedef int (*eth_udp_tunnel_add_t)(struct rte_eth_dev *dev,
-				    struct rte_eth_udp_tunnel *tunnel_udp);
-/**< @internal Add tunneling UDP info */
+typedef int (*eth_udp_tunnel_port_add_t)(struct rte_eth_dev *dev,
+					 struct rte_eth_udp_tunnel *tunnel_udp);
+/**< @internal Add tunneling UDP port */
 
-typedef int (*eth_udp_tunnel_del_t)(struct rte_eth_dev *dev,
-				    struct rte_eth_udp_tunnel *tunnel_udp);
-/**< @internal Delete tunneling UDP info */
+typedef int (*eth_udp_tunnel_port_del_t)(struct rte_eth_dev *dev,
+					 struct rte_eth_udp_tunnel *tunnel_udp);
+/**< @internal Delete tunneling UDP port */
 
 typedef int (*eth_set_mc_addr_list_t)(struct rte_eth_dev *dev,
 				      struct ether_addr *mc_addr_set,
@@ -1260,6 +1306,17 @@ typedef int (*eth_get_eeprom_t)(struct rte_eth_dev *dev,
 typedef int (*eth_set_eeprom_t)(struct rte_eth_dev *dev,
 				struct rte_dev_eeprom_info *info);
 /**< @internal Program eeprom data  */
+
+typedef int (*eth_l2_tunnel_eth_type_conf_t)
+	(struct rte_eth_dev *dev, struct rte_eth_l2_tunnel_conf *l2_tunnel);
+/**< @internal config l2 tunnel ether type */
+
+typedef int (*eth_l2_tunnel_offload_set_t)
+	(struct rte_eth_dev *dev,
+	 struct rte_eth_l2_tunnel_conf *l2_tunnel,
+	 uint32_t mask,
+	 uint8_t en);
+/**< @internal enable/disable the l2 tunnel offload functions */
 
 #ifdef RTE_NIC_BYPASS
 
@@ -1347,6 +1404,8 @@ struct eth_dev_ops {
 	eth_queue_stats_mapping_set_t queue_stats_mapping_set;
 	/**< Configure per queue stat counter mapping. */
 	eth_dev_infos_get_t        dev_infos_get; /**< Get device info. */
+	eth_dev_supported_ptypes_get_t dev_supported_ptypes_get;
+	/**< Get packet types supported and identified by device*/
 	mtu_set_t                  mtu_set; /**< Set MTU. */
 	vlan_filter_set_t          vlan_filter_set;  /**< Filter VLAN Setup. */
 	vlan_tpid_set_t            vlan_tpid_set;      /**< Outer VLAN TPID Setup. */
@@ -1383,8 +1442,10 @@ struct eth_dev_ops {
 	eth_set_vf_rx_t            set_vf_rx;  /**< enable/disable a VF receive */
 	eth_set_vf_tx_t            set_vf_tx;  /**< enable/disable a VF transmit */
 	eth_set_vf_vlan_filter_t   set_vf_vlan_filter;  /**< Set VF VLAN filter */
-	eth_udp_tunnel_add_t       udp_tunnel_add;
-	eth_udp_tunnel_del_t       udp_tunnel_del;
+	/** Add UDP tunnel port. */
+	eth_udp_tunnel_port_add_t udp_tunnel_port_add;
+	/** Del UDP tunnel port. */
+	eth_udp_tunnel_port_del_t udp_tunnel_port_del;
 	eth_set_queue_rate_limit_t set_queue_rate_limit;   /**< Set queue rate limit */
 	eth_set_vf_rate_limit_t    set_vf_rate_limit;   /**< Set VF rate limit */
 	/** Update redirection table. */
@@ -1443,6 +1504,10 @@ struct eth_dev_ops {
 	eth_timesync_read_time timesync_read_time;
 	/** Set the device clock time. */
 	eth_timesync_write_time timesync_write_time;
+	/** Config ether type of l2 tunnel */
+	eth_l2_tunnel_eth_type_conf_t l2_tunnel_eth_type_conf;
+	/** Enable/disable l2 tunnel offload functions */
+	eth_l2_tunnel_offload_set_t l2_tunnel_offload_set;
 };
 
 /**
@@ -1616,6 +1681,8 @@ struct rte_eth_dev_data {
 #define RTE_ETH_DEV_DETACHABLE   0x0001
 /** Device supports link state interrupt */
 #define RTE_ETH_DEV_INTR_LSC     0x0002
+/** Device is a bonded slave */
+#define RTE_ETH_DEV_BONDED_SLAVE 0x0004
 
 /**
  * @internal
@@ -1785,6 +1852,19 @@ struct eth_driver {
  *   the Ethernet driver.
  */
 void rte_eth_driver_register(struct eth_driver *eth_drv);
+
+/**
+ * Convert a numerical speed in Mbps to a bitmap flag that can be used in
+ * the bitmap link_speeds of the struct rte_eth_conf
+ *
+ * @param speed
+ *   Numerical speed value in Mbps
+ * @param duplex
+ *   ETH_LINK_[HALF/FULL]_DUPLEX (only for 10/100M speeds)
+ * @return
+ *   0 if the speed cannot be mapped
+ */
+uint32_t rte_eth_speed_bitflag(uint32_t speed, int duplex);
 
 /**
  * Configure an Ethernet device.
@@ -2268,6 +2348,32 @@ void rte_eth_macaddr_get(uint8_t port_id, struct ether_addr *mac_addr);
 void rte_eth_dev_info_get(uint8_t port_id, struct rte_eth_dev_info *dev_info);
 
 /**
+ * Retrieve the supported packet types of an Ethernet device.
+ *
+ * @note
+ *   Better to invoke this API after the device is already started or rx burst
+ *   function is decided, to obtain correct supported ptypes.
+ * @note
+ *   if a given PMD does not report what ptypes it supports, then the supported
+ *   ptype count is reported as 0.
+ * @param port_id
+ *   The port identifier of the Ethernet device.
+ * @param ptype_mask
+ *   A hint of what kind of packet type which the caller is interested in.
+ * @param ptypes
+ *   An array pointer to store adequent packet types, allocated by caller.
+ * @param num
+ *  Size of the array pointed by param ptypes.
+ * @return
+ *   - (>=0) Number of supported ptypes. If the number of types exceeds num,
+ *           only num entries will be filled into the ptypes array, but the full
+ *           count of supported ptypes will be returned.
+ *   - (-ENODEV) if *port_id* invalid.
+ */
+int rte_eth_dev_get_supported_ptypes(uint8_t port_id, uint32_t ptype_mask,
+				     uint32_t *ptypes, int num);
+
+/**
  * Retrieve the MTU of an Ethernet device.
  *
  * @param port_id
@@ -2344,6 +2450,8 @@ int rte_eth_dev_set_vlan_strip_on_queue(uint8_t port_id, uint16_t rx_queue_id,
  *
  * @param port_id
  *   The port identifier of the Ethernet device.
+ * @param vlan_type
+ *   The vlan type.
  * @param tag_type
  *   The Tag Protocol ID
  * @return
@@ -2351,7 +2459,9 @@ int rte_eth_dev_set_vlan_strip_on_queue(uint8_t port_id, uint16_t rx_queue_id,
  *   - (-ENOSUP) if hardware-assisted VLAN TPID setup is not supported.
  *   - (-ENODEV) if *port_id* invalid.
  */
-int rte_eth_dev_set_vlan_ether_type(uint8_t port_id, uint16_t tag_type);
+int rte_eth_dev_set_vlan_ether_type(uint8_t port_id,
+				    enum rte_vlan_type vlan_type,
+				    uint16_t tag_type);
 
 /**
  * Set VLAN offload configuration on an Ethernet device
@@ -2655,12 +2765,220 @@ rte_eth_tx_burst(uint8_t port_id, uint16_t queue_id,
 	return (*dev->tx_pkt_burst)(dev->data->tx_queues[queue_id], tx_pkts, nb_pkts);
 }
 
+typedef void (*buffer_tx_error_fn)(struct rte_mbuf **unsent, uint16_t count,
+		void *userdata);
+
+/**
+ * Structure used to buffer packets for future TX
+ * Used by APIs rte_eth_tx_buffer and rte_eth_tx_buffer_flush
+ */
+struct rte_eth_dev_tx_buffer {
+	buffer_tx_error_fn error_callback;
+	void *error_userdata;
+	uint16_t size;           /**< Size of buffer for buffered tx */
+	uint16_t length;         /**< Number of packets in the array */
+	struct rte_mbuf *pkts[];
+	/**< Pending packets to be sent on explicit flush or when full */
+};
+
+/**
+ * Calculate the size of the tx buffer.
+ *
+ * @param sz
+ *   Number of stored packets.
+ */
+#define RTE_ETH_TX_BUFFER_SIZE(sz) \
+	(sizeof(struct rte_eth_dev_tx_buffer) + (sz) * sizeof(struct rte_mbuf *))
+
+/**
+ * Initialize default values for buffered transmitting
+ *
+ * @param buffer
+ *   Tx buffer to be initialized.
+ * @param size
+ *   Buffer size
+ * @return
+ *   0 if no error
+ */
+int
+rte_eth_tx_buffer_init(struct rte_eth_dev_tx_buffer *buffer, uint16_t size);
+
+/**
+ * Send any packets queued up for transmission on a port and HW queue
+ *
+ * This causes an explicit flush of packets previously buffered via the
+ * rte_eth_tx_buffer() function. It returns the number of packets successfully
+ * sent to the NIC, and calls the error callback for any unsent packets. Unless
+ * explicitly set up otherwise, the default callback simply frees the unsent
+ * packets back to the owning mempool.
+ *
+ * @param port_id
+ *   The port identifier of the Ethernet device.
+ * @param queue_id
+ *   The index of the transmit queue through which output packets must be
+ *   sent.
+ *   The value must be in the range [0, nb_tx_queue - 1] previously supplied
+ *   to rte_eth_dev_configure().
+ * @param buffer
+ *   Buffer of packets to be transmit.
+ * @return
+ *   The number of packets successfully sent to the Ethernet device. The error
+ *   callback is called for any packets which could not be sent.
+ */
+static inline uint16_t
+rte_eth_tx_buffer_flush(uint8_t port_id, uint16_t queue_id,
+		struct rte_eth_dev_tx_buffer *buffer)
+{
+	uint16_t sent;
+	uint16_t to_send = buffer->length;
+
+	if (to_send == 0)
+		return 0;
+
+	sent = rte_eth_tx_burst(port_id, queue_id, buffer->pkts, to_send);
+
+	buffer->length = 0;
+
+	/* All packets sent, or to be dealt with by callback below */
+	if (unlikely(sent != to_send))
+		buffer->error_callback(&buffer->pkts[sent], to_send - sent,
+				buffer->error_userdata);
+
+	return sent;
+}
+
+/**
+ * Buffer a single packet for future transmission on a port and queue
+ *
+ * This function takes a single mbuf/packet and buffers it for later
+ * transmission on the particular port and queue specified. Once the buffer is
+ * full of packets, an attempt will be made to transmit all the buffered
+ * packets. In case of error, where not all packets can be transmitted, a
+ * callback is called with the unsent packets as a parameter. If no callback
+ * is explicitly set up, the unsent packets are just freed back to the owning
+ * mempool. The function returns the number of packets actually sent i.e.
+ * 0 if no buffer flush occurred, otherwise the number of packets successfully
+ * flushed
+ *
+ * @param port_id
+ *   The port identifier of the Ethernet device.
+ * @param queue_id
+ *   The index of the transmit queue through which output packets must be
+ *   sent.
+ *   The value must be in the range [0, nb_tx_queue - 1] previously supplied
+ *   to rte_eth_dev_configure().
+ * @param buffer
+ *   Buffer used to collect packets to be sent.
+ * @param tx_pkt
+ *   Pointer to the packet mbuf to be sent.
+ * @return
+ *   0 = packet has been buffered for later transmission
+ *   N > 0 = packet has been buffered, and the buffer was subsequently flushed,
+ *     causing N packets to be sent, and the error callback to be called for
+ *     the rest.
+ */
+static inline uint16_t __attribute__((always_inline))
+rte_eth_tx_buffer(uint8_t port_id, uint16_t queue_id,
+		struct rte_eth_dev_tx_buffer *buffer, struct rte_mbuf *tx_pkt)
+{
+	buffer->pkts[buffer->length++] = tx_pkt;
+	if (buffer->length < buffer->size)
+		return 0;
+
+	return rte_eth_tx_buffer_flush(port_id, queue_id, buffer);
+}
+
+/**
+ * Configure a callback for buffered packets which cannot be sent
+ *
+ * Register a specific callback to be called when an attempt is made to send
+ * all packets buffered on an ethernet port, but not all packets can
+ * successfully be sent. The callback registered here will be called only
+ * from calls to rte_eth_tx_buffer() and rte_eth_tx_buffer_flush() APIs.
+ * The default callback configured for each queue by default just frees the
+ * packets back to the calling mempool. If additional behaviour is required,
+ * for example, to count dropped packets, or to retry transmission of packets
+ * which cannot be sent, this function should be used to register a suitable
+ * callback function to implement the desired behaviour.
+ * The example callback "rte_eth_count_unsent_packet_callback()" is also
+ * provided as reference.
+ *
+ * @param buffer
+ *   The port identifier of the Ethernet device.
+ * @param callback
+ *   The function to be used as the callback.
+ * @param userdata
+ *   Arbitrary parameter to be passed to the callback function
+ * @return
+ *   0 on success, or -1 on error with rte_errno set appropriately
+ */
+int
+rte_eth_tx_buffer_set_err_callback(struct rte_eth_dev_tx_buffer *buffer,
+		buffer_tx_error_fn callback, void *userdata);
+
+/**
+ * Callback function for silently dropping unsent buffered packets.
+ *
+ * This function can be passed to rte_eth_tx_buffer_set_err_callback() to
+ * adjust the default behavior when buffered packets cannot be sent. This
+ * function drops any unsent packets silently and is used by tx buffered
+ * operations as default behavior.
+ *
+ * NOTE: this function should not be called directly, instead it should be used
+ *       as a callback for packet buffering.
+ *
+ * NOTE: when configuring this function as a callback with
+ *       rte_eth_tx_buffer_set_err_callback(), the final, userdata parameter
+ *       should point to an uint64_t value.
+ *
+ * @param pkts
+ *   The previously buffered packets which could not be sent
+ * @param unsent
+ *   The number of unsent packets in the pkts array
+ * @param userdata
+ *   Not used
+ */
+void
+rte_eth_tx_buffer_drop_callback(struct rte_mbuf **pkts, uint16_t unsent,
+		void *userdata);
+
+/**
+ * Callback function for tracking unsent buffered packets.
+ *
+ * This function can be passed to rte_eth_tx_buffer_set_err_callback() to
+ * adjust the default behavior when buffered packets cannot be sent. This
+ * function drops any unsent packets, but also updates a user-supplied counter
+ * to track the overall number of packets dropped. The counter should be an
+ * uint64_t variable.
+ *
+ * NOTE: this function should not be called directly, instead it should be used
+ *       as a callback for packet buffering.
+ *
+ * NOTE: when configuring this function as a callback with
+ *       rte_eth_tx_buffer_set_err_callback(), the final, userdata parameter
+ *       should point to an uint64_t value.
+ *
+ * @param pkts
+ *   The previously buffered packets which could not be sent
+ * @param unsent
+ *   The number of unsent packets in the pkts array
+ * @param userdata
+ *   Pointer to an uint64_t value, which will be incremented by unsent
+ */
+void
+rte_eth_tx_buffer_count_callback(struct rte_mbuf **pkts, uint16_t unsent,
+		void *userdata);
+
 /**
  * The eth device event type for interrupt, and maybe others in the future.
  */
 enum rte_eth_event_type {
 	RTE_ETH_EVENT_UNKNOWN,  /**< unknown event type */
 	RTE_ETH_EVENT_INTR_LSC, /**< lsc interrupt event */
+	RTE_ETH_EVENT_QUEUE_STATE,
+				/**< queue state event (enabled/disabled) */
+	RTE_ETH_EVENT_INTR_RESET,
+			/**< reset interrupt event, sent to VF on PF reset */
 	RTE_ETH_EVENT_MAX       /**< max value of this enum */
 };
 
@@ -3387,8 +3705,11 @@ rte_eth_dev_rss_hash_conf_get(uint8_t port_id,
 			      struct rte_eth_rss_conf *rss_conf);
 
  /**
- * Add UDP tunneling port of an Ethernet device for filtering a specific
- * tunneling packet by UDP port number.
+ * Add UDP tunneling port for a specific type of tunnel.
+ * The packets with this UDP port will be identified as this type of tunnel.
+ * Before enabling any offloading function for a tunnel, users can call this API
+ * to change or add more UDP port for the tunnel. So the offloading function
+ * can take effect on the packets with the sepcific UDP port.
  *
  * @param port_id
  *   The port identifier of the Ethernet device.
@@ -3401,11 +3722,16 @@ rte_eth_dev_rss_hash_conf_get(uint8_t port_id,
  *   - (-ENOTSUP) if hardware doesn't support tunnel type.
  */
 int
-rte_eth_dev_udp_tunnel_add(uint8_t port_id,
-			   struct rte_eth_udp_tunnel *tunnel_udp);
+rte_eth_dev_udp_tunnel_port_add(uint8_t port_id,
+				struct rte_eth_udp_tunnel *tunnel_udp);
 
  /**
- * Detete UDP tunneling port configuration of Ethernet device
+ * Delete UDP tunneling port a specific type of tunnel.
+ * The packets with this UDP port will not be identified as this type of tunnel
+ * any more.
+ * Before enabling any offloading function for a tunnel, users can call this API
+ * to delete a UDP port for the tunnel. So the offloading function will not take
+ * effect on the packets with the sepcific UDP port.
  *
  * @param port_id
  *   The port identifier of the Ethernet device.
@@ -3418,8 +3744,8 @@ rte_eth_dev_udp_tunnel_add(uint8_t port_id,
  *   - (-ENOTSUP) if hardware doesn't support tunnel type.
  */
 int
-rte_eth_dev_udp_tunnel_delete(uint8_t port_id,
-			      struct rte_eth_udp_tunnel *tunnel_udp);
+rte_eth_dev_udp_tunnel_port_delete(uint8_t port_id,
+				   struct rte_eth_udp_tunnel *tunnel_udp);
 
 /**
  * Check whether the filter type is supported on an Ethernet device.
@@ -3879,6 +4205,53 @@ const struct rte_memzone *
 rte_eth_dma_zone_reserve(const struct rte_eth_dev *eth_dev, const char *name,
 			 uint16_t queue_id, size_t size,
 			 unsigned align, int socket_id);
+
+/**
+ * Config l2 tunnel ether type of an Ethernet device for filtering specific
+ * tunnel packets by ether type.
+ *
+ * @param port_id
+ *   The port identifier of the Ethernet device.
+ * @param l2_tunnel
+ *   l2 tunnel configuration.
+ *
+ * @return
+ *   - (0) if successful.
+ *   - (-ENODEV) if port identifier is invalid.
+ *   - (-ENOTSUP) if hardware doesn't support tunnel type.
+ */
+int
+rte_eth_dev_l2_tunnel_eth_type_conf(uint8_t port_id,
+				    struct rte_eth_l2_tunnel_conf *l2_tunnel);
+
+/**
+ * Enable/disable l2 tunnel offload functions. Include,
+ * 1, The ability of parsing a type of l2 tunnel of an Ethernet device.
+ *    Filtering, forwarding and offloading this type of tunnel packets depend on
+ *    this ability.
+ * 2, Stripping the l2 tunnel tag.
+ * 3, Insertion of the l2 tunnel tag.
+ * 4, Forwarding the packets based on the l2 tunnel tag.
+ *
+ * @param port_id
+ *   The port identifier of the Ethernet device.
+ * @param l2_tunnel
+ *   l2 tunnel parameters.
+ * @param mask
+ *   Indicate the offload function.
+ * @param en
+ *   Enable or disable this function.
+ *
+ * @return
+ *   - (0) if successful.
+ *   - (-ENODEV) if port identifier is invalid.
+ *   - (-ENOTSUP) if hardware doesn't support tunnel type.
+ */
+int
+rte_eth_dev_l2_tunnel_offload_set(uint8_t port_id,
+				  struct rte_eth_l2_tunnel_conf *l2_tunnel,
+				  uint32_t mask,
+				  uint8_t en);
 
 #ifdef __cplusplus
 }

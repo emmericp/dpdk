@@ -65,10 +65,6 @@
 extern "C" {
 #endif
 
-/* deprecated options */
-#pragma GCC poison RTE_MBUF_SCATTER_GATHER
-#pragma GCC poison RTE_MBUF_REFCNT
-
 /*
  * Packet Offload Features Flags. It also carry packet type information.
  * Critical resources. Both rx/tx shared these bits. Be cautious on any change
@@ -88,7 +84,7 @@ extern "C" {
 #define PKT_RX_FDIR          (1ULL << 2)  /**< RX packet with FDIR match indicate. */
 #define PKT_RX_L4_CKSUM_BAD  (1ULL << 3)  /**< L4 cksum of RX pkt. is not OK. */
 #define PKT_RX_IP_CKSUM_BAD  (1ULL << 4)  /**< IP cksum of RX pkt. is not OK. */
-#define PKT_RX_EIP_CKSUM_BAD (0ULL << 0)  /**< External IP header checksum error. */
+#define PKT_RX_EIP_CKSUM_BAD (1ULL << 5)  /**< External IP header checksum error. */
 #define PKT_RX_OVERSIZE      (0ULL << 0)  /**< Num of desc of an RX pkt oversize. */
 #define PKT_RX_HBUF_OVERFLOW (0ULL << 0)  /**< Header buffer overflow. */
 #define PKT_RX_RECIP_ERR     (0ULL << 0)  /**< Hardware processing error. */
@@ -728,9 +724,6 @@ typedef uint8_t  MARKER8[0];  /**< generic marker with 1B alignment */
 typedef uint64_t MARKER64[0]; /**< marker that allows us to overwrite 8 bytes
                                * with a single assignment */
 
-/** Opaque rte_mbuf_offload  structure declarations */
-struct rte_mbuf_offload;
-
 /**
  * The generic rte_mbuf, containing a packet mbuf.
  */
@@ -847,12 +840,79 @@ struct rte_mbuf {
 
 	/** Timesync flags for use with IEEE1588. */
 	uint16_t timesync;
-
-	/* Chain of off-load operations to perform on mbuf */
-	struct rte_mbuf_offload *offload_ops;
 } __rte_cache_aligned;
 
+/**
+ * Prefetch the first part of the mbuf
+ *
+ * The first 64 bytes of the mbuf corresponds to fields that are used early
+ * in the receive path. If the cache line of the architecture is higher than
+ * 64B, the second part will also be prefetched.
+ *
+ * @param m
+ *   The pointer to the mbuf.
+ */
+static inline void
+rte_mbuf_prefetch_part1(struct rte_mbuf *m)
+{
+	rte_prefetch0(&m->cacheline0);
+}
+
+/**
+ * Prefetch the second part of the mbuf
+ *
+ * The next 64 bytes of the mbuf corresponds to fields that are used in the
+ * transmit path. If the cache line of the architecture is higher than 64B,
+ * this function does nothing as it is expected that the full mbuf is
+ * already in cache.
+ *
+ * @param m
+ *   The pointer to the mbuf.
+ */
+static inline void
+rte_mbuf_prefetch_part2(struct rte_mbuf *m)
+{
+#if RTE_CACHE_LINE_SIZE == 64
+	rte_prefetch0(&m->cacheline1);
+#else
+	RTE_SET_USED(m);
+#endif
+}
+
+
 static inline uint16_t rte_pktmbuf_priv_size(struct rte_mempool *mp);
+
+/**
+ * Return the DMA address of the beginning of the mbuf data
+ *
+ * @param mb
+ *   The pointer to the mbuf.
+ * @return
+ *   The physical address of the beginning of the mbuf data
+ */
+static inline phys_addr_t
+rte_mbuf_data_dma_addr(const struct rte_mbuf *mb)
+{
+	return mb->buf_physaddr + mb->data_off;
+}
+
+/**
+ * Return the default DMA address of the beginning of the mbuf data
+ *
+ * This function is used by drivers in their receive function, as it
+ * returns the location where data should be written by the NIC, taking
+ * the default headroom in account.
+ *
+ * @param mb
+ *   The pointer to the mbuf.
+ * @return
+ *   The physical address of the beginning of the mbuf data
+ */
+static inline phys_addr_t
+rte_mbuf_data_dma_addr_default(const struct rte_mbuf *mb)
+{
+	return mb->buf_physaddr + RTE_PKTMBUF_HEADROOM;
+}
 
 /**
  * Return the mbuf owning the data buffer address of an indirect mbuf.
@@ -910,28 +970,10 @@ struct rte_pktmbuf_pool_private {
 /**  check mbuf type in debug mode */
 #define __rte_mbuf_sanity_check(m, is_h) rte_mbuf_sanity_check(m, is_h)
 
-/**  check mbuf type in debug mode if mbuf pointer is not null */
-#define __rte_mbuf_sanity_check_raw(m, is_h)	do {       \
-	if ((m) != NULL)                                   \
-		rte_mbuf_sanity_check(m, is_h);          \
-} while (0)
-
-/**  MBUF asserts in debug mode */
-#define RTE_MBUF_ASSERT(exp)                                         \
-if (!(exp)) {                                                        \
-	rte_panic("line%d\tassert \"" #exp "\" failed\n", __LINE__); \
-}
-
 #else /*  RTE_LIBRTE_MBUF_DEBUG */
 
 /**  check mbuf type in debug mode */
 #define __rte_mbuf_sanity_check(m, is_h) do { } while (0)
-
-/**  check mbuf type in debug mode if mbuf pointer is not null */
-#define __rte_mbuf_sanity_check_raw(m, is_h) do { } while (0)
-
-/**  MBUF asserts in debug mode */
-#define RTE_MBUF_ASSERT(exp)                do { } while (0)
 
 #endif /*  RTE_LIBRTE_MBUF_DEBUG */
 
@@ -1045,9 +1087,12 @@ void
 rte_mbuf_sanity_check(const struct rte_mbuf *m, int is_header);
 
 /**
- * @internal Allocate a new mbuf from mempool *mp*.
- * The use of that function is reserved for RTE internal needs.
- * Please use rte_pktmbuf_alloc().
+ * Allocate an unitialized mbuf from mempool *mp*.
+ *
+ * This function can be used by PMDs (especially in RX functions) to
+ * allocate an unitialized mbuf. The driver is responsible of
+ * initializing all the required fields. See rte_pktmbuf_reset().
+ * For standard needs, prefer rte_pktmbuf_alloc().
  *
  * @param mp
  *   The mempool from which mbuf is allocated.
@@ -1055,16 +1100,26 @@ rte_mbuf_sanity_check(const struct rte_mbuf *m, int is_header);
  *   - The pointer to the new mbuf on success.
  *   - NULL if allocation failed.
  */
-static inline struct rte_mbuf *__rte_mbuf_raw_alloc(struct rte_mempool *mp)
+static inline struct rte_mbuf *rte_mbuf_raw_alloc(struct rte_mempool *mp)
 {
 	struct rte_mbuf *m;
 	void *mb = NULL;
+
 	if (rte_mempool_get(mp, &mb) < 0)
 		return NULL;
 	m = (struct rte_mbuf *)mb;
-	RTE_MBUF_ASSERT(rte_mbuf_refcnt_read(m) == 0);
+	RTE_ASSERT(rte_mbuf_refcnt_read(m) == 0);
 	rte_mbuf_refcnt_set(m, 1);
+	__rte_mbuf_sanity_check(m, 0);
+
 	return m;
+}
+
+/* compat with older versions */
+__rte_deprecated static inline struct rte_mbuf *
+__rte_mbuf_raw_alloc(struct rte_mempool *mp)
+{
+	return rte_mbuf_raw_alloc(mp);
 }
 
 /**
@@ -1078,7 +1133,7 @@ static inline struct rte_mbuf *__rte_mbuf_raw_alloc(struct rte_mempool *mp)
 static inline void __attribute__((always_inline))
 __rte_mbuf_raw_free(struct rte_mbuf *m)
 {
-	RTE_MBUF_ASSERT(rte_mbuf_refcnt_read(m) == 0);
+	RTE_ASSERT(rte_mbuf_refcnt_read(m) == 0);
 	rte_mempool_put(m->pool, m);
 }
 
@@ -1330,9 +1385,64 @@ static inline void rte_pktmbuf_reset(struct rte_mbuf *m)
 static inline struct rte_mbuf *rte_pktmbuf_alloc(struct rte_mempool *mp)
 {
 	struct rte_mbuf *m;
-	if ((m = __rte_mbuf_raw_alloc(mp)) != NULL)
+	if ((m = rte_mbuf_raw_alloc(mp)) != NULL)
 		rte_pktmbuf_reset(m);
 	return m;
+}
+
+/**
+ * Allocate a bulk of mbufs, initialize refcnt and reset the fields to default
+ * values.
+ *
+ *  @param pool
+ *    The mempool from which mbufs are allocated.
+ *  @param mbufs
+ *    Array of pointers to mbufs
+ *  @param count
+ *    Array size
+ *  @return
+ *   - 0: Success
+ */
+static inline int rte_pktmbuf_alloc_bulk(struct rte_mempool *pool,
+	 struct rte_mbuf **mbufs, unsigned count)
+{
+	unsigned idx = 0;
+	int rc;
+
+	rc = rte_mempool_get_bulk(pool, (void **)mbufs, count);
+	if (unlikely(rc))
+		return rc;
+
+	/* To understand duff's device on loop unwinding optimization, see
+	 * https://en.wikipedia.org/wiki/Duff's_device.
+	 * Here while() loop is used rather than do() while{} to avoid extra
+	 * check if count is zero.
+	 */
+	switch (count % 4) {
+	case 0:
+		while (idx != count) {
+			RTE_ASSERT(rte_mbuf_refcnt_read(mbufs[idx]) == 0);
+			rte_mbuf_refcnt_set(mbufs[idx], 1);
+			rte_pktmbuf_reset(mbufs[idx]);
+			idx++;
+	case 3:
+			RTE_ASSERT(rte_mbuf_refcnt_read(mbufs[idx]) == 0);
+			rte_mbuf_refcnt_set(mbufs[idx], 1);
+			rte_pktmbuf_reset(mbufs[idx]);
+			idx++;
+	case 2:
+			RTE_ASSERT(rte_mbuf_refcnt_read(mbufs[idx]) == 0);
+			rte_mbuf_refcnt_set(mbufs[idx], 1);
+			rte_pktmbuf_reset(mbufs[idx]);
+			idx++;
+	case 1:
+			RTE_ASSERT(rte_mbuf_refcnt_read(mbufs[idx]) == 0);
+			rte_mbuf_refcnt_set(mbufs[idx], 1);
+			rte_pktmbuf_reset(mbufs[idx]);
+			idx++;
+		}
+	}
+	return 0;
 }
 
 /**
@@ -1340,6 +1450,8 @@ static inline struct rte_mbuf *rte_pktmbuf_alloc(struct rte_mempool *mp)
  *
  * After attachment we refer the mbuf we attached as 'indirect',
  * while mbuf we attached to as 'direct'.
+ * The direct mbuf's reference counter is incremented.
+ *
  * Right now, not supported:
  *  - attachment for already indirect mbuf (e.g. - mi has to be direct).
  *  - mbuf we trying to attach (mi) is used by someone else
@@ -1354,7 +1466,7 @@ static inline void rte_pktmbuf_attach(struct rte_mbuf *mi, struct rte_mbuf *m)
 {
 	struct rte_mbuf *md;
 
-	RTE_MBUF_ASSERT(RTE_MBUF_DIRECT(mi) &&
+	RTE_ASSERT(RTE_MBUF_DIRECT(mi) &&
 	    rte_mbuf_refcnt_read(mi) == 1);
 
 	/* if m is not direct, get the mbuf that embeds the data */
@@ -1393,13 +1505,17 @@ static inline void rte_pktmbuf_attach(struct rte_mbuf *mi, struct rte_mbuf *m)
  *
  *  - restore original mbuf address and length values.
  *  - reset pktmbuf data and data_len to their default values.
- *  All other fields of the given packet mbuf will be left intact.
+ *  - decrement the direct mbuf's reference counter. When the
+ *  reference counter becomes 0, the direct mbuf is freed.
+ *
+ * All other fields of the given packet mbuf will be left intact.
  *
  * @param m
  *   The indirect attached packet mbuf.
  */
 static inline void rte_pktmbuf_detach(struct rte_mbuf *m)
 {
+	struct rte_mbuf *md = rte_mbuf_from_indirect(m);
 	struct rte_mempool *mp = m->pool;
 	uint32_t mbuf_size, buf_len, priv_size;
 
@@ -1414,6 +1530,9 @@ static inline void rte_pktmbuf_detach(struct rte_mbuf *m)
 	m->data_off = RTE_MIN(RTE_PKTMBUF_HEADROOM, (uint16_t)m->buf_len);
 	m->data_len = 0;
 	m->ol_flags = 0;
+
+	if (rte_mbuf_refcnt_update(md, -1) == 0)
+		__rte_mbuf_raw_free(md);
 }
 
 static inline struct rte_mbuf* __attribute__((always_inline))
@@ -1422,17 +1541,9 @@ __rte_pktmbuf_prefree_seg(struct rte_mbuf *m)
 	__rte_mbuf_sanity_check(m, 0);
 
 	if (likely(rte_mbuf_refcnt_update(m, -1) == 0)) {
-
-		/* if this is an indirect mbuf, then
-		 *  - detach mbuf
-		 *  - free attached mbuf segment
-		 */
-		if (RTE_MBUF_INDIRECT(m)) {
-			struct rte_mbuf *md = rte_mbuf_from_indirect(m);
+		/* if this is an indirect mbuf, it is detached. */
+		if (RTE_MBUF_INDIRECT(m))
 			rte_pktmbuf_detach(m);
-			if (rte_mbuf_refcnt_update(md, -1) == 0)
-				__rte_mbuf_raw_free(md);
-		}
 		return m;
 	}
 	return NULL;

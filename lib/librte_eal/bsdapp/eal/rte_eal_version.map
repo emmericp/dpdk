@@ -57,6 +57,8 @@ DPDK_2.0 {
 	rte_free;
 	rte_get_hpet_cycles;
 	rte_get_hpet_hz;
+	rte_get_log_level;
+	rte_get_log_type;
 	rte_get_tsc_hz;
 	rte_hexdump;
 	rte_intr_callback_register;
@@ -136,11 +138,16 @@ DPDK_2.2 {
 
 } DPDK_2.1;
 
-DPDK_2.3 {
+DPDK_16.04 {
 	global:
 
+	rte_cpu_get_flag_name;
+	rte_eal_pci_ioport_map;
+	rte_eal_pci_ioport_read;
+	rte_eal_pci_ioport_unmap;
+	rte_eal_pci_ioport_write;
 	rte_eal_pci_map_device;
 	rte_eal_pci_unmap_device;
-	rte_cpu_feature_table;
+	rte_eal_primary_proc_alive;
 
 } DPDK_2.2;

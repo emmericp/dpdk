@@ -39,18 +39,7 @@
  * Netronome vNIC DPDK Poll-Mode Driver: Main entry point
  */
 
-#include <stdio.h>
-#include <stdlib.h>
-#include <stdint.h>
-#include <unistd.h>
-#include <string.h>
-#include <sys/mman.h>
-#include <sys/socket.h>
-#include <sys/io.h>
-#include <assert.h>
-#include <time.h>
 #include <math.h>
-#include <inttypes.h>
 
 #include <rte_byteorder.h>
 #include <rte_common.h>
@@ -65,6 +54,7 @@
 #include <rte_version.h>
 #include <rte_string_fns.h>
 #include <rte_alarm.h>
+#include <rte_spinlock.h>
 
 #include "nfp_net_pmd.h"
 #include "nfp_net_logs.h"
@@ -333,7 +323,7 @@ nfp_net_tx_queue_release_mbufs(struct nfp_net_txq *txq)
 
 	for (i = 0; i < txq->tx_count; i++) {
 		if (txq->txbufs[i].mbuf) {
-			rte_pktmbuf_free_seg(txq->txbufs[i].mbuf);
+			rte_pktmbuf_free(txq->txbufs[i].mbuf);
 			txq->txbufs[i].mbuf = NULL;
 		}
 	}
@@ -358,6 +348,7 @@ nfp_net_reset_tx_queue(struct nfp_net_txq *txq)
 	txq->wr_p = 0;
 	txq->rd_p = 0;
 	txq->tail = 0;
+	txq->qcp_rd_p = 0;
 }
 
 static int
@@ -417,12 +408,16 @@ nfp_net_reconfig(struct nfp_net_hw *hw, uint32_t ctrl, uint32_t update)
 	PMD_DRV_LOG(DEBUG, "nfp_net_reconfig: ctrl=%08x update=%08x\n",
 		    ctrl, update);
 
+	rte_spinlock_lock(&hw->reconfig_lock);
+
 	nn_cfg_writel(hw, NFP_NET_CFG_CTRL, ctrl);
 	nn_cfg_writel(hw, NFP_NET_CFG_UPDATE, update);
 
 	rte_wmb();
 
 	err = __nfp_net_reconfig(hw, update);
+
+	rte_spinlock_unlock(&hw->reconfig_lock);
 
 	if (!err)
 		return 0;
@@ -827,11 +822,11 @@ nfp_net_link_update(struct rte_eth_dev *dev, __rte_unused int wait_to_complete)
 	memset(&link, 0, sizeof(struct rte_eth_link));
 
 	if (nn_link_status & NFP_NET_CFG_STS_LINK)
-		link.link_status = 1;
+		link.link_status = ETH_LINK_UP;
 
 	link.link_duplex = ETH_LINK_FULL_DUPLEX;
 	/* Other cards can limit the tx and rx rate per VF */
-	link.link_speed = ETH_LINK_SPEED_40G;
+	link.link_speed = ETH_SPEED_NUM_40G;
 
 	if (old.link_status != link.link_status) {
 		nfp_net_dev_atomic_write_link_status(dev, &link);
@@ -912,11 +907,6 @@ nfp_net_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 
 	nfp_dev_stats.obytes -= hw->eth_stats_base.obytes;
 
-	nfp_dev_stats.imcasts =
-		nn_cfg_readq(hw, NFP_NET_CFG_STATS_RX_MC_FRAMES);
-
-	nfp_dev_stats.imcasts -= hw->eth_stats_base.imcasts;
-
 	/* reading general device stats */
 	nfp_dev_stats.ierrors =
 		nn_cfg_readq(hw, NFP_NET_CFG_STATS_RX_ERRORS);
@@ -927,12 +917,6 @@ nfp_net_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 		nn_cfg_readq(hw, NFP_NET_CFG_STATS_TX_ERRORS);
 
 	nfp_dev_stats.oerrors -= hw->eth_stats_base.oerrors;
-
-	/* Multicast frames received */
-	nfp_dev_stats.imcasts =
-		nn_cfg_readq(hw, NFP_NET_CFG_STATS_RX_MC_FRAMES);
-
-	nfp_dev_stats.imcasts -= hw->eth_stats_base.imcasts;
 
 	/* RX ring mbuf allocation failures */
 	nfp_dev_stats.rx_nombuf = dev->data->rx_mbuf_alloc_failed;
@@ -995,19 +979,12 @@ nfp_net_stats_reset(struct rte_eth_dev *dev)
 	hw->eth_stats_base.obytes =
 		nn_cfg_readq(hw, NFP_NET_CFG_STATS_TX_OCTETS);
 
-	hw->eth_stats_base.imcasts =
-		nn_cfg_readq(hw, NFP_NET_CFG_STATS_RX_MC_FRAMES);
-
 	/* reading general device stats */
 	hw->eth_stats_base.ierrors =
 		nn_cfg_readq(hw, NFP_NET_CFG_STATS_RX_ERRORS);
 
 	hw->eth_stats_base.oerrors =
 		nn_cfg_readq(hw, NFP_NET_CFG_STATS_TX_ERRORS);
-
-	/* Multicast frames received */
-	hw->eth_stats_base.imcasts =
-		nn_cfg_readq(hw, NFP_NET_CFG_STATS_RX_MC_FRAMES);
 
 	/* RX ring mbuf allocation failures */
 	dev->data->rx_mbuf_alloc_failed = 0;
@@ -1071,6 +1048,25 @@ nfp_net_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 
 	dev_info->reta_size = NFP_NET_CFG_RSS_ITBL_SZ;
 	dev_info->hash_key_size = NFP_NET_CFG_RSS_KEY_SZ;
+
+	dev_info->speed_capa = ETH_LINK_SPEED_40G | ETH_LINK_SPEED_100G;
+}
+
+static const uint32_t *
+nfp_net_supported_ptypes_get(struct rte_eth_dev *dev)
+{
+	static const uint32_t ptypes[] = {
+		/* refers to nfp_net_set_hash() */
+		RTE_PTYPE_INNER_L3_IPV4,
+		RTE_PTYPE_INNER_L3_IPV6,
+		RTE_PTYPE_INNER_L3_IPV6_EXT,
+		RTE_PTYPE_INNER_L4_MASK,
+		RTE_PTYPE_UNKNOWN
+	};
+
+	if (dev->rx_pkt_burst == nfp_net_recv_pkts)
+		return ptypes;
+	return NULL;
 }
 
 static uint32_t
@@ -1522,7 +1518,7 @@ static inline void
 nfp_net_tx_cksum(struct nfp_net_txq *txq, struct nfp_net_tx_desc *txd,
 		 struct rte_mbuf *mb)
 {
-	uint16_t ol_flags;
+	uint64_t ol_flags;
 	struct nfp_net_hw *hw = txq->hw;
 
 	if (!(hw->cap & NFP_NET_CFG_CTRL_TXCSUM))
@@ -1543,7 +1539,8 @@ nfp_net_tx_cksum(struct nfp_net_txq *txq, struct nfp_net_tx_desc *txd,
 		break;
 	}
 
-	txd->flags |= PCIE_DESC_TX_CSUM;
+	if (ol_flags & (PKT_TX_IP_CKSUM | PKT_TX_L4_MASK))
+		txd->flags |= PCIE_DESC_TX_CSUM;
 }
 
 /* nfp_net_rx_cksum - set mbuf checksum flags based on RX descriptor flags */
@@ -1979,13 +1976,18 @@ nfp_net_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 		 */
 		pkt_size = pkt->pkt_len;
 
-		while (pkt_size) {
-			/* Releasing mbuf which was prefetched above */
-			if (*lmbuf)
-				rte_pktmbuf_free_seg(*lmbuf);
+		/* Releasing mbuf which was prefetched above */
+		if (*lmbuf)
+			rte_pktmbuf_free(*lmbuf);
+		/*
+		 * Linking mbuf with descriptor for being released
+		 * next time descriptor is used
+		 */
+		*lmbuf = pkt;
 
+		while (pkt_size) {
 			dma_size = pkt->data_len;
-			dma_addr = RTE_MBUF_DATA_DMA_ADDR(pkt);
+			dma_addr = rte_mbuf_data_dma_addr(pkt);
 			PMD_TX_LOG(DEBUG, "Working with mbuf at dma address:"
 				   "%" PRIx64 "\n", dma_addr);
 
@@ -1996,12 +1998,6 @@ nfp_net_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 			txds->dma_addr_lo = (dma_addr & 0xffffffff);
 			ASSERT(free_descs > 0);
 			free_descs--;
-
-			/*
-			 * Linking mbuf with descriptor for being released
-			 * next time descriptor is used
-			 */
-			*lmbuf = pkt;
 
 			txq->wr_p++;
 			txq->tail++;
@@ -2281,7 +2277,7 @@ nfp_net_rss_hash_conf_get(struct rte_eth_dev *dev,
 }
 
 /* Initialise and register driver with DPDK Application */
-static struct eth_dev_ops nfp_net_eth_dev_ops = {
+static const struct eth_dev_ops nfp_net_eth_dev_ops = {
 	.dev_configure		= nfp_net_configure,
 	.dev_start		= nfp_net_start,
 	.dev_stop		= nfp_net_stop,
@@ -2292,6 +2288,7 @@ static struct eth_dev_ops nfp_net_eth_dev_ops = {
 	.stats_get		= nfp_net_stats_get,
 	.stats_reset		= nfp_net_stats_reset,
 	.dev_infos_get		= nfp_net_infos_get,
+	.dev_supported_ptypes_get = nfp_net_supported_ptypes_get,
 	.mtu_set		= nfp_net_dev_mtu_set,
 	.vlan_offload_set	= nfp_net_vlan_offload_set,
 	.reta_update		= nfp_net_reta_update,
@@ -2328,6 +2325,8 @@ nfp_net_init(struct rte_eth_dev *eth_dev)
 		return 0;
 
 	pci_dev = eth_dev->pci_dev;
+	rte_eth_copy_pci_info(eth_dev, pci_dev);
+
 	hw->device_id = pci_dev->id.device_id;
 	hw->vendor_id = pci_dev->id.vendor_id;
 	hw->subsystem_device_id = pci_dev->id.subsystem_device_id;
@@ -2404,6 +2403,9 @@ nfp_net_init(struct rte_eth_dev *eth_dev)
 	PMD_INIT_LOG(INFO, "max_rx_queues: %u, max_tx_queues: %u\n",
 		     hw->max_rx_queues, hw->max_tx_queues);
 
+	/* Initializing spinlock for reconfigs */
+	rte_spinlock_init(&hw->reconfig_lock);
+
 	/* Allocating memory for mac addr */
 	eth_dev->data->mac_addrs = rte_zmalloc("mac_addr", ETHER_ADDR_LEN, 0);
 	if (eth_dev->data->mac_addrs == NULL) {
@@ -2464,7 +2466,8 @@ static struct eth_driver rte_nfp_net_pmd = {
 	{
 		.name = "rte_nfp_net_pmd",
 		.id_table = pci_id_nfp_net_map,
-		.drv_flags = RTE_PCI_DRV_NEED_MAPPING | RTE_PCI_DRV_INTR_LSC,
+		.drv_flags = RTE_PCI_DRV_NEED_MAPPING | RTE_PCI_DRV_INTR_LSC |
+			     RTE_PCI_DRV_DETACHABLE,
 	},
 	.eth_dev_init = nfp_net_init,
 	.dev_private_size = sizeof(struct nfp_net_adapter),

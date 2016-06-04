@@ -2147,7 +2147,7 @@ int bnx2x_tx_encap(struct bnx2x_tx_queue *txq, struct rte_mbuf **m_head, int m_p
 		tx_start_bd = &txq->tx_ring[TX_BD(bd_prod, txq)].start_bd;
 
 		tx_start_bd->addr =
-		    rte_cpu_to_le_64(RTE_MBUF_DATA_DMA_ADDR(m0));
+		    rte_cpu_to_le_64(rte_mbuf_data_dma_addr(m0));
 		tx_start_bd->nbytes = rte_cpu_to_le_16(m0->data_len);
 		tx_start_bd->bd_flags.as_bitfield = ETH_TX_BD_FLAGS_START_BD;
 		tx_start_bd->general_data =
@@ -2331,15 +2331,6 @@ static void bnx2x_set_fp_rx_buf_size(struct bnx2x_softc *sc)
 		/* get the Rx buffer size for RX frames */
 		sc->fp[i].rx_buf_size =
 		    (IP_HEADER_ALIGNMENT_PADDING + ETH_OVERHEAD + sc->mtu);
-
-		/* get the mbuf allocation size for RX frames */
-		if (sc->fp[i].rx_buf_size <= MCLBYTES) {
-			sc->fp[i].mbuf_alloc_size = MCLBYTES;
-		} else if (sc->fp[i].rx_buf_size <= BNX2X_PAGE_SIZE) {
-			sc->fp[i].mbuf_alloc_size = PAGE_SIZE;
-		} else {
-			sc->fp[i].mbuf_alloc_size = MJUM9BYTES;
-		}
 	}
 }
 
@@ -9578,8 +9569,13 @@ static int bnx2x_pci_get_caps(struct bnx2x_softc *sc)
 
 static void bnx2x_init_rte(struct bnx2x_softc *sc)
 {
-	sc->max_tx_queues = 128;
-	sc->max_rx_queues = 128;
+	if (IS_VF(sc)) {
+		sc->max_tx_queues = BNX2X_VF_MAX_QUEUES_PER_VF;
+		sc->max_rx_queues = BNX2X_VF_MAX_QUEUES_PER_VF;
+	} else {
+		sc->max_tx_queues = 128;
+		sc->max_rx_queues = 128;
+	}
 }
 
 #define FW_HEADER_LEN 104

@@ -45,6 +45,7 @@ SRCS-y += rte_cryptodev.c
 
 # export include files
 SYMLINK-y-include += rte_crypto.h
+SYMLINK-y-include += rte_crypto_sym.h
 SYMLINK-y-include += rte_cryptodev.h
 SYMLINK-y-include += rte_cryptodev_pmd.h
 
@@ -56,5 +57,6 @@ DEPDIRS-y += lib/librte_eal
 DEPDIRS-y += lib/librte_mempool
 DEPDIRS-y += lib/librte_ring
 DEPDIRS-y += lib/librte_mbuf
+DEPDIRS-y += lib/librte_kvargs
 
 include $(RTE_SDK)/mk/rte.lib.mk

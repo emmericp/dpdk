@@ -40,15 +40,6 @@
 
 #include "compat.h"
 
-#ifdef RTE_PCI_CONFIG
-#define PCI_SYS_FILE_BUF_SIZE      10
-#define PCI_DEV_CAP_REG            0xA4
-#define PCI_DEV_CTRL_REG           0xA8
-#define PCI_DEV_CAP_EXT_TAG_MASK   0x20
-#define PCI_DEV_CTRL_EXT_TAG_SHIFT 8
-#define PCI_DEV_CTRL_EXT_TAG_MASK  (1 << PCI_DEV_CTRL_EXT_TAG_SHIFT)
-#endif
-
 /**
  * A structure describing the private information for a uio device.
  */
@@ -58,7 +49,7 @@ struct rte_uio_pci_dev {
 	enum rte_intr_mode mode;
 };
 
-static char *intr_mode = NULL;
+static char *intr_mode;
 static enum rte_intr_mode igbuio_intr_mode_preferred = RTE_INTR_MODE_MSIX;
 
 /* sriov sysfs */
@@ -90,109 +81,10 @@ store_max_vfs(struct device *dev, struct device_attribute *attr,
 	return err ? err : count;
 }
 
-#ifdef RTE_PCI_CONFIG
-static ssize_t
-show_extended_tag(struct device *dev, struct device_attribute *attr, char *buf)
-{
-	struct pci_dev *pci_dev = to_pci_dev(dev);
-	uint32_t val = 0;
-
-	pci_read_config_dword(pci_dev, PCI_DEV_CAP_REG, &val);
-	if (!(val & PCI_DEV_CAP_EXT_TAG_MASK)) /* Not supported */
-		return snprintf(buf, PCI_SYS_FILE_BUF_SIZE, "%s\n", "invalid");
-
-	val = 0;
-	pci_bus_read_config_dword(pci_dev->bus, pci_dev->devfn,
-					PCI_DEV_CTRL_REG, &val);
-
-	return snprintf(buf, PCI_SYS_FILE_BUF_SIZE, "%s\n",
-		(val & PCI_DEV_CTRL_EXT_TAG_MASK) ? "on" : "off");
-}
-
-static ssize_t
-store_extended_tag(struct device *dev,
-		   struct device_attribute *attr,
-		   const char *buf,
-		   size_t count)
-{
-	struct pci_dev *pci_dev = to_pci_dev(dev);
-	uint32_t val = 0, enable;
-
-	if (strncmp(buf, "on", 2) == 0)
-		enable = 1;
-	else if (strncmp(buf, "off", 3) == 0)
-		enable = 0;
-	else
-		return -EINVAL;
-
-	pci_cfg_access_lock(pci_dev);
-	pci_bus_read_config_dword(pci_dev->bus, pci_dev->devfn,
-					PCI_DEV_CAP_REG, &val);
-	if (!(val & PCI_DEV_CAP_EXT_TAG_MASK)) { /* Not supported */
-		pci_cfg_access_unlock(pci_dev);
-		return -EPERM;
-	}
-
-	val = 0;
-	pci_bus_read_config_dword(pci_dev->bus, pci_dev->devfn,
-					PCI_DEV_CTRL_REG, &val);
-	if (enable)
-		val |= PCI_DEV_CTRL_EXT_TAG_MASK;
-	else
-		val &= ~PCI_DEV_CTRL_EXT_TAG_MASK;
-	pci_bus_write_config_dword(pci_dev->bus, pci_dev->devfn,
-					PCI_DEV_CTRL_REG, val);
-	pci_cfg_access_unlock(pci_dev);
-
-	return count;
-}
-
-static ssize_t
-show_max_read_request_size(struct device *dev,
-			   struct device_attribute *attr,
-			   char *buf)
-{
-	struct pci_dev *pci_dev = to_pci_dev(dev);
-	int val = pcie_get_readrq(pci_dev);
-
-	return snprintf(buf, PCI_SYS_FILE_BUF_SIZE, "%d\n", val);
-}
-
-static ssize_t
-store_max_read_request_size(struct device *dev,
-			    struct device_attribute *attr,
-			    const char *buf,
-			    size_t count)
-{
-	struct pci_dev *pci_dev = to_pci_dev(dev);
-	unsigned long size = 0;
-	int ret;
-
-	if (0 != kstrtoul(buf, 0, &size))
-		return -EINVAL;
-
-	ret = pcie_set_readrq(pci_dev, (int)size);
-	if (ret < 0)
-		return ret;
-
-	return count;
-}
-#endif
-
 static DEVICE_ATTR(max_vfs, S_IRUGO | S_IWUSR, show_max_vfs, store_max_vfs);
-#ifdef RTE_PCI_CONFIG
-static DEVICE_ATTR(extended_tag, S_IRUGO | S_IWUSR, show_extended_tag,
-	store_extended_tag);
-static DEVICE_ATTR(max_read_request_size, S_IRUGO | S_IWUSR,
-	show_max_read_request_size, store_max_read_request_size);
-#endif
 
 static struct attribute *dev_attrs[] = {
 	&dev_attr_max_vfs.attr,
-#ifdef RTE_PCI_CONFIG
-	&dev_attr_extended_tag.attr,
-	&dev_attr_max_read_request_size.attr,
-#endif
 	NULL,
 };
 
@@ -332,7 +224,7 @@ igbuio_pci_setup_iomem(struct pci_dev *dev, struct uio_info *info,
 	unsigned long addr, len;
 	void *internal_addr;
 
-	if (sizeof(info->mem) / sizeof(info->mem[0]) <= n)
+	if (n >= ARRAY_SIZE(info->mem))
 		return -EINVAL;
 
 	addr = pci_resource_start(dev, pci_bar);
@@ -357,7 +249,7 @@ igbuio_pci_setup_ioport(struct pci_dev *dev, struct uio_info *info,
 {
 	unsigned long addr, len;
 
-	if (sizeof(info->port) / sizeof(info->port[0]) <= n)
+	if (n >= ARRAY_SIZE(info->port))
 		return -EINVAL;
 
 	addr = pci_resource_start(dev, pci_bar);
@@ -402,7 +294,7 @@ igbuio_setup_bars(struct pci_dev *dev, struct uio_info *info)
 	iom = 0;
 	iop = 0;
 
-	for (i = 0; i != sizeof(bar_names) / sizeof(bar_names[0]); i++) {
+	for (i = 0; i < ARRAY_SIZE(bar_names); i++) {
 		if (pci_resource_len(dev, i) != 0 &&
 				pci_resource_start(dev, i) != 0) {
 			flags = pci_resource_flags(dev, i);
@@ -561,24 +453,17 @@ fail_free:
 static void
 igbuio_pci_remove(struct pci_dev *dev)
 {
-	struct uio_info *info = pci_get_drvdata(dev);
-	struct rte_uio_pci_dev *udev;
-
-	if (info->priv == NULL) {
-		pr_notice("Not igbuio device\n");
-		return;
-	}
-	udev = info->priv;
+	struct rte_uio_pci_dev *udev = pci_get_drvdata(dev);
 
 	sysfs_remove_group(&dev->dev.kobj, &dev_attr_grp);
-	uio_unregister_device(info);
-	igbuio_pci_release_iomem(info);
+	uio_unregister_device(&udev->info);
+	igbuio_pci_release_iomem(&udev->info);
 	if (udev->mode == RTE_INTR_MODE_MSIX)
 		pci_disable_msix(dev);
 	pci_release_regions(dev);
 	pci_disable_device(dev);
 	pci_set_drvdata(dev, NULL);
-	kfree(info);
+	kfree(udev);
 }
 
 static int

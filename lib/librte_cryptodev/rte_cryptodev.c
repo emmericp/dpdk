@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2015 Intel Corporation. All rights reserved.
+ *   Copyright(c) 2015-2016 Intel Corporation. All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -101,6 +101,34 @@ struct rte_cryptodev_callback {
 	enum rte_cryptodev_event_type event;	/**< Interrupt event type */
 	uint32_t active;			/**< Callback is executing */
 };
+
+
+const char *
+rte_cryptodev_get_feature_name(uint64_t flag)
+{
+	switch (flag) {
+	case RTE_CRYPTODEV_FF_SYMMETRIC_CRYPTO:
+		return "SYMMETRIC_CRYPTO";
+	case RTE_CRYPTODEV_FF_ASYMMETRIC_CRYPTO:
+		return "ASYMMETRIC_CRYPTO";
+	case RTE_CRYPTODEV_FF_SYM_OPERATION_CHAINING:
+		return "SYM_OPERATION_CHAINING";
+	case RTE_CRYPTODEV_FF_CPU_SSE:
+		return "CPU_SSE";
+	case RTE_CRYPTODEV_FF_CPU_AVX:
+		return "CPU_AVX";
+	case RTE_CRYPTODEV_FF_CPU_AVX2:
+		return "CPU_AVX2";
+	case RTE_CRYPTODEV_FF_CPU_AESNI:
+		return "CPU_AESNI";
+	case RTE_CRYPTODEV_FF_HW_ACCELERATED:
+		return "HW_ACCELERATED";
+
+	default:
+		return NULL;
+	}
+}
+
 
 int
 rte_cryptodev_create_vdev(const char *name, const char *args)
@@ -532,12 +560,6 @@ rte_cryptodev_queue_pair_start(uint8_t dev_id, uint16_t queue_pair_id)
 {
 	struct rte_cryptodev *dev;
 
-	/*
-	 * This function is only safe when called from the primary process
-	 * in a multi-process setup
-	 */
-	RTE_PROC_PRIMARY_OR_ERR_RET(-E_RTE_SECONDARY);
-
 	if (!rte_cryptodev_pmd_is_valid_dev(dev_id)) {
 		CDEV_LOG_ERR("Invalid dev_id=%" PRIu8, dev_id);
 		return -EINVAL;
@@ -560,12 +582,6 @@ rte_cryptodev_queue_pair_stop(uint8_t dev_id, uint16_t queue_pair_id)
 {
 	struct rte_cryptodev *dev;
 
-	/*
-	 * This function is only safe when called from the primary process
-	 * in a multi-process setup
-	 */
-	RTE_PROC_PRIMARY_OR_ERR_RET(-E_RTE_SECONDARY);
-
 	if (!rte_cryptodev_pmd_is_valid_dev(dev_id)) {
 		CDEV_LOG_ERR("Invalid dev_id=%" PRIu8, dev_id);
 		return -EINVAL;
@@ -584,20 +600,14 @@ rte_cryptodev_queue_pair_stop(uint8_t dev_id, uint16_t queue_pair_id)
 }
 
 static int
-rte_crypto_session_pool_create(struct rte_cryptodev *dev, unsigned nb_objs,
-		unsigned obj_cache_size, int socket_id);
+rte_cryptodev_sym_session_pool_create(struct rte_cryptodev *dev,
+		unsigned nb_objs, unsigned obj_cache_size, int socket_id);
 
 int
 rte_cryptodev_configure(uint8_t dev_id, struct rte_cryptodev_config *config)
 {
 	struct rte_cryptodev *dev;
 	int diag;
-
-	/*
-	 * This function is only safe when called from the primary process
-	 * in a multi-process setup
-	 */
-	RTE_PROC_PRIMARY_OR_ERR_RET(-E_RTE_SECONDARY);
 
 	if (!rte_cryptodev_pmd_is_valid_dev(dev_id)) {
 		CDEV_LOG_ERR("Invalid dev_id=%" PRIu8, dev_id);
@@ -622,8 +632,10 @@ rte_cryptodev_configure(uint8_t dev_id, struct rte_cryptodev_config *config)
 	}
 
 	/* Setup Session mempool for device */
-	return rte_crypto_session_pool_create(dev, config->session_mp.nb_objs,
-			config->session_mp.cache_size, config->socket_id);
+	return rte_cryptodev_sym_session_pool_create(dev,
+			config->session_mp.nb_objs,
+			config->session_mp.cache_size,
+			config->socket_id);
 }
 
 
@@ -634,12 +646,6 @@ rte_cryptodev_start(uint8_t dev_id)
 	int diag;
 
 	CDEV_LOG_DEBUG("Start dev_id=%" PRIu8, dev_id);
-
-	/*
-	 * This function is only safe when called from the primary process
-	 * in a multi-process setup
-	 */
-	RTE_PROC_PRIMARY_OR_ERR_RET(-E_RTE_SECONDARY);
 
 	if (!rte_cryptodev_pmd_is_valid_dev(dev_id)) {
 		CDEV_LOG_ERR("Invalid dev_id=%" PRIu8, dev_id);
@@ -670,12 +676,6 @@ rte_cryptodev_stop(uint8_t dev_id)
 {
 	struct rte_cryptodev *dev;
 
-	/*
-	 * This function is only safe when called from the primary process
-	 * in a multi-process setup
-	 */
-	RTE_PROC_PRIMARY_OR_RET();
-
 	if (!rte_cryptodev_pmd_is_valid_dev(dev_id)) {
 		CDEV_LOG_ERR("Invalid dev_id=%" PRIu8, dev_id);
 		return;
@@ -700,12 +700,6 @@ rte_cryptodev_close(uint8_t dev_id)
 {
 	struct rte_cryptodev *dev;
 	int retval;
-
-	/*
-	 * This function is only safe when called from the primary process
-	 * in a multi-process setup
-	 */
-	RTE_PROC_PRIMARY_OR_ERR_RET(-EINVAL);
 
 	if (!rte_cryptodev_pmd_is_valid_dev(dev_id)) {
 		CDEV_LOG_ERR("Invalid dev_id=%" PRIu8, dev_id);
@@ -746,12 +740,6 @@ rte_cryptodev_queue_pair_setup(uint8_t dev_id, uint16_t queue_pair_id,
 		const struct rte_cryptodev_qp_conf *qp_conf, int socket_id)
 {
 	struct rte_cryptodev *dev;
-
-	/*
-	 * This function is only safe when called from the primary process
-	 * in a multi-process setup
-	 */
-	RTE_PROC_PRIMARY_OR_ERR_RET(-E_RTE_SECONDARY);
 
 	if (!rte_cryptodev_pmd_is_valid_dev(dev_id)) {
 		CDEV_LOG_ERR("Invalid dev_id=%" PRIu8, dev_id);
@@ -953,18 +941,18 @@ rte_cryptodev_pmd_callback_process(struct rte_cryptodev *dev,
 
 
 static void
-rte_crypto_session_init(struct rte_mempool *mp,
+rte_cryptodev_sym_session_init(struct rte_mempool *mp,
 		void *opaque_arg,
 		void *_sess,
 		__rte_unused unsigned i)
 {
-	struct rte_cryptodev_session *sess = _sess;
+	struct rte_cryptodev_sym_session *sess = _sess;
 	struct rte_cryptodev *dev = opaque_arg;
 
 	memset(sess, 0, mp->elt_size);
 
 	sess->dev_id = dev->data->dev_id;
-	sess->type = dev->dev_type;
+	sess->dev_type = dev->dev_type;
 	sess->mp = mp;
 
 	if (dev->dev_ops->session_initialize)
@@ -972,8 +960,8 @@ rte_crypto_session_init(struct rte_mempool *mp,
 }
 
 static int
-rte_crypto_session_pool_create(struct rte_cryptodev *dev, unsigned nb_objs,
-		unsigned obj_cache_size, int socket_id)
+rte_cryptodev_sym_session_pool_create(struct rte_cryptodev *dev,
+		unsigned nb_objs, unsigned obj_cache_size, int socket_id)
 {
 	char mp_name[RTE_CRYPTODEV_NAME_MAX_LEN];
 	unsigned priv_sess_size;
@@ -993,7 +981,7 @@ rte_crypto_session_pool_create(struct rte_cryptodev *dev, unsigned nb_objs,
 		return -ENOMEM;
 	}
 
-	unsigned elt_size = sizeof(struct rte_cryptodev_session) +
+	unsigned elt_size = sizeof(struct rte_cryptodev_sym_session) +
 			priv_sess_size;
 
 	dev->data->session_pool = rte_mempool_lookup(mp_name);
@@ -1017,7 +1005,8 @@ rte_crypto_session_pool_create(struct rte_cryptodev *dev, unsigned nb_objs,
 				0, /* private data size */
 				NULL, /* obj initialization constructor */
 				NULL, /* obj initialization constructor arg */
-				rte_crypto_session_init, /* obj constructor */
+				rte_cryptodev_sym_session_init,
+				/**< obj constructor*/
 				dev, /* obj constructor arg */
 				socket_id, /* socket id */
 				0); /* flags */
@@ -1032,11 +1021,12 @@ rte_crypto_session_pool_create(struct rte_cryptodev *dev, unsigned nb_objs,
 	return 0;
 }
 
-struct rte_cryptodev_session *
-rte_cryptodev_session_create(uint8_t dev_id, struct rte_crypto_xform *xform)
+struct rte_cryptodev_sym_session *
+rte_cryptodev_sym_session_create(uint8_t dev_id,
+		struct rte_crypto_sym_xform *xform)
 {
 	struct rte_cryptodev *dev;
-	struct rte_cryptodev_session *sess;
+	struct rte_cryptodev_sym_session *sess;
 	void *_sess;
 
 	if (!rte_cryptodev_pmd_is_valid_dev(dev_id)) {
@@ -1052,7 +1042,7 @@ rte_cryptodev_session_create(uint8_t dev_id, struct rte_crypto_xform *xform)
 		return NULL;
 	}
 
-	sess = (struct rte_cryptodev_session *)_sess;
+	sess = (struct rte_cryptodev_sym_session *)_sess;
 
 	RTE_FUNC_PTR_OR_ERR_RET(*dev->dev_ops->session_configure, NULL);
 	if (dev->dev_ops->session_configure(dev, xform, sess->_private) ==
@@ -1068,8 +1058,9 @@ rte_cryptodev_session_create(uint8_t dev_id, struct rte_crypto_xform *xform)
 	return sess;
 }
 
-struct rte_cryptodev_session *
-rte_cryptodev_session_free(uint8_t dev_id, struct rte_cryptodev_session *sess)
+struct rte_cryptodev_sym_session *
+rte_cryptodev_sym_session_free(uint8_t dev_id,
+		struct rte_cryptodev_sym_session *sess)
 {
 	struct rte_cryptodev *dev;
 
@@ -1081,7 +1072,7 @@ rte_cryptodev_session_free(uint8_t dev_id, struct rte_cryptodev_session *sess)
 	dev = &rte_crypto_devices[dev_id];
 
 	/* Check the session belongs to this device type */
-	if (sess->type != dev->dev_type)
+	if (sess->dev_type != dev->dev_type)
 		return sess;
 
 	/* Let device implementation clear session material */
@@ -1092,4 +1083,80 @@ rte_cryptodev_session_free(uint8_t dev_id, struct rte_cryptodev_session *sess)
 	rte_mempool_put(sess->mp, (void *)sess);
 
 	return NULL;
+}
+
+/** Initialise rte_crypto_op mempool element */
+static void
+rte_crypto_op_init(struct rte_mempool *mempool,
+		void *opaque_arg,
+		void *_op_data,
+		__rte_unused unsigned i)
+{
+	struct rte_crypto_op *op = _op_data;
+	enum rte_crypto_op_type type = *(enum rte_crypto_op_type *)opaque_arg;
+
+	memset(_op_data, 0, mempool->elt_size);
+
+	__rte_crypto_op_reset(op, type);
+
+	op->phys_addr = rte_mem_virt2phy(_op_data);
+	op->mempool = mempool;
+}
+
+
+struct rte_mempool *
+rte_crypto_op_pool_create(const char *name, enum rte_crypto_op_type type,
+		unsigned nb_elts, unsigned cache_size, uint16_t priv_size,
+		int socket_id)
+{
+	struct rte_crypto_op_pool_private *priv;
+
+	unsigned elt_size = sizeof(struct rte_crypto_op) +
+			sizeof(struct rte_crypto_sym_op) +
+			priv_size;
+
+	/* lookup mempool in case already allocated */
+	struct rte_mempool *mp = rte_mempool_lookup(name);
+
+	if (mp != NULL) {
+		priv = (struct rte_crypto_op_pool_private *)
+				rte_mempool_get_priv(mp);
+
+		if (mp->elt_size != elt_size ||
+				mp->cache_size < cache_size ||
+				mp->size < nb_elts ||
+				priv->priv_size <  priv_size) {
+			mp = NULL;
+			CDEV_LOG_ERR("Mempool %s already exists but with "
+					"incompatible parameters", name);
+			return NULL;
+		}
+		return mp;
+	}
+
+	mp = rte_mempool_create(
+			name,
+			nb_elts,
+			elt_size,
+			cache_size,
+			sizeof(struct rte_crypto_op_pool_private),
+			NULL,
+			NULL,
+			rte_crypto_op_init,
+			&type,
+			socket_id,
+			0);
+
+	if (mp == NULL) {
+		CDEV_LOG_ERR("Failed to create mempool %s", name);
+		return NULL;
+	}
+
+	priv = (struct rte_crypto_op_pool_private *)
+			rte_mempool_get_priv(mp);
+
+	priv->priv_size = priv_size;
+	priv->type = type;
+
+	return mp;
 }

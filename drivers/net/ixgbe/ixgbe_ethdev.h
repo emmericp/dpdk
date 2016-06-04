@@ -42,6 +42,7 @@
 /* need update link, bit flag */
 #define IXGBE_FLAG_NEED_LINK_UPDATE (uint32_t)(1 << 0)
 #define IXGBE_FLAG_MAILBOX          (uint32_t)(1 << 1)
+#define IXGBE_FLAG_PHY_INTERRUPT    (uint32_t)(1 << 2)
 
 /*
  * Defines that were not part of ixgbe_type.h as they are not used by the
@@ -58,8 +59,10 @@
 #define IXGBE_VFTA_SIZE 128
 #define IXGBE_VLAN_TAG_SIZE 4
 #define IXGBE_MAX_RX_QUEUE_NUM	128
+#define IXGBE_MAX_INTR_QUEUE_NUM	15
 #define IXGBE_VMDQ_DCB_NB_QUEUES     IXGBE_MAX_RX_QUEUE_NUM
 #define IXGBE_DCB_NB_QUEUES          IXGBE_MAX_RX_QUEUE_NUM
+#define IXGBE_NONE_MODE_TX_NB_QUEUES 64
 
 #ifndef NBBY
 #define NBBY	8	/* number of bits in a byte */
@@ -378,6 +381,9 @@ void ixgbevf_dev_rxtx_start(struct rte_eth_dev *dev);
 
 uint16_t ixgbe_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 		uint16_t nb_pkts);
+
+uint16_t ixgbe_recv_pkts_bulk_alloc(void *rx_queue, struct rte_mbuf **rx_pkts,
+				    uint16_t nb_pkts);
 
 uint16_t ixgbe_recv_pkts_lro_single_alloc(void *rx_queue,
 		struct rte_mbuf **rx_pkts, uint16_t nb_pkts);

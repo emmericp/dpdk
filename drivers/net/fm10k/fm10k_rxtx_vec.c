@@ -61,11 +61,17 @@ fm10k_reset_tx_queue(struct fm10k_tx_queue *txq);
 #define L3TYPE_SHIFT     (4)
 /* L4 type shift */
 #define L4TYPE_SHIFT     (7)
+/* HBO flag shift */
+#define HBOFLAG_SHIFT     (10)
+/* RXE flag shift */
+#define RXEFLAG_SHIFT     (13)
+/* IPE/L4E flag shift */
+#define L3L4EFLAG_SHIFT     (14)
 
 static inline void
 fm10k_desc_to_olflags_v(__m128i descs[4], struct rte_mbuf **rx_pkts)
 {
-	__m128i ptype0, ptype1, vtag0, vtag1;
+	__m128i ptype0, ptype1, vtag0, vtag1, eflag0, eflag1, cksumflag;
 	union {
 		uint16_t e[4];
 		uint64_t dword;
@@ -81,12 +87,29 @@ fm10k_desc_to_olflags_v(__m128i descs[4], struct rte_mbuf **rx_pkts)
 			0x0000, 0x0000, 0x0000, 0x0000,
 			0x000F, 0x000F, 0x000F, 0x000F);
 
+	/* mask for HBO and RXE flag flags */
+	const __m128i rxe_msk = _mm_set_epi16(
+			0x0000, 0x0000, 0x0000, 0x0000,
+			0x0001, 0x0001, 0x0001, 0x0001);
+
+	const __m128i l3l4cksum_flag = _mm_set_epi8(0, 0, 0, 0,
+			0, 0, 0, 0,
+			0, 0, 0, 0,
+			PKT_RX_IP_CKSUM_BAD | PKT_RX_L4_CKSUM_BAD,
+			PKT_RX_IP_CKSUM_BAD, PKT_RX_L4_CKSUM_BAD, 0);
+
+	const __m128i rxe_flag = _mm_set_epi8(0, 0, 0, 0,
+			0, 0, 0, 0,
+			0, 0, 0, 0,
+			0, 0, PKT_RX_RECIP_ERR, 0);
+
 	/* map rss type to rss hash flag */
 	const __m128i rss_flags = _mm_set_epi8(0, 0, 0, 0,
 			0, 0, 0, PKT_RX_RSS_HASH,
 			PKT_RX_RSS_HASH, 0, PKT_RX_RSS_HASH, 0,
 			PKT_RX_RSS_HASH, PKT_RX_RSS_HASH, PKT_RX_RSS_HASH, 0);
 
+	/* Calculate RSS_hash and Vlan fields */
 	ptype0 = _mm_unpacklo_epi16(descs[0], descs[1]);
 	ptype1 = _mm_unpacklo_epi16(descs[2], descs[3]);
 	vtag0 = _mm_unpackhi_epi16(descs[0], descs[1]);
@@ -97,10 +120,27 @@ fm10k_desc_to_olflags_v(__m128i descs[4], struct rte_mbuf **rx_pkts)
 	ptype0 = _mm_shuffle_epi8(rss_flags, ptype0);
 
 	vtag1 = _mm_unpacklo_epi32(vtag0, vtag1);
+	eflag0 = vtag1;
+	cksumflag = vtag1;
 	vtag1 = _mm_srli_epi16(vtag1, VP_SHIFT);
 	vtag1 = _mm_and_si128(vtag1, pkttype_msk);
 
 	vtag1 = _mm_or_si128(ptype0, vtag1);
+
+	/* Process err flags, simply set RECIP_ERR bit if HBO/IXE is set */
+	eflag1 = _mm_srli_epi16(eflag0, RXEFLAG_SHIFT);
+	eflag0 = _mm_srli_epi16(eflag0, HBOFLAG_SHIFT);
+	eflag0 = _mm_or_si128(eflag0, eflag1);
+	eflag0 = _mm_and_si128(eflag0, rxe_msk);
+	eflag0 = _mm_shuffle_epi8(rxe_flag, eflag0);
+
+	vtag1 = _mm_or_si128(eflag0, vtag1);
+
+	/* Process L4/L3 checksum error flags */
+	cksumflag = _mm_srli_epi16(cksumflag, L3L4EFLAG_SHIFT);
+	cksumflag = _mm_shuffle_epi8(l3l4cksum_flag, cksumflag);
+	vtag1 = _mm_or_si128(cksumflag, vtag1);
+
 	vol.dword = _mm_cvtsi128_si64(vtag1);
 
 	rx_pkts[0]->ol_flags = vol.e[0];
@@ -109,6 +149,9 @@ fm10k_desc_to_olflags_v(__m128i descs[4], struct rte_mbuf **rx_pkts)
 	rx_pkts[3]->ol_flags = vol.e[3];
 }
 
+/* @note: When this function is changed, make corresponding change to
+ * fm10k_dev_supported_ptypes_get().
+ */
 static inline void
 fm10k_desc_to_pktype_v(__m128i descs[4], struct rte_mbuf **rx_pkts)
 {
@@ -444,10 +487,10 @@ fm10k_recv_raw_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
 		rte_compiler_barrier();
 
 		if (split_packet) {
-			rte_prefetch0(&rx_pkts[pos]->cacheline1);
-			rte_prefetch0(&rx_pkts[pos + 1]->cacheline1);
-			rte_prefetch0(&rx_pkts[pos + 2]->cacheline1);
-			rte_prefetch0(&rx_pkts[pos + 3]->cacheline1);
+			rte_mbuf_prefetch_part2(rx_pkts[pos]);
+			rte_mbuf_prefetch_part2(rx_pkts[pos + 1]);
+			rte_mbuf_prefetch_part2(rx_pkts[pos + 2]);
+			rte_mbuf_prefetch_part2(rx_pkts[pos + 3]);
 		}
 
 		/* D.1 pkt 3,4 convert format from desc to pktmbuf */
@@ -563,8 +606,11 @@ fm10k_reassemble_packets(struct fm10k_rx_queue *rxq,
 
 			if (!split_flags[buf_idx]) {
 				/* it's the last packet of the set */
+#ifdef RTE_LIBRTE_FM10K_RX_OLFLAGS_ENABLE
 				start->hash = end->hash;
 				start->ol_flags = end->ol_flags;
+				start->packet_type = end->packet_type;
+#endif
 				pkts[pkt_idx++] = start;
 				start = end = NULL;
 			}
@@ -646,6 +692,9 @@ fm10k_tx_vec_condition_check(struct fm10k_tx_queue *txq)
 {
 	/* Vector TX can't offload any features yet */
 	if ((txq->txq_flags & FM10K_SIMPLE_TX_FLAG) != FM10K_SIMPLE_TX_FLAG)
+		return -1;
+
+	if (txq->tx_ftag_en)
 		return -1;
 
 	return 0;

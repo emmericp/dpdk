@@ -1,7 +1,6 @@
 DPDK_2.0 {
 	global:
 
-	rte_dom0_mempool_create;
 	rte_mempool_audit;
 	rte_mempool_calc_obj_size;
 	rte_mempool_count;
@@ -9,7 +8,6 @@ DPDK_2.0 {
 	rte_mempool_dump;
 	rte_mempool_list_dump;
 	rte_mempool_lookup;
-	rte_mempool_obj_iter;
 	rte_mempool_walk;
 	rte_mempool_xmem_create;
 	rte_mempool_xmem_size;
@@ -17,3 +15,20 @@ DPDK_2.0 {
 
 	local: *;
 };
+
+DPDK_16.7 {
+	global:
+
+	rte_mempool_check_cookies;
+	rte_mempool_obj_iter;
+	rte_mempool_mem_iter;
+	rte_mempool_create_empty;
+	rte_mempool_populate_phys;
+	rte_mempool_populate_phys_tab;
+	rte_mempool_populate_virt;
+	rte_mempool_populate_default;
+	rte_mempool_populate_anon;
+	rte_mempool_free;
+
+	local: *;
+} DPDK_2.0;

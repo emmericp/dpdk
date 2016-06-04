@@ -40,6 +40,7 @@
  */
 
 #include <stdint.h>
+#include <linux/vhost.h>
 #include <linux/virtio_ring.h>
 #include <linux/virtio_net.h>
 #include <sys/eventfd.h>
@@ -48,6 +49,7 @@
 
 #include <rte_memory.h>
 #include <rte_mempool.h>
+#include <rte_ether.h>
 
 struct rte_mbuf;
 
@@ -87,12 +89,20 @@ struct vhost_virtqueue {
 	uint16_t		vhost_hlen;		/**< Vhost header length (varies depending on RX merge buffers. */
 	volatile uint16_t	last_used_idx;		/**< Last index used on the available ring */
 	volatile uint16_t	last_used_idx_res;	/**< Used for multiple devices reserving buffers. */
+#define VIRTIO_INVALID_EVENTFD		(-1)
+#define VIRTIO_UNINITIALIZED_EVENTFD	(-2)
 	int			callfd;			/**< Used to notify the guest (trigger interrupt). */
 	int			kickfd;			/**< Currently unused as polling mode is enabled. */
 	int			enabled;
-	uint64_t		reserved[16];		/**< Reserve some spaces for future extension. */
+	uint64_t		log_guest_addr;		/**< Physical address of used ring, for logging */
+	uint64_t		reserved[15];		/**< Reserve some spaces for future extension. */
 	struct buf_vector	buf_vec[BUF_VECTOR_MAX];	/**< for scatter RX. */
 } __rte_cache_aligned;
+
+/* Old kernels have no such macro defined */
+#ifndef VIRTIO_NET_F_GUEST_ANNOUNCE
+ #define VIRTIO_NET_F_GUEST_ANNOUNCE 21
+#endif
 
 
 /*
@@ -129,7 +139,11 @@ struct virtio_net {
 	char			ifname[IF_NAME_SZ];	/**< Name of the tap device or socket path. */
 	uint32_t		virt_qp_nb;	/**< number of queue pair we have allocated */
 	void			*priv;		/**< private context */
-	uint64_t		reserved[64];	/**< Reserve some spaces for future extension. */
+	uint64_t		log_size;	/**< Size of log area */
+	uint64_t		log_base;	/**< Where dirty pages are logged */
+	struct ether_addr	mac;		/**< MAC address */
+	rte_atomic16_t		broadcast_rarp;	/**< A flag to tell if we need broadcast rarp packet */
+	uint64_t		reserved[61];	/**< Reserve some spaces for future extension. */
 	struct vhost_virtqueue	*virtqueue[VHOST_MAX_QUEUE_PAIRS * 2];	/**< Contains all virtqueue information. */
 } __rte_cache_aligned;
 
@@ -202,6 +216,7 @@ gpa_to_vva(struct virtio_net *dev, uint64_t guest_pa)
 	}
 	return vhost_va;
 }
+
 
 /**
  *  Disable features in feature_mask. Returns 0 on success.

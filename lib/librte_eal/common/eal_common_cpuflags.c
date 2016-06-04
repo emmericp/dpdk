@@ -30,21 +30,11 @@
  *   (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
  *   OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
  */
+
+#include <stdio.h>
+
 #include <rte_common.h>
 #include <rte_cpuflags.h>
-
-/*
- * This should prevent use of advanced instruction sets in this file. Otherwise
- * the check function itself could cause a crash.
- */
-#ifdef __INTEL_COMPILER
-#pragma optimize ("", off)
-#else
-#define GCC_VERSION (__GNUC__ * 10000 + __GNUC_MINOR__ * 100 + __GNUC_PATCHLEVEL__)
-#if GCC_VERSION > 404000
-#pragma GCC optimize ("O0")
-#endif
-#endif
 
 /**
  * Checks if the machine is adequate for running the binary. If it is not, the
@@ -79,7 +69,7 @@ rte_cpu_check_supported(void)
 			fprintf(stderr,
 			        "ERROR: This system does not support \"%s\".\n"
 			        "Please check that RTE_MACHINE is set correctly.\n",
-			        rte_cpu_feature_table[compile_time_flags[i]].name);
+			        rte_cpu_get_flag_name(compile_time_flags[i]));
 			exit(1);
 		}
 	}

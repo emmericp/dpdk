@@ -62,6 +62,7 @@
 #include "mlx5.h"
 #include "mlx5_rxtx.h"
 #include "mlx5_utils.h"
+#include "mlx5_autoconf.h"
 #include "mlx5_defs.h"
 
 /* Initialization data for hash RX queues. */
@@ -210,27 +211,27 @@ const size_t rss_hash_default_key_len = sizeof(rss_hash_default_key);
  * information from hash_rxq_init[]. Nothing is written to flow_attr when
  * flow_attr_size is not large enough, but the required size is still returned.
  *
- * @param[in] hash_rxq
- *   Pointer to hash RX queue.
+ * @param priv
+ *   Pointer to private structure.
  * @param[out] flow_attr
  *   Pointer to flow attribute structure to fill. Note that the allocated
  *   area must be larger and large enough to hold all flow specifications.
  * @param flow_attr_size
  *   Entire size of flow_attr and trailing room for flow specifications.
+ * @param type
+ *   Hash RX queue type to use for flow steering rule.
  *
  * @return
  *   Total size of the flow attribute buffer. No errors are defined.
  */
 size_t
-hash_rxq_flow_attr(const struct hash_rxq *hash_rxq,
-		   struct ibv_exp_flow_attr *flow_attr,
-		   size_t flow_attr_size)
+priv_flow_attr(struct priv *priv, struct ibv_exp_flow_attr *flow_attr,
+	       size_t flow_attr_size, enum hash_rxq_type type)
 {
 	size_t offset = sizeof(*flow_attr);
-	enum hash_rxq_type type = hash_rxq->type;
 	const struct hash_rxq_init *init = &hash_rxq_init[type];
 
-	assert(hash_rxq->priv != NULL);
+	assert(priv != NULL);
 	assert((size_t)type < RTE_DIM(hash_rxq_init));
 	do {
 		offset += init->flow_spec.hdr.size;
@@ -242,9 +243,14 @@ hash_rxq_flow_attr(const struct hash_rxq *hash_rxq,
 	init = &hash_rxq_init[type];
 	*flow_attr = (struct ibv_exp_flow_attr){
 		.type = IBV_EXP_FLOW_ATTR_NORMAL,
+#ifdef MLX5_FDIR_SUPPORT
+		/* Priorities < 3 are reserved for flow director. */
+		.priority = init->flow_priority + 3,
+#else /* MLX5_FDIR_SUPPORT */
 		.priority = init->flow_priority,
+#endif /* MLX5_FDIR_SUPPORT */
 		.num_of_specs = 0,
-		.port = hash_rxq->priv->port,
+		.port = priv->port,
 		.flags = 0,
 	};
 	do {
@@ -306,7 +312,7 @@ priv_make_ind_table_init(struct priv *priv,
 	/* Mandatory to receive frames not handled by normal hash RX queues. */
 	unsigned int hash_types_sup = 1 << HASH_RXQ_ETH;
 
-	rss_hf = priv->dev->data->dev_conf.rx_adv_conf.rss_conf.rss_hf;
+	rss_hf = priv->rss_hf;
 	/* Process other protocols only if more than one queue. */
 	if (priv->rxqs_n > 1)
 		for (i = 0; (i != hash_rxq_init_n); ++i)
@@ -534,8 +540,11 @@ priv_destroy_hash_rxqs(struct priv *priv)
 		assert(hash_rxq->priv == priv);
 		assert(hash_rxq->qp != NULL);
 		/* Also check that there are no remaining flows. */
-		assert(hash_rxq->allmulti_flow == NULL);
-		assert(hash_rxq->promisc_flow == NULL);
+		for (j = 0; (j != RTE_DIM(hash_rxq->special_flow)); ++j)
+			for (k = 0;
+			     (k != RTE_DIM(hash_rxq->special_flow[j]));
+			     ++k)
+				assert(hash_rxq->special_flow[j][k] == NULL);
 		for (j = 0; (j != RTE_DIM(hash_rxq->mac_flow)); ++j)
 			for (k = 0; (k != RTE_DIM(hash_rxq->mac_flow[j])); ++k)
 				assert(hash_rxq->mac_flow[j][k] == NULL);
@@ -579,9 +588,48 @@ priv_allow_flow_type(struct priv *priv, enum hash_rxq_flow_type type)
 		return !!priv->promisc_req;
 	case HASH_RXQ_FLOW_TYPE_ALLMULTI:
 		return !!priv->allmulti_req;
+	case HASH_RXQ_FLOW_TYPE_BROADCAST:
+#ifdef HAVE_FLOW_SPEC_IPV6
+	case HASH_RXQ_FLOW_TYPE_IPV6MULTI:
+#endif /* HAVE_FLOW_SPEC_IPV6 */
+		/* If allmulti is enabled, broadcast and ipv6multi
+		 * are unnecessary. */
+		return !priv->allmulti_req;
 	case HASH_RXQ_FLOW_TYPE_MAC:
 		return 1;
+	default:
+		/* Unsupported flow type is not allowed. */
+		return 0;
 	}
+	return 0;
+}
+
+/**
+ * Automatically enable/disable flows according to configuration.
+ *
+ * @param priv
+ *   Private structure.
+ *
+ * @return
+ *   0 on success, errno value on failure.
+ */
+int
+priv_rehash_flows(struct priv *priv)
+{
+	unsigned int i;
+
+	for (i = 0; (i != RTE_DIM((*priv->hash_rxqs)[0].special_flow)); ++i)
+		if (!priv_allow_flow_type(priv, i)) {
+			priv_special_flow_disable(priv, i);
+		} else {
+			int ret = priv_special_flow_enable(priv, i);
+
+			if (ret)
+				return ret;
+		}
+	if (priv_allow_flow_type(priv, HASH_RXQ_FLOW_TYPE_MAC))
+		return priv_mac_addrs_enable(priv);
+	priv_mac_addrs_disable(priv);
 	return 0;
 }
 
@@ -856,6 +904,8 @@ rxq_cleanup(struct rxq *rxq)
 		rxq_free_elts_sp(rxq);
 	else
 		rxq_free_elts(rxq);
+	rxq->poll = NULL;
+	rxq->recv = NULL;
 	if (rxq->if_wq != NULL) {
 		assert(rxq->priv != NULL);
 		assert(rxq->priv->ctx != NULL);
@@ -1058,6 +1108,10 @@ rxq_rehash(struct rte_eth_dev *dev, struct rxq *rxq)
 		err = EIO;
 		goto error;
 	}
+	if (tmpl.sp)
+		tmpl.recv = tmpl.if_wq->recv_sg_list;
+	else
+		tmpl.recv = tmpl.if_wq->recv_burst;
 error:
 	*rxq = tmpl;
 	assert(err >= 0);
@@ -1139,11 +1193,7 @@ rxq_setup(struct rte_eth_dev *dev, struct rxq *rxq, uint16_t desc,
 	DEBUG("%p: %s scattered packets support (%u WRs)",
 	      (void *)dev, (tmpl.sp ? "enabling" : "disabling"), desc);
 	/* Use the entire RX mempool as the memory region. */
-	tmpl.mr = ibv_reg_mr(priv->pd,
-			     (void *)mp->elt_va_start,
-			     (mp->elt_va_end - mp->elt_va_start),
-			     (IBV_ACCESS_LOCAL_WRITE |
-			      IBV_ACCESS_REMOTE_WRITE));
+	tmpl.mr = mlx5_mp2mr(priv->pd, mp);
 	if (tmpl.mr == NULL) {
 		ret = EINVAL;
 		ERROR("%p: MR creation failure: %s",
@@ -1179,6 +1229,8 @@ rxq_setup(struct rte_eth_dev *dev, struct rxq *rxq, uint16_t desc,
 	      priv->device_attr.max_qp_wr);
 	DEBUG("priv->device_attr.max_sge is %d",
 	      priv->device_attr.max_sge);
+	/* Configure VLAN stripping. */
+	tmpl.vlan_strip = dev->data->dev_conf.rxmode.hw_vlan_strip;
 	attr.wq = (struct ibv_exp_wq_init_attr){
 		.wq_context = NULL, /* Could be useful in the future. */
 		.wq_type = IBV_EXP_WQT_RQ,
@@ -1193,9 +1245,58 @@ rxq_setup(struct rte_eth_dev *dev, struct rxq *rxq, uint16_t desc,
 				 MLX5_PMD_SGE_WR_N),
 		.pd = priv->pd,
 		.cq = tmpl.cq,
-		.comp_mask = IBV_EXP_CREATE_WQ_RES_DOMAIN,
+		.comp_mask =
+			IBV_EXP_CREATE_WQ_RES_DOMAIN |
+#ifdef HAVE_EXP_DEVICE_ATTR_VLAN_OFFLOADS
+			IBV_EXP_CREATE_WQ_VLAN_OFFLOADS |
+#endif /* HAVE_EXP_DEVICE_ATTR_VLAN_OFFLOADS */
+			0,
 		.res_domain = tmpl.rd,
+#ifdef HAVE_EXP_DEVICE_ATTR_VLAN_OFFLOADS
+		.vlan_offloads = (tmpl.vlan_strip ?
+				  IBV_EXP_RECEIVE_WQ_CVLAN_STRIP :
+				  0),
+#endif /* HAVE_EXP_DEVICE_ATTR_VLAN_OFFLOADS */
 	};
+
+#ifdef HAVE_VERBS_FCS
+	/* By default, FCS (CRC) is stripped by hardware. */
+	if (dev->data->dev_conf.rxmode.hw_strip_crc) {
+		tmpl.crc_present = 0;
+	} else if (priv->hw_fcs_strip) {
+		/* Ask HW/Verbs to leave CRC in place when supported. */
+		attr.wq.flags |= IBV_EXP_CREATE_WQ_FLAG_SCATTER_FCS;
+		attr.wq.comp_mask |= IBV_EXP_CREATE_WQ_FLAGS;
+		tmpl.crc_present = 1;
+	} else {
+		WARN("%p: CRC stripping has been disabled but will still"
+		     " be performed by hardware, make sure MLNX_OFED and"
+		     " firmware are up to date",
+		     (void *)dev);
+		tmpl.crc_present = 0;
+	}
+	DEBUG("%p: CRC stripping is %s, %u bytes will be subtracted from"
+	      " incoming frames to hide it",
+	      (void *)dev,
+	      tmpl.crc_present ? "disabled" : "enabled",
+	      tmpl.crc_present << 2);
+#endif /* HAVE_VERBS_FCS */
+
+#ifdef HAVE_VERBS_RX_END_PADDING
+	if (!mlx5_getenv_int("MLX5_PMD_ENABLE_PADDING"))
+		; /* Nothing else to do. */
+	else if (priv->hw_padding) {
+		INFO("%p: enabling packet padding on queue %p",
+		     (void *)dev, (void *)rxq);
+		attr.wq.flags |= IBV_EXP_CREATE_WQ_FLAG_RX_END_PADDING;
+		attr.wq.comp_mask |= IBV_EXP_CREATE_WQ_FLAGS;
+	} else
+		WARN("%p: packet padding has been requested but is not"
+		     " supported, make sure MLNX_OFED and firmware are"
+		     " up to date",
+		     (void *)dev);
+#endif /* HAVE_VERBS_RX_END_PADDING */
+
 	tmpl.wq = ibv_exp_create_wq(priv->ctx, &attr.wq);
 	if (tmpl.wq == NULL) {
 		ret = (errno ? errno : EINVAL);
@@ -1217,6 +1318,9 @@ rxq_setup(struct rte_eth_dev *dev, struct rxq *rxq, uint16_t desc,
 	DEBUG("%p: RTE port ID: %u", (void *)rxq, tmpl.port_id);
 	attr.params = (struct ibv_exp_query_intf_params){
 		.intf_scope = IBV_EXP_INTF_GLOBAL,
+#ifdef HAVE_EXP_DEVICE_ATTR_VLAN_OFFLOADS
+		.intf_version = 1,
+#endif /* HAVE_EXP_DEVICE_ATTR_VLAN_OFFLOADS */
 		.intf = IBV_EXP_INTF_CQ,
 		.obj = tmpl.cq,
 	};
@@ -1285,6 +1389,16 @@ rxq_setup(struct rte_eth_dev *dev, struct rxq *rxq, uint16_t desc,
 	*rxq = tmpl;
 	DEBUG("%p: rxq updated with %p", (void *)rxq, (void *)&tmpl);
 	assert(ret == 0);
+	/* Assign function in queue. */
+#ifdef HAVE_EXP_DEVICE_ATTR_VLAN_OFFLOADS
+	rxq->poll = rxq->if_cq->poll_length_flags_cvlan;
+#else /* HAVE_EXP_DEVICE_ATTR_VLAN_OFFLOADS */
+	rxq->poll = rxq->if_cq->poll_length_flags;
+#endif /* HAVE_EXP_DEVICE_ATTR_VLAN_OFFLOADS */
+	if (rxq->sp)
+		rxq->recv = rxq->if_wq->recv_sg_list;
+	else
+		rxq->recv = rxq->if_wq->recv_burst;
 	return 0;
 error:
 	rxq_cleanup(&tmpl);
@@ -1319,6 +1433,9 @@ mlx5_rx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 	struct priv *priv = dev->data->dev_private;
 	struct rxq *rxq = (*priv->rxqs)[idx];
 	int ret;
+
+	if (mlx5_is_secondary())
+		return -E_RTE_SECONDARY;
 
 	priv_lock(priv);
 	DEBUG("%p: configuring queue %u for %u descriptors",
@@ -1378,6 +1495,9 @@ mlx5_rx_queue_release(void *dpdk_rxq)
 	struct priv *priv;
 	unsigned int i;
 
+	if (mlx5_is_secondary())
+		return;
+
 	if (rxq == NULL)
 		return;
 	priv = rxq->priv;
@@ -1392,4 +1512,44 @@ mlx5_rx_queue_release(void *dpdk_rxq)
 	rxq_cleanup(rxq);
 	rte_free(rxq);
 	priv_unlock(priv);
+}
+
+/**
+ * DPDK callback for RX in secondary processes.
+ *
+ * This function configures all queues from primary process information
+ * if necessary before reverting to the normal RX burst callback.
+ *
+ * @param dpdk_rxq
+ *   Generic pointer to RX queue structure.
+ * @param[out] pkts
+ *   Array to store received packets.
+ * @param pkts_n
+ *   Maximum number of packets in array.
+ *
+ * @return
+ *   Number of packets successfully received (<= pkts_n).
+ */
+uint16_t
+mlx5_rx_burst_secondary_setup(void *dpdk_rxq, struct rte_mbuf **pkts,
+			      uint16_t pkts_n)
+{
+	struct rxq *rxq = dpdk_rxq;
+	struct priv *priv = mlx5_secondary_data_setup(rxq->priv);
+	struct priv *primary_priv;
+	unsigned int index;
+
+	if (priv == NULL)
+		return 0;
+	primary_priv =
+		mlx5_secondary_data[priv->dev->data->port_id].primary_priv;
+	/* Look for queue index in both private structures. */
+	for (index = 0; index != priv->rxqs_n; ++index)
+		if (((*primary_priv->rxqs)[index] == rxq) ||
+		    ((*priv->rxqs)[index] == rxq))
+			break;
+	if (index == priv->rxqs_n)
+		return 0;
+	rxq = (*priv->rxqs)[index];
+	return priv->dev->rx_pkt_burst(rxq, pkts, pkts_n);
 }

@@ -44,9 +44,9 @@ bnx2x_link_update(struct rte_eth_dev *dev)
 		case DUPLEX_HALF:
 			dev->data->dev_link.link_duplex = ETH_LINK_HALF_DUPLEX;
 			break;
-		default:
-			dev->data->dev_link.link_duplex = ETH_LINK_AUTONEG_DUPLEX;
 	}
+	dev->data->dev_link.link_autoneg = !(dev->data->dev_conf.link_speeds &
+			ETH_LINK_SPEED_FIXED);
 	dev->data->dev_link.link_status = sc->link_vars.link_up;
 }
 
@@ -87,7 +87,6 @@ bnx2x_dev_configure(struct rte_eth_dev *dev)
 {
 	struct bnx2x_softc *sc = dev->data->dev_private;
 	int mp_ncpus = sysconf(_SC_NPROCESSORS_CONF);
-	int ret;
 
 	PMD_INIT_FUNC_TRACE();
 
@@ -119,25 +118,6 @@ bnx2x_dev_configure(struct rte_eth_dev *dev)
 		PMD_DRV_LOG(ERR, "bnx2x_alloc_hsi_mem was failed");
 		bnx2x_free_ilt_mem(sc);
 		return -ENXIO;
-	}
-
-	if (IS_VF(sc)) {
-		if (bnx2x_dma_alloc(sc, sizeof(struct bnx2x_vf_mbx_msg),
-				  &sc->vf2pf_mbox_mapping, "vf2pf_mbox",
-				  RTE_CACHE_LINE_SIZE) != 0)
-			return -ENOMEM;
-
-		sc->vf2pf_mbox = (struct bnx2x_vf_mbx_msg *)sc->vf2pf_mbox_mapping.vaddr;
-		if (bnx2x_dma_alloc(sc, sizeof(struct bnx2x_vf_bulletin),
-				  &sc->pf2vf_bulletin_mapping, "vf2pf_bull",
-				  RTE_CACHE_LINE_SIZE) != 0)
-			return -ENOMEM;
-
-		sc->pf2vf_bulletin = (struct bnx2x_vf_bulletin *)sc->pf2vf_bulletin_mapping.vaddr;
-
-		ret = bnx2x_vf_get_resources(sc, sc->num_queues, sc->num_queues);
-		if (ret)
-			return ret;
 	}
 
 	return 0;
@@ -286,7 +266,7 @@ bnx2xvf_dev_link_update(struct rte_eth_dev *dev, __rte_unused int wait_to_comple
 	if (sc->old_bulletin.valid_bitmap & (1 << CHANNEL_DOWN)) {
 		PMD_DRV_LOG(ERR, "PF indicated channel is down."
 				"VF device is no longer operational");
-		dev->data->dev_link.link_status = 0;
+		dev->data->dev_link.link_status = ETH_LINK_DOWN;
 	}
 
 	return old_link_status == dev->data->dev_link.link_status ? -1 : 0;
@@ -347,6 +327,7 @@ bnx2x_dev_infos_get(struct rte_eth_dev *dev, __rte_unused struct rte_eth_dev_inf
 	dev_info->min_rx_bufsize = BNX2X_MIN_RX_BUF_SIZE;
 	dev_info->max_rx_pktlen  = BNX2X_MAX_RX_PKT_LEN;
 	dev_info->max_mac_addrs  = BNX2X_MAX_MAC_ADDRS;
+	dev_info->speed_capa = ETH_LINK_SPEED_10G | ETH_LINK_SPEED_20G;
 }
 
 static void
@@ -368,7 +349,7 @@ bnx2x_mac_addr_remove(struct rte_eth_dev *dev, uint32_t index)
 		sc->mac_ops.mac_addr_remove(dev, index);
 }
 
-static struct eth_dev_ops bnx2x_eth_dev_ops = {
+static const struct eth_dev_ops bnx2x_eth_dev_ops = {
 	.dev_configure                = bnx2x_dev_configure,
 	.dev_start                    = bnx2x_dev_start,
 	.dev_stop                     = bnx2x_dev_stop,
@@ -391,7 +372,7 @@ static struct eth_dev_ops bnx2x_eth_dev_ops = {
 /*
  * dev_ops for virtual function
  */
-static struct eth_dev_ops bnx2xvf_eth_dev_ops = {
+static const struct eth_dev_ops bnx2xvf_eth_dev_ops = {
 	.dev_configure                = bnx2x_dev_configure,
 	.dev_start                    = bnx2x_dev_start,
 	.dev_stop                     = bnx2x_dev_stop,
@@ -466,6 +447,7 @@ bnx2x_common_dev_init(struct rte_eth_dev *eth_dev, int is_vf)
 	ret = bnx2x_attach(sc);
 	if (ret) {
 		PMD_DRV_LOG(ERR, "bnx2x_attach failed (%d)", ret);
+		return ret;
 	}
 
 	eth_dev->data->mac_addrs = (struct ether_addr *)sc->link_params.mac_addr;
@@ -479,7 +461,30 @@ bnx2x_common_dev_init(struct rte_eth_dev *eth_dev, int is_vf)
 	PMD_DRV_LOG(INFO, "portID=%d vendorID=0x%x deviceID=0x%x",
 			eth_dev->data->port_id, pci_dev->id.vendor_id, pci_dev->id.device_id);
 
-	return ret;
+	if (IS_VF(sc)) {
+		if (bnx2x_dma_alloc(sc, sizeof(struct bnx2x_vf_mbx_msg),
+				    &sc->vf2pf_mbox_mapping, "vf2pf_mbox",
+				    RTE_CACHE_LINE_SIZE) != 0)
+			return -ENOMEM;
+
+		sc->vf2pf_mbox = (struct bnx2x_vf_mbx_msg *)
+					 sc->vf2pf_mbox_mapping.vaddr;
+
+		if (bnx2x_dma_alloc(sc, sizeof(struct bnx2x_vf_bulletin),
+				    &sc->pf2vf_bulletin_mapping, "vf2pf_bull",
+				    RTE_CACHE_LINE_SIZE) != 0)
+			return -ENOMEM;
+
+		sc->pf2vf_bulletin = (struct bnx2x_vf_bulletin *)
+					     sc->pf2vf_bulletin_mapping.vaddr;
+
+		ret = bnx2x_vf_get_resources(sc, sc->max_tx_queues,
+					     sc->max_rx_queues);
+		if (ret)
+			return ret;
+	}
+
+	return 0;
 }
 
 static int

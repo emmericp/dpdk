@@ -75,9 +75,6 @@ struct nfp_net_adapter;
 /* Interrupt definitions */
 #define NFP_NET_IRQ_LSC_IDX             0
 
-#define RTE_MBUF_DATA_DMA_ADDR(mb) \
-	((uint64_t)((mb)->buf_physaddr + (mb)->data_off))
-
 /* Default values for RX/TX configuration */
 #define DEFAULT_RX_FREE_THRESH  32
 #define DEFAULT_RX_PTHRESH      8
@@ -409,6 +406,7 @@ struct nfp_net_hw {
 	int stride_tx;
 
 	uint8_t *qcp_cfg;
+	rte_spinlock_t reconfig_lock;
 
 	uint32_t max_tx_queues;
 	uint32_t max_rx_queues;

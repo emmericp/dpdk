@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
+ *   Copyright(c) 2010-2016 Intel Corporation. All rights reserved.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -42,6 +42,7 @@
 #include <rte_table_acl.h>
 
 #include "pipeline_firewall_be.h"
+#include "parser.h"
 
 struct pipeline_firewall {
 	struct pipeline p;
@@ -308,17 +309,26 @@ pipeline_firewall_parse_args(struct pipeline_firewall *p,
 		char *arg_value = params->args_value[i];
 
 		if (strcmp(arg_name, "n_rules") == 0) {
-			if (n_rules_present)
-				return -1;
+			int status;
+
+			PIPELINE_PARSE_ERR_DUPLICATE(
+				n_rules_present == 0, params->name,
+				arg_name);
 			n_rules_present = 1;
 
-			p->n_rules = atoi(arg_value);
+			status = parser_read_uint32(&p->n_rules,
+				arg_value);
+			PIPELINE_PARSE_ERR_INV_VAL((status != -EINVAL),
+				params->name, arg_name, arg_value);
+			PIPELINE_PARSE_ERR_OUT_RNG((status != -ERANGE),
+				params->name, arg_name, arg_value);
 			continue;
 		}
 
 		if (strcmp(arg_name, "pkt_type") == 0) {
-			if (pkt_type_present)
-				return -1;
+			PIPELINE_PARSE_ERR_DUPLICATE(
+				pkt_type_present == 0, params->name,
+				arg_name);
 			pkt_type_present = 1;
 
 			/* ipv4 */
@@ -351,11 +361,12 @@ pipeline_firewall_parse_args(struct pipeline_firewall *p,
 			}
 
 			/* other */
-			return -1;
+			PIPELINE_PARSE_ERR_INV_VAL(0, params->name,
+				arg_name, arg_value);
 		}
 
 		/* other */
-		return -1;
+		PIPELINE_PARSE_ERR_INV_ENT(0, params->name, arg_name);
 	}
 
 	return 0;
@@ -439,7 +450,6 @@ pipeline_firewall_init(struct pipeline_params *params,
 			.arg_create = pipeline_port_out_params_convert(
 				&params->port_out[i]),
 			.f_action = NULL,
-			.f_action_bulk = NULL,
 			.arg_ah = NULL,
 		};
 
@@ -722,7 +732,7 @@ pipeline_firewall_msg_req_add_bulk_handler(struct pipeline *p, void *msg)
 	n_keys = req->n_keys;
 
 	for (i = 0; i < n_keys; i++) {
-		entries[i] = rte_malloc(NULL,
+		entries[i] = rte_zmalloc(NULL,
 				sizeof(struct firewall_table_entry),
 				RTE_CACHE_LINE_SIZE);
 		if (entries[i] == NULL) {
@@ -730,7 +740,7 @@ pipeline_firewall_msg_req_add_bulk_handler(struct pipeline *p, void *msg)
 			return rsp;
 		}
 
-		params[i] = rte_malloc(NULL,
+		params[i] = rte_zmalloc(NULL,
 				sizeof(struct rte_table_acl_rule_add_params),
 				RTE_CACHE_LINE_SIZE);
 		if (params[i] == NULL) {
@@ -804,7 +814,7 @@ pipeline_firewall_msg_req_del_bulk_handler(struct pipeline *p, void *msg)
 	n_keys = req->n_keys;
 
 	for (i = 0; i < n_keys; i++) {
-		params[i] = rte_malloc(NULL,
+		params[i] = rte_zmalloc(NULL,
 				sizeof(struct rte_table_acl_rule_delete_params),
 				RTE_CACHE_LINE_SIZE);
 		if (params[i] == NULL) {

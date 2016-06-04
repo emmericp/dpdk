@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2015 Intel Corporation. All rights reserved.
+ *   Copyright(c) 2015-2016 Intel Corporation. All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -146,11 +146,11 @@ struct aesni_mb_qp {
 	/**< Vector mode dependent pointer table of the multi-buffer APIs */
 	MB_MGR mb_mgr;
 	/**< Multi-buffer instance */
-	struct rte_ring *processed_pkts;
-	/**< Ring for placing process packets */
+	struct rte_ring *processed_ops;
+	/**< Ring for placing process operations */
 	struct rte_mempool *sess_mp;
 	/**< Session Mempool */
-	struct rte_cryptodev_stats qp_stats;
+	struct rte_cryptodev_stats stats;
 	/**< Queue pair statistics */
 } __rte_cache_aligned;
 
@@ -218,7 +218,7 @@ struct aesni_mb_session {
 extern int
 aesni_mb_set_session_parameters(const struct aesni_mb_ops *mb_ops,
 		struct aesni_mb_session *sess,
-		const struct rte_crypto_xform *xform);
+		const struct rte_crypto_sym_xform *xform);
 
 
 /** device specific operations function pointer structure */

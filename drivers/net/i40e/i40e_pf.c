@@ -82,8 +82,8 @@ i40e_pf_vf_queues_mapping(struct i40e_pf_vf *vf)
 	 * VF should use scatter range queues. So, it needn't
 	 * to set QBASE in this register.
 	 */
-	I40E_WRITE_REG(hw, I40E_VSILAN_QBASE(vsi_id),
-	     I40E_VSILAN_QBASE_VSIQTABLE_ENA_MASK);
+	i40e_write_rx_ctl(hw, I40E_VSILAN_QBASE(vsi_id),
+			  I40E_VSILAN_QBASE_VSIQTABLE_ENA_MASK);
 
 	/* Set to enable VFLAN_QTABLE[] registers valid */
 	I40E_WRITE_REG(hw, I40E_VPLAN_MAPENA(vf_id),
@@ -108,7 +108,7 @@ i40e_pf_vf_queues_mapping(struct i40e_pf_vf *vf)
 			q2 = qbase + 2 * i + 1;
 
 		val = (q2 << I40E_VSILAN_QTABLE_QINDEX_1_SHIFT) + q1;
-		I40E_WRITE_REG(hw, I40E_VSILAN_QTABLE(i, vsi_id), val);
+		i40e_write_rx_ctl(hw, I40E_VSILAN_QTABLE(i, vsi_id), val);
 	}
 	I40E_WRITE_FLUSH(hw);
 
@@ -315,6 +315,8 @@ i40e_pf_host_process_cmd_get_vf_resource(struct i40e_pf_vf *vf)
 	/* As assume Vf only has single VSI now, always return 0 */
 	vf_res->vsi_res[0].vsi_id = 0;
 	vf_res->vsi_res[0].num_queue_pairs = vf->vsi->nb_qps;
+	ether_addr_copy(&vf->mac_addr,
+		(struct ether_addr *)vf_res->vsi_res[0].default_mac_addr);
 
 send_msg:
 	i40e_pf_host_send_msg_to_vf(vf, I40E_VIRTCHNL_OP_GET_VF_RESOURCES,
@@ -1045,6 +1047,7 @@ i40e_pf_host_init(struct rte_eth_dev *dev)
 		ret = i40e_pf_host_vf_reset(&pf->vfs[i], 0);
 		if (ret != I40E_SUCCESS)
 			goto fail;
+		eth_random_addr(pf->vfs[i].mac_addr.addr_bytes);
 	}
 
 	/* restore irq0 */

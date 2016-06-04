@@ -160,13 +160,17 @@ app_init_lpm_tables(void)
 			continue;
 		}
 
+		struct rte_lpm_config lpm_config;
+
+		lpm_config.max_rules = APP_MAX_LPM_RULES;
+		lpm_config.number_tbl8s = 256;
+		lpm_config.flags = 0;
 		snprintf(name, sizeof(name), "lpm_table_%u", socket);
 		printf("Creating the LPM table for socket %u ...\n", socket);
 		app.lpm_tables[socket] = rte_lpm_create(
 			name,
 			socket,
-			APP_MAX_LPM_RULES,
-			0);
+			&lpm_config);
 		if (app.lpm_tables[socket] == NULL) {
 			rte_panic("Unable to create LPM table on socket %u\n", socket);
 		}
@@ -391,7 +395,7 @@ check_all_ports_link_status(uint8_t port_num, uint32_t port_mask)
 				continue;
 			}
 			/* clear all_ports_up flag if any link down */
-			if (link.link_status == 0) {
+			if (link.link_status == ETH_LINK_DOWN) {
 				all_ports_up = 0;
 				break;
 			}

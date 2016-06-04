@@ -129,6 +129,9 @@
 #define RTE_FM10K_TX_MAX_FREE_BUF_SZ    64
 #define RTE_FM10K_DESCS_PER_LOOP    4
 
+#define FM10K_MISC_VEC_ID               RTE_INTR_VEC_ZERO_OFFSET
+#define FM10K_RX_VEC_START              RTE_INTR_VEC_RXTX_OFFSET
+
 #define FM10K_SIMPLE_TX_FLAG ((uint32_t)ETH_TXQ_FLAGS_NOMULTSEGS | \
 				ETH_TXQ_FLAGS_NOOFFLOADS)
 
@@ -201,6 +204,7 @@ struct fm10k_rx_queue {
 	uint8_t port_id;
 	uint8_t drop_en;
 	uint8_t rx_deferred_start; /* don't start this queue in dev start. */
+	uint16_t rx_ftag_en; /* indicates FTAG RX supported */
 };
 
 /*
@@ -237,6 +241,7 @@ struct fm10k_tx_queue {
 	uint8_t port_id;
 	uint8_t tx_deferred_start; /** don't start this queue in dev start. */
 	uint16_t queue_id;
+	uint16_t tx_ftag_en; /* indicates FTAG TX supported */
 };
 
 struct fm10k_txq_ops {
@@ -344,6 +349,9 @@ uint16_t fm10k_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 
 uint16_t fm10k_recv_scattered_pkts(void *rx_queue,
 		struct rte_mbuf **rx_pkts, uint16_t nb_pkts);
+
+int
+fm10k_dev_rx_descriptor_done(void *rx_queue, uint16_t offset);
 
 uint16_t fm10k_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 	uint16_t nb_pkts);

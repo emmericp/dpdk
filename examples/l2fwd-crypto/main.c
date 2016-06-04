@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
+ *   Copyright(c) 2015-2016 Intel Corporation. All rights reserved.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -62,7 +62,6 @@
 #include <rte_log.h>
 #include <rte_malloc.h>
 #include <rte_mbuf.h>
-#include <rte_mbuf_offload.h>
 #include <rte_memcpy.h>
 #include <rte_memory.h>
 #include <rte_mempool.h>
@@ -72,11 +71,20 @@
 #include <rte_prefetch.h>
 #include <rte_random.h>
 #include <rte_ring.h>
+#include <rte_hexdump.h>
+
+enum cdev_type {
+	CDEV_TYPE_ANY,
+	CDEV_TYPE_HW,
+	CDEV_TYPE_SW
+};
 
 #define RTE_LOGTYPE_L2FWD RTE_LOGTYPE_USER1
 
 #define NB_MBUF   8192
 
+#define MAX_STR_LEN 32
+#define MAX_KEY_SIZE 128
 #define MAX_PKT_BURST 32
 #define BURST_TX_DRAIN_US 100 /* TX drain every ~100us */
 
@@ -85,6 +93,7 @@
  */
 #define RTE_TEST_RX_DESC_DEFAULT 128
 #define RTE_TEST_TX_DESC_DEFAULT 512
+
 static uint16_t nb_rxd = RTE_TEST_RX_DESC_DEFAULT;
 static uint16_t nb_txd = RTE_TEST_TX_DESC_DEFAULT;
 
@@ -104,13 +113,29 @@ struct pkt_buffer {
 	struct rte_mbuf *buffer[MAX_PKT_BURST];
 };
 
+struct op_buffer {
+	unsigned len;
+	struct rte_crypto_op *buffer[MAX_PKT_BURST];
+};
+
 #define MAX_RX_QUEUE_PER_LCORE 16
 #define MAX_TX_QUEUE_PER_PORT 16
 
 enum l2fwd_crypto_xform_chain {
 	L2FWD_CRYPTO_CIPHER_HASH,
-	L2FWD_CRYPTO_HASH_CIPHER
+	L2FWD_CRYPTO_HASH_CIPHER,
+	L2FWD_CRYPTO_CIPHER_ONLY,
+	L2FWD_CRYPTO_HASH_ONLY
 };
+
+struct l2fwd_key {
+	uint8_t *data;
+	uint32_t length;
+	phys_addr_t phys_addr;
+};
+
+char supported_auth_algo[RTE_CRYPTO_AUTH_LIST_END][MAX_STR_LEN];
+char supported_cipher_algo[RTE_CRYPTO_CIPHER_LIST_END][MAX_STR_LEN];
 
 /** l2fwd crypto application command line options */
 struct l2fwd_crypto_options {
@@ -119,19 +144,31 @@ struct l2fwd_crypto_options {
 	unsigned refresh_period;
 	unsigned single_lcore:1;
 
-	enum rte_cryptodev_type cdev_type;
+	enum cdev_type type;
 	unsigned sessionless:1;
 
 	enum l2fwd_crypto_xform_chain xform_chain;
 
-	struct rte_crypto_xform cipher_xform;
-	uint8_t ckey_data[32];
+	struct rte_crypto_sym_xform cipher_xform;
+	unsigned ckey_param;
+	int ckey_random_size;
 
-	struct rte_crypto_key iv_key;
-	uint8_t ivkey_data[16];
+	struct l2fwd_key iv;
+	unsigned iv_param;
+	int iv_random_size;
 
-	struct rte_crypto_xform auth_xform;
-	uint8_t akey_data[128];
+	struct rte_crypto_sym_xform auth_xform;
+	uint8_t akey_param;
+	int akey_random_size;
+
+	struct l2fwd_key aad;
+	unsigned aad_param;
+	int aad_random_size;
+
+	int digest_size;
+
+	uint16_t block_size;
+	char string_type[MAX_STR_LEN];
 };
 
 /** l2fwd crypto lcore params */
@@ -142,8 +179,16 @@ struct l2fwd_crypto_params {
 	unsigned digest_length;
 	unsigned block_size;
 
-	struct rte_crypto_key iv_key;
-	struct rte_cryptodev_session *session;
+	struct l2fwd_key iv;
+	struct l2fwd_key aad;
+	struct rte_cryptodev_sym_session *session;
+
+	uint8_t do_cipher;
+	uint8_t do_hash;
+	uint8_t hash_verify;
+
+	enum rte_crypto_cipher_algorithm cipher_algo;
+	enum rte_crypto_auth_algorithm auth_algo;
 };
 
 /** lcore configuration */
@@ -154,14 +199,16 @@ struct lcore_queue_conf {
 	unsigned nb_crypto_devs;
 	unsigned cryptodev_list[MAX_RX_QUEUE_PER_LCORE];
 
-	struct pkt_buffer crypto_pkt_buf[RTE_MAX_ETHPORTS];
-	struct pkt_buffer tx_pkt_buf[RTE_MAX_ETHPORTS];
+	struct op_buffer op_buf[RTE_MAX_ETHPORTS];
+	struct pkt_buffer pkt_buf[RTE_MAX_ETHPORTS];
 } __rte_cache_aligned;
 
 struct lcore_queue_conf lcore_queue_conf[RTE_MAX_LCORE];
 
 static const struct rte_eth_conf port_conf = {
 	.rxmode = {
+		.mq_mode = ETH_MQ_RX_NONE,
+		.max_rx_pkt_len = ETHER_MAX_LEN,
 		.split_hdr_size = 0,
 		.header_split   = 0, /**< Header Split disabled */
 		.hw_ip_checksum = 0, /**< IP checksum offload disabled */
@@ -175,7 +222,7 @@ static const struct rte_eth_conf port_conf = {
 };
 
 struct rte_mempool *l2fwd_pktmbuf_pool;
-struct rte_mempool *l2fwd_mbuf_ol_pool;
+struct rte_mempool *l2fwd_crypto_op_pool;
 
 /* Per-port statistics struct */
 struct l2fwd_port_statistics {
@@ -200,22 +247,27 @@ struct l2fwd_crypto_statistics crypto_statistics[RTE_MAX_ETHPORTS];
 
 /* A tsc-based timer responsible for triggering statistics printout */
 #define TIMER_MILLISECOND 2000000ULL /* around 1ms at 2 Ghz */
-#define MAX_TIMER_PERIOD 86400 /* 1 day max */
+#define MAX_TIMER_PERIOD 86400UL /* 1 day max */
 
 /* default period is 10 seconds */
 static int64_t timer_period = 10 * TIMER_MILLISECOND * 1000;
-
-uint64_t total_packets_dropped = 0, total_packets_tx = 0, total_packets_rx = 0,
-	total_packets_enqueued = 0, total_packets_dequeued = 0,
-	total_packets_errors = 0;
 
 /* Print out statistics on packets dropped */
 static void
 print_stats(void)
 {
+	uint64_t total_packets_dropped, total_packets_tx, total_packets_rx;
+	uint64_t total_packets_enqueued, total_packets_dequeued,
+		total_packets_errors;
 	unsigned portid;
 	uint64_t cdevid;
 
+	total_packets_dropped = 0;
+	total_packets_tx = 0;
+	total_packets_rx = 0;
+	total_packets_enqueued = 0;
+	total_packets_dequeued = 0;
+	total_packets_errors = 0;
 
 	const char clr[] = { 27, '[', '2', 'J', '\0' };
 	const char topLeft[] = { 27, '[', '1', ';', '1', 'H', '\0' };
@@ -278,26 +330,53 @@ print_stats(void)
 	printf("\n====================================================\n");
 }
 
+static void
+fill_supported_algorithm_tables(void)
+{
+	unsigned i;
+
+	for (i = 0; i < RTE_CRYPTO_AUTH_LIST_END; i++)
+		strcpy(supported_auth_algo[i], "NOT_SUPPORTED");
+
+	strcpy(supported_auth_algo[RTE_CRYPTO_AUTH_AES_GCM], "AES_GCM");
+	strcpy(supported_auth_algo[RTE_CRYPTO_AUTH_MD5_HMAC], "MD5_HMAC");
+	strcpy(supported_auth_algo[RTE_CRYPTO_AUTH_NULL], "NULL");
+	strcpy(supported_auth_algo[RTE_CRYPTO_AUTH_SHA1_HMAC], "SHA1_HMAC");
+	strcpy(supported_auth_algo[RTE_CRYPTO_AUTH_SHA224_HMAC], "SHA224_HMAC");
+	strcpy(supported_auth_algo[RTE_CRYPTO_AUTH_SHA256_HMAC], "SHA256_HMAC");
+	strcpy(supported_auth_algo[RTE_CRYPTO_AUTH_SHA384_HMAC], "SHA384_HMAC");
+	strcpy(supported_auth_algo[RTE_CRYPTO_AUTH_SHA512_HMAC], "SHA512_HMAC");
+	strcpy(supported_auth_algo[RTE_CRYPTO_AUTH_SNOW3G_UIA2], "SNOW3G_UIA2");
+
+	for (i = 0; i < RTE_CRYPTO_CIPHER_LIST_END; i++)
+		strcpy(supported_cipher_algo[i], "NOT_SUPPORTED");
+
+	strcpy(supported_cipher_algo[RTE_CRYPTO_CIPHER_AES_CBC], "AES_CBC");
+	strcpy(supported_cipher_algo[RTE_CRYPTO_CIPHER_AES_GCM], "AES_GCM");
+	strcpy(supported_cipher_algo[RTE_CRYPTO_CIPHER_NULL], "NULL");
+	strcpy(supported_cipher_algo[RTE_CRYPTO_CIPHER_SNOW3G_UEA2], "SNOW3G_UEA2");
+}
 
 
 static int
 l2fwd_crypto_send_burst(struct lcore_queue_conf *qconf, unsigned n,
 		struct l2fwd_crypto_params *cparams)
 {
-	struct rte_mbuf **pkt_buffer;
+	struct rte_crypto_op **op_buffer;
 	unsigned ret;
 
-	pkt_buffer = (struct rte_mbuf **)
-			qconf->crypto_pkt_buf[cparams->dev_id].buffer;
+	op_buffer = (struct rte_crypto_op **)
+			qconf->op_buf[cparams->dev_id].buffer;
 
-	ret = rte_cryptodev_enqueue_burst(cparams->dev_id, cparams->qp_id,
-			pkt_buffer, (uint16_t) n);
+	ret = rte_cryptodev_enqueue_burst(cparams->dev_id,
+			cparams->qp_id,	op_buffer, (uint16_t) n);
+
 	crypto_statistics[cparams->dev_id].enqueued += ret;
 	if (unlikely(ret < n)) {
 		crypto_statistics[cparams->dev_id].errors += (n - ret);
 		do {
-			rte_pktmbuf_offload_free(pkt_buffer[ret]->offload_ops);
-			rte_pktmbuf_free(pkt_buffer[ret]);
+			rte_pktmbuf_free(op_buffer[ret]->sym->m_src);
+			rte_crypto_op_free(op_buffer[ret]);
 		} while (++ret < n);
 	}
 
@@ -305,7 +384,8 @@ l2fwd_crypto_send_burst(struct lcore_queue_conf *qconf, unsigned n,
 }
 
 static int
-l2fwd_crypto_enqueue(struct rte_mbuf *m, struct l2fwd_crypto_params *cparams)
+l2fwd_crypto_enqueue(struct rte_crypto_op *op,
+		struct l2fwd_crypto_params *cparams)
 {
 	unsigned lcore_id, len;
 	struct lcore_queue_conf *qconf;
@@ -313,23 +393,23 @@ l2fwd_crypto_enqueue(struct rte_mbuf *m, struct l2fwd_crypto_params *cparams)
 	lcore_id = rte_lcore_id();
 
 	qconf = &lcore_queue_conf[lcore_id];
-	len = qconf->crypto_pkt_buf[cparams->dev_id].len;
-	qconf->crypto_pkt_buf[cparams->dev_id].buffer[len] = m;
+	len = qconf->op_buf[cparams->dev_id].len;
+	qconf->op_buf[cparams->dev_id].buffer[len] = op;
 	len++;
 
-	/* enough pkts to be sent */
+	/* enough ops to be sent */
 	if (len == MAX_PKT_BURST) {
 		l2fwd_crypto_send_burst(qconf, MAX_PKT_BURST, cparams);
 		len = 0;
 	}
 
-	qconf->crypto_pkt_buf[cparams->dev_id].len = len;
+	qconf->op_buf[cparams->dev_id].len = len;
 	return 0;
 }
 
 static int
 l2fwd_simple_crypto_enqueue(struct rte_mbuf *m,
-		struct rte_mbuf_offload *ol,
+		struct rte_crypto_op *op,
 		struct l2fwd_crypto_params *cparams)
 {
 	struct ether_hdr *eth_hdr;
@@ -367,43 +447,81 @@ l2fwd_simple_crypto_enqueue(struct rte_mbuf *m,
 	}
 
 	/* Set crypto operation data parameters */
-	rte_crypto_op_attach_session(&ol->op.crypto, cparams->session);
+	rte_crypto_op_attach_sym_session(op, cparams->session);
 
-	/* Append space for digest to end of packet */
-	ol->op.crypto.digest.data = (uint8_t *)rte_pktmbuf_append(m,
-			cparams->digest_length);
-	ol->op.crypto.digest.phys_addr = rte_pktmbuf_mtophys_offset(m,
-			rte_pktmbuf_pkt_len(m) - cparams->digest_length);
-	ol->op.crypto.digest.length = cparams->digest_length;
+	if (cparams->do_hash) {
+		if (!cparams->hash_verify) {
+			/* Append space for digest to end of packet */
+			op->sym->auth.digest.data = (uint8_t *)rte_pktmbuf_append(m,
+				cparams->digest_length);
+		} else {
+			op->sym->auth.digest.data = (uint8_t *)rte_pktmbuf_append(m,
+				cparams->digest_length);
+		}
 
-	ol->op.crypto.iv.data = cparams->iv_key.data;
-	ol->op.crypto.iv.phys_addr = cparams->iv_key.phys_addr;
-	ol->op.crypto.iv.length = cparams->iv_key.length;
+		op->sym->auth.digest.phys_addr = rte_pktmbuf_mtophys_offset(m,
+				rte_pktmbuf_pkt_len(m) - cparams->digest_length);
+		op->sym->auth.digest.length = cparams->digest_length;
 
-	ol->op.crypto.data.to_cipher.offset = ipdata_offset;
-	ol->op.crypto.data.to_cipher.length = data_len;
+		/* For SNOW3G algorithms, offset/length must be in bits */
+		if (cparams->auth_algo == RTE_CRYPTO_AUTH_SNOW3G_UIA2) {
+			op->sym->auth.data.offset = ipdata_offset << 3;
+			op->sym->auth.data.length = data_len << 3;
+		} else {
+			op->sym->auth.data.offset = ipdata_offset;
+			op->sym->auth.data.length = data_len;
+		}
 
-	ol->op.crypto.data.to_hash.offset = ipdata_offset;
-	ol->op.crypto.data.to_hash.length = data_len;
+		if (cparams->aad.length) {
+			op->sym->auth.aad.data = cparams->aad.data;
+			op->sym->auth.aad.phys_addr = cparams->aad.phys_addr;
+			op->sym->auth.aad.length = cparams->aad.length;
+		}
+	}
 
-	rte_pktmbuf_offload_attach(m, ol);
+	if (cparams->do_cipher) {
+		op->sym->cipher.iv.data = cparams->iv.data;
+		op->sym->cipher.iv.phys_addr = cparams->iv.phys_addr;
+		op->sym->cipher.iv.length = cparams->iv.length;
 
-	return l2fwd_crypto_enqueue(m, cparams);
+		/* For SNOW3G algorithms, offset/length must be in bits */
+		if (cparams->cipher_algo == RTE_CRYPTO_CIPHER_SNOW3G_UEA2) {
+			op->sym->cipher.data.offset = ipdata_offset << 3;
+			if (cparams->do_hash && cparams->hash_verify)
+				/* Do not cipher the hash tag */
+				op->sym->cipher.data.length = (data_len -
+					cparams->digest_length) << 3;
+			else
+				op->sym->cipher.data.length = data_len << 3;
+
+		} else {
+			op->sym->cipher.data.offset = ipdata_offset;
+			if (cparams->do_hash && cparams->hash_verify)
+				/* Do not cipher the hash tag */
+				op->sym->cipher.data.length = data_len -
+					cparams->digest_length;
+			else
+				op->sym->cipher.data.length = data_len;
+		}
+	}
+
+	op->sym->m_src = m;
+
+	return l2fwd_crypto_enqueue(op, cparams);
 }
 
 
 /* Send the burst of packets on an output interface */
 static int
-l2fwd_send_burst(struct lcore_queue_conf *qconf, unsigned n, uint8_t port)
+l2fwd_send_burst(struct lcore_queue_conf *qconf, unsigned n,
+		uint8_t port)
 {
 	struct rte_mbuf **pkt_buffer;
 	unsigned ret;
-	unsigned queueid = 0;
 
-	pkt_buffer = (struct rte_mbuf **)qconf->tx_pkt_buf[port].buffer;
+	pkt_buffer = (struct rte_mbuf **)qconf->pkt_buf[port].buffer;
 
-	ret = rte_eth_tx_burst(port, (uint16_t) queueid, pkt_buffer,
-			(uint16_t)n);
+	ret = rte_eth_tx_burst(port, 0, pkt_buffer, (uint16_t)n);
 	port_statistics[port].tx += ret;
 	if (unlikely(ret < n)) {
 		port_statistics[port].dropped += (n - ret);
@@ -425,8 +543,8 @@ l2fwd_send_packet(struct rte_mbuf *m, uint8_t port)
 	lcore_id = rte_lcore_id();
 
 	qconf = &lcore_queue_conf[lcore_id];
-	len = qconf->tx_pkt_buf[port].len;
-	qconf->tx_pkt_buf[port].buffer[len] = m;
+	len = qconf->pkt_buf[port].len;
+	qconf->pkt_buf[port].buffer[len] = m;
 	len++;
 
 	/* enough pkts to be sent */
@@ -435,7 +553,7 @@ l2fwd_send_packet(struct rte_mbuf *m, uint8_t port)
 		len = 0;
 	}
 
-	qconf->tx_pkt_buf[port].len = len;
+	qconf->pkt_buf[port].len = len;
 	return 0;
 }
 
@@ -469,22 +587,26 @@ generate_random_key(uint8_t *key, unsigned length)
 		key[i] = rand() % 0xff;
 }
 
-static struct rte_cryptodev_session *
+static struct rte_cryptodev_sym_session *
 initialize_crypto_session(struct l2fwd_crypto_options *options,
 		uint8_t cdev_id)
 {
-	struct rte_crypto_xform *first_xform;
+	struct rte_crypto_sym_xform *first_xform;
 
 	if (options->xform_chain == L2FWD_CRYPTO_CIPHER_HASH) {
 		first_xform = &options->cipher_xform;
 		first_xform->next = &options->auth_xform;
-	} else {
+	} else if (options->xform_chain == L2FWD_CRYPTO_HASH_CIPHER) {
 		first_xform = &options->auth_xform;
 		first_xform->next = &options->cipher_xform;
+	} else if (options->xform_chain == L2FWD_CRYPTO_CIPHER_ONLY) {
+		first_xform = &options->cipher_xform;
+	} else {
+		first_xform = &options->auth_xform;
 	}
 
 	/* Setup Cipher Parameters */
-	return rte_cryptodev_session_create(cdev_id, first_xform);
+	return rte_cryptodev_sym_session_create(cdev_id, first_xform);
 }
 
 static void
@@ -495,6 +617,8 @@ static void
 l2fwd_main_loop(struct l2fwd_crypto_options *options)
 {
 	struct rte_mbuf *m, *pkts_burst[MAX_PKT_BURST];
+	struct rte_crypto_op *ops_burst[MAX_PKT_BURST];
+
 	unsigned lcore_id = rte_lcore_id();
 	uint64_t prev_tsc = 0, diff_tsc, cur_tsc, timer_tsc = 0;
 	unsigned i, j, portid, nb_rx;
@@ -511,8 +635,6 @@ l2fwd_main_loop(struct l2fwd_crypto_options *options)
 
 	RTE_LOG(INFO, L2FWD, "entering main loop on lcore %u\n", lcore_id);
 
-	l2fwd_crypto_options_print(options);
-
 	for (i = 0; i < qconf->nb_rx_ports; i++) {
 
 		portid = qconf->rx_port_list[i];
@@ -521,19 +643,60 @@ l2fwd_main_loop(struct l2fwd_crypto_options *options)
 	}
 
 	for (i = 0; i < qconf->nb_crypto_devs; i++) {
+		port_cparams[i].do_cipher = 0;
+		port_cparams[i].do_hash = 0;
+
+		switch (options->xform_chain) {
+		case L2FWD_CRYPTO_CIPHER_HASH:
+		case L2FWD_CRYPTO_HASH_CIPHER:
+			port_cparams[i].do_cipher = 1;
+			port_cparams[i].do_hash = 1;
+			break;
+		case L2FWD_CRYPTO_HASH_ONLY:
+			port_cparams[i].do_hash = 1;
+			break;
+		case L2FWD_CRYPTO_CIPHER_ONLY:
+			port_cparams[i].do_cipher = 1;
+			break;
+		}
+
 		port_cparams[i].dev_id = qconf->cryptodev_list[i];
 		port_cparams[i].qp_id = 0;
 
-		port_cparams[i].block_size = 64;
-		port_cparams[i].digest_length = 20;
+		port_cparams[i].block_size = options->block_size;
 
-		port_cparams[i].iv_key.data =
-				(uint8_t *)rte_malloc(NULL, 16, 8);
-		port_cparams[i].iv_key.length = 16;
-		port_cparams[i].iv_key.phys_addr = rte_malloc_virt2phy(
-				(void *)port_cparams[i].iv_key.data);
-		generate_random_key(port_cparams[i].iv_key.data,
-				sizeof(cparams[i].iv_key.length));
+		if (port_cparams[i].do_hash) {
+			port_cparams[i].digest_length =
+					options->auth_xform.auth.digest_length;
+			if (options->auth_xform.auth.add_auth_data_length) {
+				port_cparams[i].aad.data = options->aad.data;
+				port_cparams[i].aad.length =
+					options->auth_xform.auth.add_auth_data_length;
+				port_cparams[i].aad.phys_addr = options->aad.phys_addr;
+				if (!options->aad_param)
+					generate_random_key(port_cparams[i].aad.data,
+						port_cparams[i].aad.length);
+
+			}
+
+			if (options->auth_xform.auth.op == RTE_CRYPTO_AUTH_OP_VERIFY)
+				port_cparams[i].hash_verify = 1;
+			else
+				port_cparams[i].hash_verify = 0;
+
+			port_cparams[i].auth_algo = options->auth_xform.auth.algo;
+		}
+
+		if (port_cparams[i].do_cipher) {
+			port_cparams[i].iv.data = options->iv.data;
+			port_cparams[i].iv.length = options->iv.length;
+			port_cparams[i].iv.phys_addr = options->iv.phys_addr;
+			if (!options->iv_param)
+				generate_random_key(port_cparams[i].iv.data,
+						port_cparams[i].iv.length);
+
+			port_cparams[i].cipher_algo = options->cipher_xform.cipher.algo;
+		}
 
 		port_cparams[i].session = initialize_crypto_session(options,
 				port_cparams[i].dev_id);
@@ -544,6 +707,14 @@ l2fwd_main_loop(struct l2fwd_crypto_options *options)
 				port_cparams[i].dev_id);
 	}
 
+	l2fwd_crypto_options_print(options);
+
+	/*
+	 * Initialize previous tsc timestamp before the loop,
+	 * to avoid showing the port statistics immediately,
+	 * so user can see the crypto information.
+	 */
+	prev_tsc = rte_rdtsc();
 	while (1) {
 
 		cur_tsc = rte_rdtsc();
@@ -553,14 +724,13 @@ l2fwd_main_loop(struct l2fwd_crypto_options *options)
 		 */
 		diff_tsc = cur_tsc - prev_tsc;
 		if (unlikely(diff_tsc > drain_tsc)) {
-
 			for (portid = 0; portid < RTE_MAX_ETHPORTS; portid++) {
-				if (qconf->tx_pkt_buf[portid].len == 0)
+				if (qconf->pkt_buf[portid].len == 0)
 					continue;
 				l2fwd_send_burst(&lcore_queue_conf[lcore_id],
-						 qconf->tx_pkt_buf[portid].len,
+						 qconf->pkt_buf[portid].len,
 						 (uint8_t) portid);
-				qconf->tx_pkt_buf[portid].len = 0;
+				qconf->pkt_buf[portid].len = 0;
 			}
 
 			/* if timer is enabled */
@@ -589,8 +759,6 @@ l2fwd_main_loop(struct l2fwd_crypto_options *options)
 		 * Read packet from RX queues
 		 */
 		for (i = 0; i < qconf->nb_rx_ports; i++) {
-			struct rte_mbuf_offload *ol;
-
 			portid = qconf->rx_port_list[i];
 
 			cparams = &port_cparams[i];
@@ -600,44 +768,49 @@ l2fwd_main_loop(struct l2fwd_crypto_options *options)
 
 			port_statistics[portid].rx += nb_rx;
 
-			/* Enqueue packets from Crypto device*/
-			for (j = 0; j < nb_rx; j++) {
-				m = pkts_burst[j];
-				ol = rte_pktmbuf_offload_alloc(
-						l2fwd_mbuf_ol_pool,
-						RTE_PKTMBUF_OL_CRYPTO);
+			if (nb_rx) {
 				/*
-				 * If we can't allocate a offload, then drop
+				 * If we can't allocate a crypto_ops, then drop
 				 * the rest of the burst and dequeue and
 				 * process the packets to free offload structs
 				 */
-				if (unlikely(ol == NULL)) {
-					for (; j < nb_rx; j++) {
-						rte_pktmbuf_free(pkts_burst[j]);
-						port_statistics[portid].dropped++;
-					}
-					break;
+				if (rte_crypto_op_bulk_alloc(
+						l2fwd_crypto_op_pool,
+						RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+						ops_burst, nb_rx) !=
+								nb_rx) {
+					for (j = 0; j < nb_rx; j++)
+						rte_pktmbuf_free(pkts_burst[i]);
+
+					nb_rx = 0;
 				}
 
-				rte_prefetch0(rte_pktmbuf_mtod(m, void *));
-				rte_prefetch0((void *)ol);
+				/* Enqueue packets from Crypto device*/
+				for (j = 0; j < nb_rx; j++) {
+					m = pkts_burst[j];
 
-				l2fwd_simple_crypto_enqueue(m, ol, cparams);
+					l2fwd_simple_crypto_enqueue(m,
+							ops_burst[j], cparams);
+				}
 			}
 
 			/* Dequeue packets from Crypto device */
-			nb_rx = rte_cryptodev_dequeue_burst(
-					cparams->dev_id, cparams->qp_id,
-					pkts_burst, MAX_PKT_BURST);
-			crypto_statistics[cparams->dev_id].dequeued += nb_rx;
+			do {
+				nb_rx = rte_cryptodev_dequeue_burst(
+						cparams->dev_id, cparams->qp_id,
+						ops_burst, MAX_PKT_BURST);
 
-			/* Forward crypto'd packets */
-			for (j = 0; j < nb_rx; j++) {
-				m = pkts_burst[j];
-				rte_pktmbuf_offload_free(m->offload_ops);
-				rte_prefetch0(rte_pktmbuf_mtod(m, void *));
-				l2fwd_simple_forward(m, portid);
-			}
+				crypto_statistics[cparams->dev_id].dequeued +=
+						nb_rx;
+
+				/* Forward crypto'd packets */
+				for (j = 0; j < nb_rx; j++) {
+					m = ops_burst[j]->sym->m_src;
+
+					rte_crypto_op_free(ops_burst[j]);
+					l2fwd_simple_forward(m, portid);
+				}
+			} while (nb_rx == MAX_PKT_BURST);
 		}
 	}
 }
@@ -653,23 +826,30 @@ l2fwd_launch_one_lcore(void *arg)
 static void
 l2fwd_crypto_usage(const char *prgname)
 {
-	printf("%s [EAL options] -- --cdev TYPE [optional parameters]\n"
+	printf("%s [EAL options] --\n"
 		"  -p PORTMASK: hexadecimal bitmask of ports to configure\n"
 		"  -q NQ: number of queue (=ports) per lcore (default is 1)\n"
-		"  -s manage all ports from single lcore"
-		"  -t PERIOD: statistics will be refreshed each PERIOD seconds"
+		"  -s manage all ports from single lcore\n"
+		"  -T PERIOD: statistics will be refreshed each PERIOD seconds"
 		" (0 to disable, 10 default, 86400 maximum)\n"
 
-		"  --cdev AESNI_MB / QAT\n"
+		"  --cdev_type HW / SW / ANY\n"
 		"  --chain HASH_CIPHER / CIPHER_HASH\n"
 
 		"  --cipher_algo ALGO\n"
 		"  --cipher_op ENCRYPT / DECRYPT\n"
-		"  --cipher_key KEY\n"
+		"  --cipher_key KEY (bytes separated with \":\")\n"
+		"  --cipher_key_random_size SIZE: size of cipher key when generated randomly\n"
+		"  --iv IV (bytes separated with \":\")\n"
+		"  --iv_random_size SIZE: size of IV when generated randomly\n"
 
-		"  --auth ALGO\n"
+		"  --auth_algo ALGO\n"
 		"  --auth_op GENERATE / VERIFY\n"
-		"  --auth_key KEY\n"
+		"  --auth_key KEY (bytes separated with \":\")\n"
+		"  --auth_key_random_size SIZE: size of auth key when generated randomly\n"
+		"  --aad AAD (bytes separated with \":\")\n"
+		"  --aad_random_size SIZE: size of AAD when generated randomly\n"
+		"  --digest_size SIZE: size of digest to be generated/verified\n"
 
 		"  --sessionless\n",
 	       prgname);
@@ -677,13 +857,16 @@ l2fwd_crypto_usage(const char *prgname)
 
 /** Parse crypto device type command line argument */
 static int
-parse_cryptodev_type(enum rte_cryptodev_type *type, char *optarg)
+parse_cryptodev_type(enum cdev_type *type, char *optarg)
 {
-	if (strcmp("AESNI_MB", optarg) == 0) {
-		*type = RTE_CRYPTODEV_AESNI_MB_PMD;
+	if (strcmp("HW", optarg) == 0) {
+		*type = CDEV_TYPE_HW;
 		return 0;
-	} else if (strcmp("QAT", optarg) == 0) {
-		*type = RTE_CRYPTODEV_QAT_PMD;
+	} else if (strcmp("SW", optarg) == 0) {
+		*type = CDEV_TYPE_SW;
+		return 0;
+	} else if (strcmp("ANY", optarg) == 0) {
+		*type = CDEV_TYPE_ANY;
 		return 0;
 	}
 
@@ -700,6 +883,12 @@ parse_crypto_opt_chain(struct l2fwd_crypto_options *options, char *optarg)
 	} else if (strcmp("HASH_CIPHER", optarg) == 0) {
 		options->xform_chain = L2FWD_CRYPTO_HASH_CIPHER;
 		return 0;
+	} else if (strcmp("CIPHER_ONLY", optarg) == 0) {
+		options->xform_chain = L2FWD_CRYPTO_CIPHER_ONLY;
+		return 0;
+	} else if (strcmp("HASH_ONLY", optarg) == 0) {
+		options->xform_chain = L2FWD_CRYPTO_HASH_ONLY;
+		return 0;
 	}
 
 	return -1;
@@ -709,12 +898,13 @@ parse_crypto_opt_chain(struct l2fwd_crypto_options *options, char *optarg)
 static int
 parse_cipher_algo(enum rte_crypto_cipher_algorithm *algo, char *optarg)
 {
-	if (strcmp("AES_CBC", optarg) == 0) {
-		*algo = RTE_CRYPTO_CIPHER_AES_CBC;
-		return 0;
-	} else if (strcmp("AES_GCM", optarg) == 0) {
-		*algo = RTE_CRYPTO_CIPHER_AES_GCM;
-		return 0;
+	unsigned i;
+
+	for (i = 0; i < RTE_CRYPTO_CIPHER_LIST_END; i++) {
+		if (!strcmp(supported_cipher_algo[i], optarg)) {
+			*algo = (enum rte_crypto_cipher_algorithm)i;
+			return 0;
+		}
 	}
 
 	printf("Cipher algorithm  not supported!\n");
@@ -739,41 +929,58 @@ parse_cipher_op(enum rte_crypto_cipher_operation *op, char *optarg)
 
 /** Parse crypto key command line argument */
 static int
-parse_key(struct rte_crypto_key *key __rte_unused,
-		unsigned length __rte_unused, char *arg __rte_unused)
+parse_key(uint8_t *data, char *input_arg)
 {
-	printf("Currently an unsupported argument!\n");
-	return -1;
+	unsigned byte_count;
+	char *token;
+
+	for (byte_count = 0, token = strtok(input_arg, ":");
+			(byte_count < MAX_KEY_SIZE) && (token != NULL);
+			token = strtok(NULL, ":")) {
+
+		int number = (int)strtol(token, NULL, 16);
+
+		if (errno == EINVAL || errno == ERANGE || number > 0xFF)
+			return -1;
+
+		data[byte_count++] = (uint8_t)number;
+	}
+
+	return byte_count;
+}
+
+/** Parse size param*/
+static int
+parse_size(int *size, const char *q_arg)
+{
+	char *end = NULL;
+	unsigned long n;
+
+	/* parse hexadecimal string */
+	n = strtoul(q_arg, &end, 10);
+	if ((q_arg[0] == '\0') || (end == NULL) || (*end != '\0'))
+		n = 0;
+
+	if (n == 0) {
+		printf("invalid size\n");
+		return -1;
+	}
+
+	*size = n;
+	return 0;
 }
 
 /** Parse crypto cipher operation command line argument */
 static int
 parse_auth_algo(enum rte_crypto_auth_algorithm *algo, char *optarg)
 {
-	if (strcmp("SHA1", optarg) == 0) {
-		*algo = RTE_CRYPTO_AUTH_SHA1;
-		return 0;
-	} else if (strcmp("SHA1_HMAC", optarg) == 0) {
-		*algo = RTE_CRYPTO_AUTH_SHA1_HMAC;
-		return 0;
-	} else if (strcmp("SHA224", optarg) == 0) {
-		*algo = RTE_CRYPTO_AUTH_SHA224;
-		return 0;
-	} else if (strcmp("SHA224_HMAC", optarg) == 0) {
-		*algo = RTE_CRYPTO_AUTH_SHA224_HMAC;
-		return 0;
-	} else if (strcmp("SHA256", optarg) == 0) {
-		*algo = RTE_CRYPTO_AUTH_SHA256;
-		return 0;
-	} else if (strcmp("SHA256_HMAC", optarg) == 0) {
-		*algo = RTE_CRYPTO_AUTH_SHA256_HMAC;
-		return 0;
-	} else if (strcmp("SHA512", optarg) == 0) {
-		*algo = RTE_CRYPTO_AUTH_SHA256;
-		return 0;
-	} else if (strcmp("SHA512_HMAC", optarg) == 0) {
-		*algo = RTE_CRYPTO_AUTH_SHA256_HMAC;
-		return 0;
+	unsigned i;
+
+	for (i = 0; i < RTE_CRYPTO_AUTH_LIST_END; i++) {
+		if (!strcmp(supported_auth_algo[i], optarg)) {
+			*algo = (enum rte_crypto_auth_algorithm)i;
+			return 0;
+		}
 	}
 
 	printf("Authentication algorithm specified not supported!\n");
@@ -787,7 +994,7 @@ parse_auth_op(enum rte_crypto_auth_operation *op, char *optarg)
 		*op = RTE_CRYPTO_AUTH_OP_VERIFY;
 		return 0;
 	} else if (strcmp("GENERATE", optarg) == 0) {
-		*op = RTE_CRYPTO_AUTH_OP_VERIFY;
+		*op = RTE_CRYPTO_AUTH_OP_GENERATE;
 		return 0;
 	}
 
@@ -800,8 +1007,15 @@ static int
 l2fwd_crypto_parse_args_long_options(struct l2fwd_crypto_options *options,
 		struct option *lgopts, int option_index)
 {
-	if (strcmp(lgopts[option_index].name, "cdev_type") == 0)
-		return parse_cryptodev_type(&options->cdev_type, optarg);
+	int retval;
+
+	if (strcmp(lgopts[option_index].name, "cdev_type") == 0) {
+		retval = parse_cryptodev_type(&options->type, optarg);
+		if (retval == 0)
+			snprintf(options->string_type, MAX_STR_LEN,
+				"%s", optarg);
+		return retval;
+	}
 
 	else if (strcmp(lgopts[option_index].name, "chain") == 0)
 		return parse_crypto_opt_chain(options, optarg);
@@ -815,26 +1029,73 @@ l2fwd_crypto_parse_args_long_options(struct l2fwd_crypto_options *options,
 		return parse_cipher_op(&options->cipher_xform.cipher.op,
 				optarg);
 
-	else if (strcmp(lgopts[option_index].name, "cipher_key") == 0)
-		return parse_key(&options->cipher_xform.cipher.key,
-				sizeof(options->ckey_data), optarg);
+	else if (strcmp(lgopts[option_index].name, "cipher_key") == 0) {
+		options->ckey_param = 1;
+		options->cipher_xform.cipher.key.length =
+			parse_key(options->cipher_xform.cipher.key.data, optarg);
+		if (options->cipher_xform.cipher.key.length > 0)
+			return 0;
+		else
+			return -1;
+	}
 
-	else if (strcmp(lgopts[option_index].name, "iv") == 0)
-		return parse_key(&options->iv_key, sizeof(options->ivkey_data),
-				optarg);
+	else if (strcmp(lgopts[option_index].name, "cipher_key_random_size") == 0)
+		return parse_size(&options->ckey_random_size, optarg);
+
+	else if (strcmp(lgopts[option_index].name, "iv") == 0) {
+		options->iv_param = 1;
+		options->iv.length =
+			parse_key(options->iv.data, optarg);
+		if (options->iv.length > 0)
+			return 0;
+		else
+			return -1;
+	}
+
+	else if (strcmp(lgopts[option_index].name, "iv_random_size") == 0)
+		return parse_size(&options->iv_random_size, optarg);
 
 	/* Authentication options */
-	else if (strcmp(lgopts[option_index].name, "auth_algo") == 0)
-		return parse_auth_algo(&options->cipher_xform.auth.algo,
+	else if (strcmp(lgopts[option_index].name, "auth_algo") == 0) {
+		return parse_auth_algo(&options->auth_xform.auth.algo,
 				optarg);
+	}
 
 	else if (strcmp(lgopts[option_index].name, "auth_op") == 0)
-		return parse_auth_op(&options->cipher_xform.auth.op,
+		return parse_auth_op(&options->auth_xform.auth.op,
 				optarg);
 
-	else if (strcmp(lgopts[option_index].name, "auth_key") == 0)
-		return parse_key(&options->auth_xform.auth.key,
-				sizeof(options->akey_data), optarg);
+	else if (strcmp(lgopts[option_index].name, "auth_key") == 0) {
+		options->akey_param = 1;
+		options->auth_xform.auth.key.length =
+			parse_key(options->auth_xform.auth.key.data, optarg);
+		if (options->auth_xform.auth.key.length > 0)
+			return 0;
+		else
+			return -1;
+	}
+
+	else if (strcmp(lgopts[option_index].name, "auth_key_random_size") == 0) {
+		return parse_size(&options->akey_random_size, optarg);
+	}
+
+	else if (strcmp(lgopts[option_index].name, "aad") == 0) {
+		options->aad_param = 1;
+		options->aad.length =
+			parse_key(options->aad.data, optarg);
+		if (options->aad.length > 0)
+			return 0;
+		else
+			return -1;
+	}
+
+	else if (strcmp(lgopts[option_index].name, "aad_random_size") == 0) {
+		return parse_size(&options->aad_random_size, optarg);
+	}
+
+	else if (strcmp(lgopts[option_index].name, "digest_size") == 0) {
+		return parse_size(&options->digest_size, optarg);
+	}
 
 	else if (strcmp(lgopts[option_index].name, "sessionless") == 0) {
 		options->sessionless = 1;
@@ -896,16 +1157,16 @@ l2fwd_crypto_parse_timer_period(struct l2fwd_crypto_options *options,
 		const char *q_arg)
 {
 	char *end = NULL;
-	long int n;
+	unsigned long n;
 
 	/* parse number string */
-	n = strtol(q_arg, &end, 10);
+	n = (unsigned)strtol(q_arg, &end, 10);
 	if ((q_arg[0] == '\0') || (end == NULL) || (*end != '\0'))
 		n = 0;
 
 	if (n >= MAX_TIMER_PERIOD) {
-		printf("Warning refresh period specified %ld is greater than "
-				"max value %d! using max value",
+		printf("Warning refresh period specified %lu is greater than "
+				"max value %lu! using max value",
 				n, MAX_TIMER_PERIOD);
 		n = MAX_TIMER_PERIOD;
 	}
@@ -925,45 +1186,80 @@ l2fwd_crypto_default_options(struct l2fwd_crypto_options *options)
 	options->nb_ports_per_lcore = 1;
 	options->refresh_period = 10000;
 	options->single_lcore = 0;
-
-	options->cdev_type = RTE_CRYPTODEV_AESNI_MB_PMD;
 	options->sessionless = 0;
+
 	options->xform_chain = L2FWD_CRYPTO_CIPHER_HASH;
 
 	/* Cipher Data */
-	options->cipher_xform.type = RTE_CRYPTO_XFORM_CIPHER;
+	options->cipher_xform.type = RTE_CRYPTO_SYM_XFORM_CIPHER;
 	options->cipher_xform.next = NULL;
+	options->ckey_param = 0;
+	options->ckey_random_size = -1;
+	options->cipher_xform.cipher.key.length = 0;
+	options->iv_param = 0;
+	options->iv_random_size = -1;
+	options->iv.length = 0;
 
 	options->cipher_xform.cipher.algo = RTE_CRYPTO_CIPHER_AES_CBC;
 	options->cipher_xform.cipher.op = RTE_CRYPTO_CIPHER_OP_ENCRYPT;
 
-	generate_random_key(options->ckey_data, sizeof(options->ckey_data));
-
-	options->cipher_xform.cipher.key.data = options->ckey_data;
-	options->cipher_xform.cipher.key.phys_addr = 0;
-	options->cipher_xform.cipher.key.length = 16;
-
-
 	/* Authentication Data */
-	options->auth_xform.type = RTE_CRYPTO_XFORM_AUTH;
+	options->auth_xform.type = RTE_CRYPTO_SYM_XFORM_AUTH;
 	options->auth_xform.next = NULL;
+	options->akey_param = 0;
+	options->akey_random_size = -1;
+	options->auth_xform.auth.key.length = 0;
+	options->aad_param = 0;
+	options->aad_random_size = -1;
+	options->aad.length = 0;
+	options->digest_size = -1;
 
 	options->auth_xform.auth.algo = RTE_CRYPTO_AUTH_SHA1_HMAC;
-	options->auth_xform.auth.op = RTE_CRYPTO_AUTH_OP_VERIFY;
+	options->auth_xform.auth.op = RTE_CRYPTO_AUTH_OP_GENERATE;
 
-	options->auth_xform.auth.add_auth_data_length = 0;
-	options->auth_xform.auth.digest_length = 20;
+	options->type = CDEV_TYPE_ANY;
+}
 
-	generate_random_key(options->akey_data, sizeof(options->akey_data));
+static void
+display_cipher_info(struct l2fwd_crypto_options *options)
+{
+	printf("\n---- Cipher information ---\n");
+	printf("Algorithm: %s\n",
+		supported_cipher_algo[options->cipher_xform.cipher.algo]);
+	rte_hexdump(stdout, "Cipher key:",
+			options->cipher_xform.cipher.key.data,
+			options->cipher_xform.cipher.key.length);
+	rte_hexdump(stdout, "IV:", options->iv.data, options->iv.length);
+}
 
-	options->auth_xform.auth.key.data = options->akey_data;
-	options->auth_xform.auth.key.phys_addr = 0;
-	options->auth_xform.auth.key.length = 20;
+static void
+display_auth_info(struct l2fwd_crypto_options *options)
+{
+	printf("\n---- Authentication information ---\n");
+	printf("Algorithm: %s\n",
+		supported_auth_algo[options->auth_xform.auth.algo]);
+	rte_hexdump(stdout, "Auth key:",
+			options->auth_xform.auth.key.data,
+			options->auth_xform.auth.key.length);
+	rte_hexdump(stdout, "AAD:", options->aad.data, options->aad.length);
 }
 
 static void
 l2fwd_crypto_options_print(struct l2fwd_crypto_options *options)
 {
+	char string_cipher_op[MAX_STR_LEN];
+	char string_auth_op[MAX_STR_LEN];
+
+	if (options->cipher_xform.cipher.op == RTE_CRYPTO_CIPHER_OP_ENCRYPT)
+		strcpy(string_cipher_op, "Encrypt");
+	else
+		strcpy(string_cipher_op, "Decrypt");
+
+	if (options->auth_xform.auth.op == RTE_CRYPTO_AUTH_OP_GENERATE)
+		strcpy(string_auth_op, "Auth generate");
+	else
+		strcpy(string_auth_op, "Auth verify");
+
 	printf("Options:-\nn");
 	printf("portmask: %x\n", options->portmask);
 	printf("ports per lcore: %u\n", options->nb_ports_per_lcore);
@@ -973,50 +1269,44 @@ l2fwd_crypto_options_print(struct l2fwd_crypto_options *options)
 	printf("stats_printing: %s\n",
 			options->refresh_period == 0 ? "disabled" : "enabled");
 
-	switch (options->cdev_type) {
-	case RTE_CRYPTODEV_AESNI_MB_PMD:
-		printf("crytpodev type: AES-NI MB PMD\n"); break;
-	case RTE_CRYPTODEV_QAT_PMD:
-		printf("crytpodev type: QAT PMD\n"); break;
-	default:
-		break;
-	}
-
 	printf("sessionless crypto: %s\n",
 			options->sessionless ? "enabled" : "disabled");
-#if 0
-	options->xform_chain = L2FWD_CRYPTO_CIPHER_HASH;
 
-	/* Cipher Data */
-	options->cipher_xform.type = RTE_CRYPTO_XFORM_CIPHER;
-	options->cipher_xform.next = NULL;
+	if (options->ckey_param && (options->ckey_random_size != -1))
+		printf("Cipher key already parsed, ignoring size of random key\n");
 
-	options->cipher_xform.cipher.algo = RTE_CRYPTO_CIPHER_AES_CBC;
-	options->cipher_xform.cipher.op = RTE_CRYPTO_CIPHER_OP_ENCRYPT;
+	if (options->akey_param && (options->akey_random_size != -1))
+		printf("Auth key already parsed, ignoring size of random key\n");
 
-	generate_random_key(options->ckey_data, sizeof(options->ckey_data));
+	if (options->iv_param && (options->iv_random_size != -1))
+		printf("IV already parsed, ignoring size of random IV\n");
 
-	options->cipher_xform.cipher.key.data = options->ckey_data;
-	options->cipher_xform.cipher.key.phys_addr = 0;
-	options->cipher_xform.cipher.key.length = 16;
+	if (options->aad_param && (options->aad_random_size != -1))
+		printf("AAD already parsed, ignoring size of random AAD\n");
 
-
-	/* Authentication Data */
-	options->auth_xform.type = RTE_CRYPTO_XFORM_AUTH;
-	options->auth_xform.next = NULL;
-
-	options->auth_xform.auth.algo = RTE_CRYPTO_AUTH_SHA1_HMAC;
-	options->auth_xform.auth.op = RTE_CRYPTO_AUTH_OP_VERIFY;
-
-	options->auth_xform.auth.add_auth_data_length = 0;
-	options->auth_xform.auth.digest_length = 20;
-
-	generate_random_key(options->akey_data, sizeof(options->akey_data));
-
-	options->auth_xform.auth.key.data = options->akey_data;
-	options->auth_xform.auth.key.phys_addr = 0;
-	options->auth_xform.auth.key.length = 20;
-#endif
+	printf("\nCrypto chain: ");
+	switch (options->xform_chain) {
+	case L2FWD_CRYPTO_CIPHER_HASH:
+		printf("Input --> %s --> %s --> Output\n",
+			string_cipher_op, string_auth_op);
+		display_cipher_info(options);
+		display_auth_info(options);
+		break;
+	case L2FWD_CRYPTO_HASH_CIPHER:
+		printf("Input --> %s --> %s --> Output\n",
+			string_auth_op, string_cipher_op);
+		display_cipher_info(options);
+		display_auth_info(options);
+		break;
+	case L2FWD_CRYPTO_HASH_ONLY:
+		printf("Input --> %s --> Output\n", string_auth_op);
+		display_auth_info(options);
+		break;
+	case L2FWD_CRYPTO_CIPHER_ONLY:
+		printf("Input --> %s --> Output\n", string_cipher_op);
+		display_cipher_info(options);
+		break;
+	}
 }
 
 /* Parse the argument given in the command line of the application */
@@ -1036,14 +1326,21 @@ l2fwd_crypto_parse_args(struct l2fwd_crypto_options *options,
 			{ "cipher_algo", required_argument, 0, 0 },
 			{ "cipher_op", required_argument, 0, 0 },
 			{ "cipher_key", required_argument, 0, 0 },
+			{ "cipher_key_random_size", required_argument, 0, 0 },
 
 			{ "auth_algo", required_argument, 0, 0 },
 			{ "auth_op", required_argument, 0, 0 },
 			{ "auth_key", required_argument, 0, 0 },
+			{ "auth_key_random_size", required_argument, 0, 0 },
 
 			{ "iv", required_argument, 0, 0 },
+			{ "iv_random_size", required_argument, 0, 0 },
+			{ "aad", required_argument, 0, 0 },
+			{ "aad_random_size", required_argument, 0, 0 },
+			{ "digest_size", required_argument, 0, 0 },
 
 			{ "sessionless", no_argument, 0, 0 },
+
 			{ NULL, 0, 0, 0 }
 	};
 
@@ -1087,7 +1384,7 @@ l2fwd_crypto_parse_args(struct l2fwd_crypto_options *options,
 			break;
 
 		/* timer period */
-		case 't':
+		case 'T':
 			retval = l2fwd_crypto_parse_timer_period(options,
 					optarg);
 			if (retval < 0) {
@@ -1144,7 +1441,7 @@ check_all_ports_link_status(uint8_t port_num, uint32_t port_mask)
 				continue;
 			}
 			/* clear all_ports_up flag if any link down */
-			if (link.link_status == 0) {
+			if (link.link_status == ETH_LINK_DOWN) {
 				all_ports_up = 0;
 				break;
 			}
@@ -1167,27 +1464,54 @@ check_all_ports_link_status(uint8_t port_num, uint32_t port_mask)
 	}
 }
 
+/* Check if device has to be HW/SW or any */
 static int
-initialize_cryptodevs(struct l2fwd_crypto_options *options, unsigned nb_ports)
+check_type(struct l2fwd_crypto_options *options, struct rte_cryptodev_info *dev_info)
 {
-	unsigned i, cdev_id, cdev_count, enabled_cdev_count = 0;
-	int retval;
+	if (options->type == CDEV_TYPE_HW &&
+			(dev_info->feature_flags & RTE_CRYPTODEV_FF_HW_ACCELERATED))
+		return 0;
+	if (options->type == CDEV_TYPE_SW &&
+			!(dev_info->feature_flags & RTE_CRYPTODEV_FF_HW_ACCELERATED))
+		return 0;
+	if (options->type == CDEV_TYPE_ANY)
+		return 0;
 
-	if (options->cdev_type == RTE_CRYPTODEV_QAT_PMD) {
-		if (rte_cryptodev_count() < nb_ports)
-			return -1;
-	} else if (options->cdev_type == RTE_CRYPTODEV_AESNI_MB_PMD) {
-		for (i = 0; i < nb_ports; i++) {
-			int id = rte_eal_vdev_init(CRYPTODEV_NAME_AESNI_MB_PMD,
-					NULL);
-			if (id < 0)
-				return -1;
-		}
+	return -1;
+}
+
+static inline int
+check_supported_size(uint16_t length, uint16_t min, uint16_t max,
+		uint16_t increment)
+{
+	uint16_t supp_size;
+
+	for (supp_size = min; supp_size <= max; supp_size += increment) {
+		if (length == supp_size)
+			return 0;
 	}
 
+	return -1;
+}
+static int
+initialize_cryptodevs(struct l2fwd_crypto_options *options, unsigned nb_ports,
+		uint8_t *enabled_cdevs)
+{
+	unsigned i, cdev_id, cdev_count, enabled_cdev_count = 0;
+	const struct rte_cryptodev_capabilities *cap;
+	enum rte_crypto_auth_algorithm cap_auth_algo;
+	enum rte_crypto_auth_algorithm opt_auth_algo;
+	enum rte_crypto_cipher_algorithm cap_cipher_algo;
+	enum rte_crypto_cipher_algorithm opt_cipher_algo;
+	int retval;
+
 	cdev_count = rte_cryptodev_count();
-	for (cdev_id = 0;
-			cdev_id < cdev_count && enabled_cdev_count < nb_ports;
+	if (cdev_count == 0) {
+		printf("No crypto devices available\n");
+		return -1;
+	}
+
+	for (cdev_id = 0; cdev_id < cdev_count && enabled_cdev_count < nb_ports;
 			cdev_id++) {
 		struct rte_cryptodev_qp_conf qp_conf;
 		struct rte_cryptodev_info dev_info;
@@ -1203,9 +1527,226 @@ initialize_cryptodevs(struct l2fwd_crypto_options *options, unsigned nb_ports)
 
 		rte_cryptodev_info_get(cdev_id, &dev_info);
 
-		if (dev_info.dev_type != options->cdev_type)
-			continue;
+		/* Set cipher parameters */
+		if (options->xform_chain == L2FWD_CRYPTO_CIPHER_HASH ||
+				options->xform_chain == L2FWD_CRYPTO_HASH_CIPHER ||
+				options->xform_chain == L2FWD_CRYPTO_CIPHER_ONLY) {
+			/* Check if device supports cipher algo */
+			i = 0;
+			opt_cipher_algo = options->cipher_xform.cipher.algo;
+			cap = &dev_info.capabilities[i];
+			while (cap->op != RTE_CRYPTO_OP_TYPE_UNDEFINED) {
+				cap_cipher_algo = cap->sym.cipher.algo;
+				if (cap->sym.xform_type ==
+						RTE_CRYPTO_SYM_XFORM_CIPHER) {
+					if (cap_cipher_algo == opt_cipher_algo) {
+						if (check_type(options, &dev_info) == 0)
+							break;
+					}
+				}
+				cap = &dev_info.capabilities[++i];
+			}
 
+			if (cap->op == RTE_CRYPTO_OP_TYPE_UNDEFINED) {
+				printf("Algorithm %s not supported by cryptodev %u"
+					" or device not of preferred type (%s)\n",
+					supported_cipher_algo[opt_cipher_algo],
+					cdev_id,
+					options->string_type);
+				continue;
+			}
+
+			options->block_size = cap->sym.cipher.block_size;
+			/*
+			 * Check if length of provided IV is supported
+			 * by the algorithm chosen.
+			 */
+			if (options->iv_param) {
+				if (check_supported_size(options->iv.length,
+						cap->sym.cipher.iv_size.min,
+						cap->sym.cipher.iv_size.max,
+						cap->sym.cipher.iv_size.increment)
+							!= 0) {
+					printf("Unsupported IV length\n");
+					return -1;
+				}
+			/*
+			 * Check if length of IV to be randomly generated
+			 * is supported by the algorithm chosen.
+			 */
+			} else if (options->iv_random_size != -1) {
+				if (check_supported_size(options->iv_random_size,
+						cap->sym.cipher.iv_size.min,
+						cap->sym.cipher.iv_size.max,
+						cap->sym.cipher.iv_size.increment)
+							!= 0) {
+					printf("Unsupported IV length\n");
+					return -1;
+				}
+				options->iv.length = options->iv_random_size;
+			/* No size provided, use minimum size. */
+			} else
+				options->iv.length = cap->sym.cipher.iv_size.min;
+
+			/*
+			 * Check if length of provided cipher key is supported
+			 * by the algorithm chosen.
+			 */
+			if (options->ckey_param) {
+				if (check_supported_size(
+						options->cipher_xform.cipher.key.length,
+						cap->sym.cipher.key_size.min,
+						cap->sym.cipher.key_size.max,
+						cap->sym.cipher.key_size.increment)
+							!= 0) {
+					printf("Unsupported cipher key length\n");
+					return -1;
+				}
+			/*
+			 * Check if length of the cipher key to be randomly generated
+			 * is supported by the algorithm chosen.
+			 */
+			} else if (options->ckey_random_size != -1) {
+				if (check_supported_size(options->ckey_random_size,
+						cap->sym.cipher.key_size.min,
+						cap->sym.cipher.key_size.max,
+						cap->sym.cipher.key_size.increment)
+							!= 0) {
+					printf("Unsupported cipher key length\n");
+					return -1;
+				}
+				options->cipher_xform.cipher.key.length =
+							options->ckey_random_size;
+			/* No size provided, use minimum size. */
+			} else
+				options->cipher_xform.cipher.key.length =
+						cap->sym.cipher.key_size.min;
+
+			if (!options->ckey_param)
+				generate_random_key(
+					options->cipher_xform.cipher.key.data,
+					options->cipher_xform.cipher.key.length);
+
+		}
+
+		/* Set auth parameters */
+		if (options->xform_chain == L2FWD_CRYPTO_CIPHER_HASH ||
+				options->xform_chain == L2FWD_CRYPTO_HASH_CIPHER ||
+				options->xform_chain == L2FWD_CRYPTO_HASH_ONLY) {
+			/* Check if device supports auth algo */
+			i = 0;
+			opt_auth_algo = options->auth_xform.auth.algo;
+			cap = &dev_info.capabilities[i];
+			while (cap->op != RTE_CRYPTO_OP_TYPE_UNDEFINED) {
+				cap_auth_algo = cap->sym.auth.algo;
+				if ((cap->sym.xform_type == RTE_CRYPTO_SYM_XFORM_AUTH) &&
+						(cap_auth_algo == opt_auth_algo) &&
+						(check_type(options, &dev_info) == 0)) {
+					break;
+				}
+				cap = &dev_info.capabilities[++i];
+			}
+
+			if (cap->op == RTE_CRYPTO_OP_TYPE_UNDEFINED) {
+				printf("Algorithm %s not supported by cryptodev %u"
+					" or device not of preferred type (%s)\n",
+					supported_auth_algo[opt_auth_algo],
+					cdev_id,
+					options->string_type);
+				continue;
+			}
+
+			options->block_size = cap->sym.auth.block_size;
+			/*
+			 * Check if length of provided AAD is supported
+			 * by the algorithm chosen.
+			 */
+			if (options->aad_param) {
+				if (check_supported_size(options->aad.length,
+						cap->sym.auth.aad_size.min,
+						cap->sym.auth.aad_size.max,
+						cap->sym.auth.aad_size.increment)
+							!= 0) {
+					printf("Unsupported AAD length\n");
+					return -1;
+				}
+			/*
+			 * Check if length of AAD to be randomly generated
+			 * is supported by the algorithm chosen.
+			 */
+			} else if (options->aad_random_size != -1) {
+				if (check_supported_size(options->aad_random_size,
+						cap->sym.auth.aad_size.min,
+						cap->sym.auth.aad_size.max,
+						cap->sym.auth.aad_size.increment)
+							!= 0) {
+					printf("Unsupported AAD length\n");
+					return -1;
+				}
+				options->aad.length = options->aad_random_size;
+			/* No size provided, use minimum size. */
+			} else
+				options->aad.length = cap->sym.auth.aad_size.min;
+
+			options->auth_xform.auth.add_auth_data_length =
+						options->aad.length;
+
+			/*
+			 * Check if length of provided auth key is supported
+			 * by the algorithm chosen.
+			 */
+			if (options->akey_param) {
+				if (check_supported_size(
+						options->auth_xform.auth.key.length,
+						cap->sym.auth.key_size.min,
+						cap->sym.auth.key_size.max,
+						cap->sym.auth.key_size.increment)
+							!= 0) {
+					printf("Unsupported auth key length\n");
+					return -1;
+				}
+			/*
+			 * Check if length of the auth key to be randomly generated
+			 * is supported by the algorithm chosen.
+			 */
+			} else if (options->akey_random_size != -1) {
+				if (check_supported_size(options->akey_random_size,
+						cap->sym.auth.key_size.min,
+						cap->sym.auth.key_size.max,
+						cap->sym.auth.key_size.increment)
+							!= 0) {
+					printf("Unsupported auth key length\n");
+					return -1;
+				}
+				options->auth_xform.auth.key.length =
+							options->akey_random_size;
+			/* No size provided, use minimum size. */
+			} else
+				options->auth_xform.auth.key.length =
+						cap->sym.auth.key_size.min;
+
+			if (!options->akey_param)
+				generate_random_key(
+					options->auth_xform.auth.key.data,
+					options->auth_xform.auth.key.length);
+
+			/* Check if digest size is supported by the algorithm. */
+			if (options->digest_size != -1) {
+				if (check_supported_size(options->digest_size,
+						cap->sym.auth.digest_size.min,
+						cap->sym.auth.digest_size.max,
+						cap->sym.auth.digest_size.increment)
+							!= 0) {
+					printf("Unsupported digest length\n");
+					return -1;
+				}
+				options->auth_xform.auth.digest_length =
+							options->digest_size;
+			/* No size provided, use minimum size. */
+			} else
+				options->auth_xform.auth.digest_length =
+						cap->sym.auth.digest_size.min;
+		}
 
 		retval = rte_cryptodev_configure(cdev_id, &conf);
 		if (retval < 0) {
@@ -1225,6 +1766,7 @@ initialize_cryptodevs(struct l2fwd_crypto_options *options, unsigned nb_ports)
 
 		l2fwd_enabled_crypto_mask |= (1 << cdev_id);
 
+		enabled_cdevs[cdev_id] = 1;
 		enabled_cdev_count++;
 	}
 
@@ -1242,9 +1784,6 @@ initialize_ports(struct l2fwd_crypto_options *options)
 		printf("No Ethernet ports - bye\n");
 		return -1;
 	}
-
-	if (nb_ports > RTE_MAX_ETHPORTS)
-		nb_ports = RTE_MAX_ETHPORTS;
 
 	/* Reset l2fwd_dst_ports */
 	for (portid = 0; portid < RTE_MAX_ETHPORTS; portid++)
@@ -1338,6 +1877,31 @@ initialize_ports(struct l2fwd_crypto_options *options)
 	return enabled_portcount;
 }
 
+static void
+reserve_key_memory(struct l2fwd_crypto_options *options)
+{
+	options->cipher_xform.cipher.key.data = rte_malloc("crypto key",
+						MAX_KEY_SIZE, 0);
+	if (options->cipher_xform.cipher.key.data == NULL)
+		rte_exit(EXIT_FAILURE, "Failed to allocate memory for cipher key");
+
+
+	options->auth_xform.auth.key.data = rte_malloc("auth key",
+						MAX_KEY_SIZE, 0);
+	if (options->auth_xform.auth.key.data == NULL)
+		rte_exit(EXIT_FAILURE, "Failed to allocate memory for auth key");
+
+	options->iv.data = rte_malloc("iv", MAX_KEY_SIZE, 0);
+	if (options->iv.data == NULL)
+		rte_exit(EXIT_FAILURE, "Failed to allocate memory for IV");
+	options->iv.phys_addr = rte_malloc_virt2phy(options->iv.data);
+
+	options->aad.data = rte_malloc("aad", MAX_KEY_SIZE, 0);
+	if (options->aad.data == NULL)
+		rte_exit(EXIT_FAILURE, "Failed to allocate memory for AAD");
+	options->aad.phys_addr = rte_malloc_virt2phy(options->aad.data);
+}
+
 int
 main(int argc, char **argv)
 {
@@ -1347,6 +1911,7 @@ main(int argc, char **argv)
 	uint8_t nb_ports, nb_cryptodevs, portid, cdev_id;
 	unsigned lcore_id, rx_lcore_id;
 	int ret, enabled_cdevcount, enabled_portcount;
+	uint8_t enabled_cdevs[RTE_CRYPTO_MAX_DEVS] = {0};
 
 	/* init EAL */
 	ret = rte_eal_init(argc, argv);
@@ -1355,21 +1920,29 @@ main(int argc, char **argv)
 	argc -= ret;
 	argv += ret;
 
+	/* reserve memory for Cipher/Auth key and IV */
+	reserve_key_memory(&options);
+
+	/* fill out the supported algorithm tables */
+	fill_supported_algorithm_tables();
+
 	/* parse application arguments (after the EAL ones) */
 	ret = l2fwd_crypto_parse_args(&options, argc, argv);
 	if (ret < 0)
 		rte_exit(EXIT_FAILURE, "Invalid L2FWD-CRYPTO arguments\n");
 
 	/* create the mbuf pool */
-	l2fwd_pktmbuf_pool = rte_pktmbuf_pool_create("mbuf_pool", NB_MBUF, 128,
-		0, RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
+	l2fwd_pktmbuf_pool = rte_pktmbuf_pool_create("mbuf_pool", NB_MBUF, 512,
+			sizeof(struct rte_crypto_op),
+			RTE_MBUF_DEFAULT_BUF_SIZE, rte_socket_id());
 	if (l2fwd_pktmbuf_pool == NULL)
 		rte_exit(EXIT_FAILURE, "Cannot create mbuf pool\n");
 
 	/* create crypto op pool */
-	l2fwd_mbuf_ol_pool = rte_pktmbuf_offload_pool_create(
-			"mbuf_offload_pool", NB_MBUF, 128, 0, rte_socket_id());
-	if (l2fwd_mbuf_ol_pool == NULL)
+	l2fwd_crypto_op_pool = rte_crypto_op_pool_create("crypto_op_pool",
+			RTE_CRYPTO_OP_TYPE_SYMMETRIC, NB_MBUF, 128, 0,
+			rte_socket_id());
+	if (l2fwd_crypto_op_pool == NULL)
 		rte_exit(EXIT_FAILURE, "Cannot create crypto op pool\n");
 
 	/* Enable Ethernet ports */
@@ -1415,23 +1988,25 @@ main(int argc, char **argv)
 		printf("Lcore %u: RX port %u\n", rx_lcore_id, (unsigned)portid);
 	}
 
-
 	/* Enable Crypto devices */
-	enabled_cdevcount = initialize_cryptodevs(&options, enabled_portcount);
-	if (enabled_cdevcount < 1)
-		rte_exit(EXIT_FAILURE, "Failed to initial crypto devices\n");
+	enabled_cdevcount = initialize_cryptodevs(&options, enabled_portcount,
+			enabled_cdevs);
+	if (enabled_cdevcount < 0)
+		rte_exit(EXIT_FAILURE, "Failed to initialize crypto devices\n");
+
+	if (enabled_cdevcount < enabled_portcount)
+		rte_exit(EXIT_FAILURE, "Number of capable crypto devices (%d) "
+				"has to be more or equal to number of ports (%d)\n",
+				enabled_cdevcount, enabled_portcount);
 
 	nb_cryptodevs = rte_cryptodev_count();
-	/* Initialize the port/queue configuration of each logical core */
+
+	/* Initialize the port/cryptodev configuration of each logical core */
 	for (rx_lcore_id = 0, qconf = NULL, cdev_id = 0;
 			cdev_id < nb_cryptodevs && enabled_cdevcount;
 			cdev_id++) {
-		struct rte_cryptodev_info info;
-
-		rte_cryptodev_info_get(cdev_id, &info);
-
-		/* skip devices of the wrong type */
-		if (options.cdev_type != info.dev_type)
+		/* Crypto op not supported by crypto device */
+		if (!enabled_cdevs[cdev_id])
 			continue;
 
 		if (options.single_lcore && qconf == NULL) {
@@ -1465,8 +2040,6 @@ main(int argc, char **argv)
 		printf("Lcore %u: cryptodev %u\n", rx_lcore_id,
 				(unsigned)cdev_id);
 	}
-
-
 
 	/* launch per-lcore init on every lcore */
 	rte_eal_mp_remote_launch(l2fwd_launch_one_lcore, (void *)&options,

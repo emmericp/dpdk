@@ -34,11 +34,11 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <unistd.h>
 #include <sys/mman.h>
 #include <sys/types.h>
 #include <sys/stat.h>
-#include <unistd.h>
 
 #include <rte_common.h>
 #include <rte_log.h>
@@ -85,6 +85,16 @@ free_mem_region(struct virtio_net *dev)
 					region[idx].mapped_size);
 			close(region[idx].fd);
 		}
+	}
+}
+
+void
+vhost_backend_cleanup(struct virtio_net *dev)
+{
+	if (dev->mem) {
+		free_mem_region(dev);
+		free(dev->mem);
+		dev->mem = NULL;
 	}
 }
 
@@ -215,8 +225,8 @@ static int
 vq_is_ready(struct vhost_virtqueue *vq)
 {
 	return vq && vq->desc   &&
-	       vq->kickfd != -1 &&
-	       vq->callfd != -1;
+	       vq->kickfd != VIRTIO_UNINITIALIZED_EVENTFD &&
+	       vq->callfd != VIRTIO_UNINITIALIZED_EVENTFD;
 }
 
 static int
@@ -248,12 +258,12 @@ user_set_vring_call(struct vhost_device_ctx ctx, struct VhostUserMsg *pmsg)
 
 	file.index = pmsg->payload.u64 & VHOST_USER_VRING_IDX_MASK;
 	if (pmsg->payload.u64 & VHOST_USER_VRING_NOFD_MASK)
-		file.fd = -1;
+		file.fd = VIRTIO_INVALID_EVENTFD;
 	else
 		file.fd = pmsg->fds[0];
 	RTE_LOG(INFO, VHOST_CONFIG,
 		"vring call idx:%d file:%d\n", file.index, file.fd);
-	ops->set_vring_call(ctx, &file);
+	vhost_set_vring_call(ctx, &file);
 }
 
 
@@ -269,12 +279,12 @@ user_set_vring_kick(struct vhost_device_ctx ctx, struct VhostUserMsg *pmsg)
 
 	file.index = pmsg->payload.u64 & VHOST_USER_VRING_IDX_MASK;
 	if (pmsg->payload.u64 & VHOST_USER_VRING_NOFD_MASK)
-		file.fd = -1;
+		file.fd = VIRTIO_INVALID_EVENTFD;
 	else
 		file.fd = pmsg->fds[0];
 	RTE_LOG(INFO, VHOST_CONFIG,
 		"vring kick idx:%d file:%d\n", file.index, file.fd);
-	ops->set_vring_kick(ctx, &file);
+	vhost_set_vring_kick(ctx, &file);
 
 	if (virtio_is_ready(dev) &&
 		!(dev->flags & VIRTIO_DEV_RUNNING))
@@ -297,7 +307,7 @@ user_get_vring_base(struct vhost_device_ctx ctx,
 		notify_ops->destroy_device(dev);
 
 	/* Here we are safe to get the last used index */
-	ops->get_vring_base(ctx, state->index, state);
+	vhost_get_vring_base(ctx, state->index, state);
 
 	RTE_LOG(INFO, VHOST_CONFIG,
 		"vring base idx:%d file:%d\n", state->index, state->num);
@@ -306,10 +316,10 @@ user_get_vring_base(struct vhost_device_ctx ctx,
 	 * sent and only sent in vhost_vring_stop.
 	 * TODO: cleanup the vring, it isn't usable since here.
 	 */
-	if (dev->virtqueue[state->index]->kickfd >= 0) {
+	if (dev->virtqueue[state->index]->kickfd >= 0)
 		close(dev->virtqueue[state->index]->kickfd);
-		dev->virtqueue[state->index]->kickfd = -1;
-	}
+
+	dev->virtqueue[state->index]->kickfd = VIRTIO_UNINITIALIZED_EVENTFD;
 
 	return 0;
 }
@@ -339,21 +349,6 @@ user_set_vring_enable(struct vhost_device_ctx ctx,
 }
 
 void
-user_destroy_device(struct vhost_device_ctx ctx)
-{
-	struct virtio_net *dev = get_device(ctx);
-
-	if (dev && (dev->flags & VIRTIO_DEV_RUNNING))
-		notify_ops->destroy_device(dev);
-
-	if (dev && dev->mem) {
-		free_mem_region(dev);
-		free(dev->mem);
-		dev->mem = NULL;
-	}
-}
-
-void
 user_set_protocol_features(struct vhost_device_ctx ctx,
 			   uint64_t protocol_features)
 {
@@ -364,4 +359,88 @@ user_set_protocol_features(struct vhost_device_ctx ctx,
 		return;
 
 	dev->protocol_features = protocol_features;
+}
+
+int
+user_set_log_base(struct vhost_device_ctx ctx,
+		 struct VhostUserMsg *msg)
+{
+	struct virtio_net *dev;
+	int fd = msg->fds[0];
+	uint64_t size, off;
+	void *addr;
+
+	dev = get_device(ctx);
+	if (!dev)
+		return -1;
+
+	if (fd < 0) {
+		RTE_LOG(ERR, VHOST_CONFIG, "invalid log fd: %d\n", fd);
+		return -1;
+	}
+
+	if (msg->size != sizeof(VhostUserLog)) {
+		RTE_LOG(ERR, VHOST_CONFIG,
+			"invalid log base msg size: %"PRId32" != %d\n",
+			msg->size, (int)sizeof(VhostUserLog));
+		return -1;
+	}
+
+	size = msg->payload.log.mmap_size;
+	off  = msg->payload.log.mmap_offset;
+	RTE_LOG(INFO, VHOST_CONFIG,
+		"log mmap size: %"PRId64", offset: %"PRId64"\n",
+		size, off);
+
+	/*
+	 * mmap from 0 to workaround a hugepage mmap bug: mmap will
+	 * fail when offset is not page size aligned.
+	 */
+	addr = mmap(0, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+	if (addr == MAP_FAILED) {
+		RTE_LOG(ERR, VHOST_CONFIG, "mmap log base failed!\n");
+		return -1;
+	}
+
+	/* TODO: unmap on stop */
+	dev->log_base = (uint64_t)(uintptr_t)addr + off;
+	dev->log_size = size;
+
+	return 0;
+}
+
+/*
+ * An rarp packet is constructed and broadcasted to notify switches about
+ * the new location of the migrated VM, so that packets from outside will
+ * not be lost after migration.
+ *
+ * However, we don't actually "send" a rarp packet here, instead, we set
+ * a flag 'broadcast_rarp' to let rte_vhost_dequeue_burst() inject it.
+ */
+int
+user_send_rarp(struct vhost_device_ctx ctx, struct VhostUserMsg *msg)
+{
+	struct virtio_net *dev;
+	uint8_t *mac = (uint8_t *)&msg->payload.u64;
+
+	dev = get_device(ctx);
+	if (!dev)
+		return -1;
+
+	RTE_LOG(DEBUG, VHOST_CONFIG,
+		":: mac: %02x:%02x:%02x:%02x:%02x:%02x\n",
+		mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+	memcpy(dev->mac.addr_bytes, mac, 6);
+
+	/*
+	 * Set the flag to inject a RARP broadcast packet at
+	 * rte_vhost_dequeue_burst().
+	 *
+	 * rte_smp_wmb() is for making sure the mac is copied
+	 * before the flag is set.
+	 */
+	rte_smp_wmb();
+	rte_atomic16_set(&dev->broadcast_rarp, 1);
+
+	return 0;
 }

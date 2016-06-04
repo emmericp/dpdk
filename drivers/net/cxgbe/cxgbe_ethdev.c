@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2014-2015 Chelsio Communications.
+ *   Copyright(c) 2014-2016 Chelsio Communications.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -171,6 +171,7 @@ static void cxgbe_dev_info_get(struct rte_eth_dev *eth_dev,
 
 	device_info->rx_desc_lim = cxgbe_desc_lim;
 	device_info->tx_desc_lim = cxgbe_desc_lim;
+	device_info->speed_capa = ETH_LINK_SPEED_10G | ETH_LINK_SPEED_40G;
 }
 
 static void cxgbe_dev_promiscuous_enable(struct rte_eth_dev *eth_dev)
@@ -655,14 +656,13 @@ static void cxgbe_dev_stats_get(struct rte_eth_dev *eth_dev,
 	/* RX Stats */
 	eth_stats->ipackets = ps.rx_frames;
 	eth_stats->ibytes   = ps.rx_octets;
-	eth_stats->imcasts  = ps.rx_mcast_frames;
 	eth_stats->imissed  = ps.rx_ovflow0 + ps.rx_ovflow1 +
 			      ps.rx_ovflow2 + ps.rx_ovflow3 +
 			      ps.rx_trunc0 + ps.rx_trunc1 +
 			      ps.rx_trunc2 + ps.rx_trunc3;
 	eth_stats->ierrors  = ps.rx_symbol_err + ps.rx_fcs_err +
 			      ps.rx_jabber + ps.rx_too_long + ps.rx_runt +
-			      ps.rx_len_err + eth_stats->imissed;
+			      ps.rx_len_err;
 
 	/* TX Stats */
 	eth_stats->opackets = ps.tx_frames;
@@ -767,7 +767,21 @@ static int cxgbe_flow_ctrl_set(struct rte_eth_dev *eth_dev,
 			     &pi->link_cfg);
 }
 
-static struct eth_dev_ops cxgbe_eth_dev_ops = {
+static const uint32_t *
+cxgbe_dev_supported_ptypes_get(struct rte_eth_dev *eth_dev)
+{
+	static const uint32_t ptypes[] = {
+		RTE_PTYPE_L3_IPV4,
+		RTE_PTYPE_L3_IPV6,
+		RTE_PTYPE_UNKNOWN
+	};
+
+	if (eth_dev->rx_pkt_burst == cxgbe_recv_pkts)
+		return ptypes;
+	return NULL;
+}
+
+static const struct eth_dev_ops cxgbe_eth_dev_ops = {
 	.dev_start		= cxgbe_dev_start,
 	.dev_stop		= cxgbe_dev_stop,
 	.dev_close		= cxgbe_dev_close,
@@ -777,6 +791,7 @@ static struct eth_dev_ops cxgbe_eth_dev_ops = {
 	.allmulticast_disable	= cxgbe_dev_allmulticast_disable,
 	.dev_configure		= cxgbe_dev_configure,
 	.dev_infos_get		= cxgbe_dev_info_get,
+	.dev_supported_ptypes_get = cxgbe_dev_supported_ptypes_get,
 	.link_update		= cxgbe_dev_link_update,
 	.mtu_set		= cxgbe_dev_mtu_set,
 	.tx_queue_setup         = cxgbe_dev_tx_queue_setup,
@@ -819,8 +834,6 @@ static int eth_cxgbe_dev_init(struct rte_eth_dev *eth_dev)
 
 	pci_dev = eth_dev->pci_dev;
 
-	rte_eth_copy_pci_info(eth_dev, pci_dev);
-
 	snprintf(name, sizeof(name), "cxgbeadapter%d", eth_dev->data->port_id);
 	adapter = rte_zmalloc(name, sizeof(*adapter), 0);
 	if (!adapter)
@@ -838,11 +851,16 @@ static int eth_cxgbe_dev_init(struct rte_eth_dev *eth_dev)
 	pi->adapter = adapter;
 
 	err = cxgbe_probe(adapter);
-	if (err)
+	if (err) {
 		dev_err(adapter, "%s: cxgbe probe failed with err %d\n",
 			__func__, err);
+		goto out_free_adapter;
+	}
+
+	return 0;
 
 out_free_adapter:
+	rte_free(adapter);
 	return err;
 }
 

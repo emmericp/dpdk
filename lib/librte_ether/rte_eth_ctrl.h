@@ -89,6 +89,7 @@ enum rte_filter_type {
 	RTE_ETH_FILTER_TUNNEL,
 	RTE_ETH_FILTER_FDIR,
 	RTE_ETH_FILTER_HASH,
+	RTE_ETH_FILTER_L2_TUNNEL,
 	RTE_ETH_FILTER_MAX
 };
 
@@ -244,6 +245,8 @@ enum rte_eth_tunnel_type {
 	RTE_TUNNEL_TYPE_GENEVE,
 	RTE_TUNNEL_TYPE_TEREDO,
 	RTE_TUNNEL_TYPE_NVGRE,
+	RTE_TUNNEL_TYPE_IP_IN_GRE,
+	RTE_L2_TUNNEL_TYPE_E_TAG,
 	RTE_TUNNEL_TYPE_MAX,
 };
 
@@ -280,19 +283,22 @@ enum rte_tunnel_iptype {
  * Tunneling Packet filter configuration.
  */
 struct rte_eth_tunnel_filter_conf {
-	struct ether_addr *outer_mac;  /**< Outer MAC address filter. */
-	struct ether_addr *inner_mac;  /**< Inner MAC address filter. */
-	uint16_t inner_vlan;           /**< Inner VLAN filter. */
+	struct ether_addr outer_mac;    /**< Outer MAC address to match. */
+	struct ether_addr inner_mac;    /**< Inner MAC address to match. */
+	uint16_t inner_vlan;            /**< Inner VLAN to match. */
 	enum rte_tunnel_iptype ip_type; /**< IP address type. */
+	/** Outer destination IP address to match if ETH_TUNNEL_FILTER_OIP
+	    is set in filter_type, or inner destination IP address to match
+	    if ETH_TUNNEL_FILTER_IIP is set in filter_type . */
 	union {
-		uint32_t ipv4_addr;    /**< IPv4 source address to match. */
-		uint32_t ipv6_addr[4]; /**< IPv6 source address to match. */
-	} ip_addr; /**< IPv4/IPv6 source address to match (union of above). */
-
-	uint16_t filter_type;   /**< Filter type. */
+		uint32_t ipv4_addr;     /**< IPv4 address in big endian. */
+		uint32_t ipv6_addr[4];  /**< IPv6 address in big endian. */
+	} ip_addr;
+	/** Flags from ETH_TUNNEL_FILTER_XX - see above. */
+	uint16_t filter_type;
 	enum rte_eth_tunnel_type tunnel_type; /**< Tunnel Type. */
-	uint32_t tenant_id;     /**< Tenant number. */
-	uint16_t queue_id;      /**< Queue number. */
+	uint32_t tenant_id;     /**< Tenant ID to match. VNI, GRE key... */
+	uint16_t queue_id;      /**< Queue assigned to if match. */
 };
 
 /**
@@ -340,6 +346,8 @@ enum rte_eth_input_set_field {
 	RTE_ETH_INPUT_SET_L3_IP4_PROTO,
 	RTE_ETH_INPUT_SET_L3_IP6_TC,
 	RTE_ETH_INPUT_SET_L3_IP6_NEXT_HEADER,
+	RTE_ETH_INPUT_SET_L3_IP4_TTL,
+	RTE_ETH_INPUT_SET_L3_IP6_HOP_LIMITS,
 
 	/* L4 */
 	RTE_ETH_INPUT_SET_L4_UDP_SRC_PORT = 257,
@@ -398,15 +406,18 @@ struct rte_eth_input_set_conf {
  * A structure used to define the input for L2 flow
  */
 struct rte_eth_l2_flow {
-	uint16_t ether_type;          /**< Ether type to match */
+	uint16_t ether_type;          /**< Ether type in big endian */
 };
 
 /**
  * A structure used to define the input for IPV4 flow
  */
 struct rte_eth_ipv4_flow {
-	uint32_t src_ip;      /**< IPv4 source address to match. */
-	uint32_t dst_ip;      /**< IPv4 destination address to match. */
+	uint32_t src_ip;      /**< IPv4 source address in big endian. */
+	uint32_t dst_ip;      /**< IPv4 destination address in big endian. */
+	uint8_t  tos;         /**< Type of service to match. */
+	uint8_t  ttl;         /**< Time to live to match. */
+	uint8_t  proto;       /**< Protocol, next header in big endian. */
 };
 
 /**
@@ -414,8 +425,8 @@ struct rte_eth_ipv4_flow {
  */
 struct rte_eth_udpv4_flow {
 	struct rte_eth_ipv4_flow ip; /**< IPv4 fields to match. */
-	uint16_t src_port;           /**< UDP source port to match. */
-	uint16_t dst_port;           /**< UDP destination port to match. */
+	uint16_t src_port;           /**< UDP source port in big endian. */
+	uint16_t dst_port;           /**< UDP destination port in big endian. */
 };
 
 /**
@@ -423,8 +434,8 @@ struct rte_eth_udpv4_flow {
  */
 struct rte_eth_tcpv4_flow {
 	struct rte_eth_ipv4_flow ip; /**< IPv4 fields to match. */
-	uint16_t src_port;           /**< TCP source port to match. */
-	uint16_t dst_port;           /**< TCP destination port to match. */
+	uint16_t src_port;           /**< TCP source port in big endian. */
+	uint16_t dst_port;           /**< TCP destination port in big endian. */
 };
 
 /**
@@ -432,17 +443,20 @@ struct rte_eth_tcpv4_flow {
  */
 struct rte_eth_sctpv4_flow {
 	struct rte_eth_ipv4_flow ip; /**< IPv4 fields to match. */
-	uint16_t src_port;           /**< SCTP source port to match. */
-	uint16_t dst_port;           /**< SCTP destination port to match. */
-	uint32_t verify_tag;         /**< Verify tag to match */
+	uint16_t src_port;           /**< SCTP source port in big endian. */
+	uint16_t dst_port;           /**< SCTP destination port in big endian. */
+	uint32_t verify_tag;         /**< Verify tag in big endian */
 };
 
 /**
  * A structure used to define the input for IPV6 flow
  */
 struct rte_eth_ipv6_flow {
-	uint32_t src_ip[4];      /**< IPv6 source address to match. */
-	uint32_t dst_ip[4];      /**< IPv6 destination address to match. */
+	uint32_t src_ip[4];      /**< IPv6 source address in big endian. */
+	uint32_t dst_ip[4];      /**< IPv6 destination address in big endian. */
+	uint8_t  tc;             /**< Traffic class to match. */
+	uint8_t  proto;          /**< Protocol, next header to match. */
+	uint8_t  hop_limits;     /**< Hop limits to match. */
 };
 
 /**
@@ -450,8 +464,8 @@ struct rte_eth_ipv6_flow {
  */
 struct rte_eth_udpv6_flow {
 	struct rte_eth_ipv6_flow ip; /**< IPv6 fields to match. */
-	uint16_t src_port;           /**< UDP source port to match. */
-	uint16_t dst_port;           /**< UDP destination port to match. */
+	uint16_t src_port;           /**< UDP source port in big endian. */
+	uint16_t dst_port;           /**< UDP destination port in big endian. */
 };
 
 /**
@@ -459,8 +473,8 @@ struct rte_eth_udpv6_flow {
  */
 struct rte_eth_tcpv6_flow {
 	struct rte_eth_ipv6_flow ip; /**< IPv6 fields to match. */
-	uint16_t src_port;           /**< TCP source port to match. */
-	uint16_t dst_port;           /**< TCP destination port to match. */
+	uint16_t src_port;           /**< TCP source port to in big endian. */
+	uint16_t dst_port;           /**< TCP destination port in big endian. */
 };
 
 /**
@@ -468,9 +482,9 @@ struct rte_eth_tcpv6_flow {
  */
 struct rte_eth_sctpv6_flow {
 	struct rte_eth_ipv6_flow ip; /**< IPv6 fields to match. */
-	uint16_t src_port;           /**< SCTP source port to match. */
-	uint16_t dst_port;           /**< SCTP destination port to match. */
-	uint32_t verify_tag;         /**< Verify tag to match */
+	uint16_t src_port;           /**< SCTP source port in big endian. */
+	uint16_t dst_port;           /**< SCTP destination port in big endian. */
+	uint32_t verify_tag;         /**< Verify tag in big endian. */
 };
 
 /**
@@ -495,12 +509,14 @@ enum rte_eth_fdir_tunnel_type {
  */
 struct rte_eth_tunnel_flow {
 	enum rte_eth_fdir_tunnel_type tunnel_type; /**< Tunnel type to match. */
-	uint32_t tunnel_id;                        /**< Tunnel ID to match. TNI, VNI... */
+	/** Tunnel ID to match. TNI, VNI... in big endian. */
+	uint32_t tunnel_id;
 	struct ether_addr mac_addr;                /**< Mac address to match. */
 };
 
 /**
  * An union contains the inputs for all types of flow
+ * Items in flows need to be in big endian
  */
 union rte_eth_fdir_flow {
 	struct rte_eth_l2_flow     l2_flow;
@@ -588,14 +604,22 @@ struct rte_eth_fdir_filter {
  *  to match the various fields of RX packet headers.
  */
 struct rte_eth_fdir_masks {
-	uint16_t vlan_tci_mask;
+	uint16_t vlan_tci_mask;   /**< Bit mask for vlan_tci in big endian */
+	/** Bit mask for ipv4 flow in big endian. */
 	struct rte_eth_ipv4_flow   ipv4_mask;
+	/** Bit maks for ipv6 flow in big endian. */
 	struct rte_eth_ipv6_flow   ipv6_mask;
+	/** Bit mask for L4 source port in big endian. */
 	uint16_t src_port_mask;
+	/** Bit mask for L4 destination port in big endian. */
 	uint16_t dst_port_mask;
-	uint8_t mac_addr_byte_mask;  /** Per byte MAC address mask */
-	uint32_t tunnel_id_mask;  /** tunnel ID mask */
-	uint8_t tunnel_type_mask;
+	/** 6 bit mask for proper 6 bytes of Mac address, bit 0 matches the
+	    first byte on the wire */
+	uint8_t mac_addr_byte_mask;
+	/** Bit mask for tunnel ID in big endian. */
+	uint32_t tunnel_id_mask;
+	uint8_t tunnel_type_mask; /**< 1 - Match tunnel type,
+				       0 - Ignore tunnel type. */
 };
 
 /**
@@ -802,6 +826,17 @@ struct rte_eth_hash_filter_info {
 		/** Global configurations of hash filter input set */
 		struct rte_eth_input_set_conf input_set_conf;
 	} info;
+};
+
+/**
+ * l2 tunnel configuration.
+ */
+struct rte_eth_l2_tunnel_conf {
+	enum rte_eth_tunnel_type l2_tunnel_type;
+	uint16_t ether_type; /* ether type in l2 header */
+	uint32_t tunnel_id; /* port tag id for e-tag */
+	uint16_t vf_id; /* VF id for tag insertion */
+	uint32_t pool; /* destination pool for tag based forwarding */
 };
 
 #ifdef __cplusplus

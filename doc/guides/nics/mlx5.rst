@@ -48,11 +48,6 @@ There is also a `section dedicated to this poll mode driver
    be enabled manually by setting ``CONFIG_RTE_LIBRTE_MLX5_PMD=y`` and
    recompiling DPDK.
 
-.. warning::
-
-   ``CONFIG_RTE_BUILD_COMBINE_LIBS`` with ``CONFIG_RTE_BUILD_SHARED_LIB``
-   is not supported and thus the compilation will fail with this configuration.
-
 Implementation details
 ----------------------
 
@@ -83,9 +78,14 @@ Features
 - Configurable RETA table.
 - Support for multiple MAC addresses.
 - VLAN filtering.
+- RX VLAN stripping.
+- TX VLAN insertion.
+- RX CRC stripping configuration.
 - Promiscuous mode.
 - Multicast promiscuous mode.
 - Hardware checksum offloads.
+- Flow director (RTE_FDIR_MODE_PERFECT and RTE_FDIR_MODE_PERFECT_MAC_VLAN).
+- Secondary process TX is supported.
 
 Limitations
 -----------
@@ -94,7 +94,7 @@ Limitations
 - Inner RSS for VXLAN frames is not supported yet.
 - Port statistics through software counters only.
 - Hardware checksum offloads for VXLAN inner header are not supported yet.
-- Secondary processes are not supported yet.
+- Secondary process RX is not supported.
 
 Configuration
 -------------
@@ -151,6 +151,20 @@ Environment variables
   Since the additional software logic necessary to handle this mode can
   lower performance when there is no backpressure, it is not enabled by
   default.
+
+- ``MLX5_PMD_ENABLE_PADDING``
+
+  Enables HW packet padding in PCI bus transactions.
+
+  When packet size is cache aligned and CRC stripping is enabled, 4 fewer
+  bytes are written to the PCI bus. Enabling padding makes such packets
+  aligned again.
+
+  In cases where PCI bandwidth is the bottleneck, padding can improve
+  performance by 10%.
+
+  This is disabled by default since this can also decrease performance for
+  unaligned packet sizes.
 
 Run-time configuration
 ~~~~~~~~~~~~~~~~~~~~~~
@@ -214,7 +228,8 @@ DPDK and must be installed separately:
 
 Currently supported by DPDK:
 
-- Mellanox OFED **3.1-1.0.3** or **3.1-1.5.7.1** depending on usage.
+- Mellanox OFED **3.1-1.0.3**, **3.1-1.5.7.1** or **3.2-2.0.0.0** depending
+  on usage.
 
     The following features are supported with version **3.1-1.5.7.1** and
     above only:
@@ -222,6 +237,14 @@ Currently supported by DPDK:
     - IPv6, UPDv6, TCPv6 RSS.
     - RX checksum offloads.
     - IBM POWER8.
+
+    The following features are supported with version **3.2-2.0.0.0** and
+    above only:
+
+    - Flow director.
+    - RX VLAN stripping.
+    - TX VLAN insertion.
+    - RX CRC stripping configuration.
 
 - Minimum firmware version:
 
@@ -234,6 +257,11 @@ Currently supported by DPDK:
 
   - ConnectX-4: **12.13.0144**
   - ConnectX-4 Lx: **14.13.0144**
+
+  With MLNX_OFED **3.2-2.0.0.0**:
+
+  - ConnectX-4: **12.14.2036**
+  - ConnectX-4 Lx: **14.14.2036**
 
 Getting Mellanox OFED
 ~~~~~~~~~~~~~~~~~~~~~

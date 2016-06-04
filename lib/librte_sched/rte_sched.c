@@ -47,6 +47,7 @@
 #include "rte_bitmap.h"
 #include "rte_sched_common.h"
 #include "rte_approx.h"
+#include "rte_reciprocal.h"
 
 #ifdef __INTEL_COMPILER
 #pragma warning(disable:2259) /* conversion may lose significant bits */
@@ -66,6 +67,11 @@
 #define RTE_SCHED_GRINDER_PCACHE_SIZE         (64 / RTE_SCHED_QUEUES_PER_PIPE)
 #define RTE_SCHED_PIPE_INVALID                UINT32_MAX
 #define RTE_SCHED_BMP_POS_INVALID             UINT32_MAX
+
+/* Scaling for cycles_per_byte calculation
+ * Chosen so that minimum rate is 480 bit/sec
+ */
+#define RTE_SCHED_TIME_SHIFT		      8
 
 struct rte_sched_subport {
 	/* Token bucket (TB) */
@@ -220,7 +226,7 @@ struct rte_sched_port {
 	uint64_t time_cpu_cycles;     /* Current CPU time measured in CPU cyles */
 	uint64_t time_cpu_bytes;      /* Current CPU time measured in bytes */
 	uint64_t time;                /* Current NIC TX time measured in bytes */
-	double cycles_per_byte;       /* CPU cycles per byte */
+	struct rte_reciprocal inv_cycles_per_byte; /* CPU cycles per byte */
 
 	/* Scheduling loop detection */
 	uint32_t pipe_loop;
@@ -615,7 +621,7 @@ struct rte_sched_port *
 rte_sched_port_config(struct rte_sched_port_params *params)
 {
 	struct rte_sched_port *port = NULL;
-	uint32_t mem_size, bmp_mem_size, n_queues_per_port, i;
+	uint32_t mem_size, bmp_mem_size, n_queues_per_port, i, cycles_per_byte;
 
 	/* Check user parameters. Determine the amount of memory to allocate */
 	mem_size = rte_sched_port_get_memory_footprint(params);
@@ -666,7 +672,10 @@ rte_sched_port_config(struct rte_sched_port_params *params)
 	port->time_cpu_cycles = rte_get_tsc_cycles();
 	port->time_cpu_bytes = 0;
 	port->time = 0;
-	port->cycles_per_byte = ((double) rte_get_tsc_hz()) / ((double) params->rate);
+
+	cycles_per_byte = (rte_get_tsc_hz() << RTE_SCHED_TIME_SHIFT)
+		/ params->rate;
+	port->inv_cycles_per_byte = rte_reciprocal_value(cycles_per_byte);
 
 	/* Scheduling loop detection */
 	port->pipe_loop = RTE_SCHED_PIPE_INVALID;
@@ -1076,7 +1085,9 @@ rte_sched_port_update_subport_stats(struct rte_sched_port *port, uint32_t qindex
 }
 
 static inline void
-rte_sched_port_update_subport_stats_on_drop(struct rte_sched_port *port, uint32_t qindex, struct rte_mbuf *pkt)
+rte_sched_port_update_subport_stats_on_drop(struct rte_sched_port *port,
+					    uint32_t qindex,
+					    struct rte_mbuf *pkt, uint32_t red)
 {
 	struct rte_sched_subport *s = port->subport + (qindex / rte_sched_port_queues_per_subport(port));
 	uint32_t tc_index = (qindex >> 2) & 0x3;
@@ -1084,6 +1095,9 @@ rte_sched_port_update_subport_stats_on_drop(struct rte_sched_port *port, uint32_
 
 	s->stats.n_pkts_tc_dropped[tc_index] += 1;
 	s->stats.n_bytes_tc_dropped[tc_index] += pkt_len;
+#ifdef RTE_SCHED_RED
+	s->stats.n_pkts_red_dropped[tc_index] += red;
+#endif
 }
 
 static inline void
@@ -1097,13 +1111,18 @@ rte_sched_port_update_queue_stats(struct rte_sched_port *port, uint32_t qindex, 
 }
 
 static inline void
-rte_sched_port_update_queue_stats_on_drop(struct rte_sched_port *port, uint32_t qindex, struct rte_mbuf *pkt)
+rte_sched_port_update_queue_stats_on_drop(struct rte_sched_port *port,
+					  uint32_t qindex,
+					  struct rte_mbuf *pkt, uint32_t red)
 {
 	struct rte_sched_queue_extra *qe = port->queue_extra + qindex;
 	uint32_t pkt_len = pkt->pkt_len;
 
 	qe->stats.n_pkts_dropped += 1;
 	qe->stats.n_bytes_dropped += pkt_len;
+#ifdef RTE_SCHED_RED
+	qe->stats.n_pkts_red_dropped += red;
+#endif
 }
 
 #endif /* RTE_SCHED_COLLECT_STATS */
@@ -1234,8 +1253,10 @@ rte_sched_port_enqueue_qwa(struct rte_sched_port *port, uint32_t qindex,
 		     (qlen >= qsize))) {
 		rte_pktmbuf_free(pkt);
 #ifdef RTE_SCHED_COLLECT_STATS
-		rte_sched_port_update_subport_stats_on_drop(port, qindex, pkt);
-		rte_sched_port_update_queue_stats_on_drop(port, qindex, pkt);
+		rte_sched_port_update_subport_stats_on_drop(port, qindex, pkt,
+							    qlen < qsize);
+		rte_sched_port_update_queue_stats_on_drop(port, qindex, pkt,
+							  qlen < qsize);
 #endif
 		return 0;
 	}
@@ -2081,11 +2102,15 @@ rte_sched_port_time_resync(struct rte_sched_port *port)
 {
 	uint64_t cycles = rte_get_tsc_cycles();
 	uint64_t cycles_diff = cycles - port->time_cpu_cycles;
-	double bytes_diff = ((double) cycles_diff) / port->cycles_per_byte;
+	uint64_t bytes_diff;
+
+	/* Compute elapsed time in bytes */
+	bytes_diff = rte_reciprocal_divide(cycles_diff << RTE_SCHED_TIME_SHIFT,
+					   port->inv_cycles_per_byte);
 
 	/* Advance port time */
 	port->time_cpu_cycles = cycles;
-	port->time_cpu_bytes += (uint64_t) bytes_diff;
+	port->time_cpu_bytes += bytes_diff;
 	if (port->time < port->time_cpu_bytes)
 		port->time = port->time_cpu_bytes;
 

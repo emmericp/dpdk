@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
+ *   Copyright(c) 2010-2016 Intel Corporation. All rights reserved.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -137,6 +137,7 @@ struct pipeline_port_out_params {
 		struct rte_port_ring_writer_ipv4_ras_params ring_ipv4_ras;
 		struct rte_port_ring_writer_ipv6_ras_params ring_ipv6_ras;
 		struct rte_port_sched_writer_params sched;
+		struct rte_port_sink_params sink;
 	} params;
 };
 
@@ -163,6 +164,7 @@ pipeline_port_out_params_convert(struct pipeline_port_out_params  *p)
 	case PIPELINE_PORT_OUT_SCHED_WRITER:
 		return (void *) &p->params.sched;
 	case PIPELINE_PORT_OUT_SINK:
+		return (void *) &p->params.sink;
 	default:
 		return NULL;
 	}
@@ -271,8 +273,33 @@ struct pipeline_be_ops {
 	pipeline_be_op_track f_track;
 };
 
-/* Parse hex string to uint8_t array */
-int
-parse_hex_string(char *src, uint8_t *dst, uint32_t *size);
+/* Pipeline specific config parse error messages */
+#define PIPELINE_ARG_CHECK(exp, fmt, ...)				\
+do {									\
+	if (!(exp)) {							\
+		fprintf(stderr, fmt "\n", ## __VA_ARGS__);		\
+		return -1;						\
+	}								\
+} while (0)
+
+#define PIPELINE_PARSE_ERR_INV_VAL(exp, section, entry, val)		\
+PIPELINE_ARG_CHECK(exp, "Parse error in section \"%s\": entry \"%s\" "	\
+	"has invalid value (\"%s\")", section, entry, val)
+
+#define PIPELINE_PARSE_ERR_OUT_RNG(exp, section, entry, val)		\
+PIPELINE_ARG_CHECK(exp, "Parse error in section \"%s\": entry \"%s\" "	\
+	"value is out of range (\"%s\")", section, entry, val)
+
+#define PIPELINE_PARSE_ERR_DUPLICATE(exp, section, entry)		\
+PIPELINE_ARG_CHECK(exp, "Parse error in section \"%s\": duplicated "	\
+	"entry \"%s\"", section, entry)
+
+#define PIPELINE_PARSE_ERR_INV_ENT(exp, section, entry)			\
+PIPELINE_ARG_CHECK(exp, "Parse error in section \"%s\": invalid entry "	\
+	"\"%s\"", section, entry)
+
+#define PIPELINE_PARSE_ERR_MANDATORY(exp, section, entry)		\
+PIPELINE_ARG_CHECK(exp, "Parse error in section \"%s\": mandatory "	\
+	"entry \"%s\" is missing", section, entry)
 
 #endif

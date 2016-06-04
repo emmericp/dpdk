@@ -123,7 +123,7 @@ app_eal_core_mask(void)
 	uint64_t cm = 0;
 	struct rte_config *cfg = rte_eal_get_configuration();
 
-	for (i = 0; i < RTE_MAX_LCORE; i++) {
+	for (i = 0; i < APP_MAX_LCORE; i++) {
 		if (cfg->lcore_role[i] == ROLE_RTE)
 			cm |= (1ULL << i);
 	}
@@ -142,7 +142,7 @@ app_cpu_core_count(void)
 	char path[PATH_MAX];
 	uint32_t ncores = 0;
 
-	for(i = 0; i < RTE_MAX_LCORE; i++) {
+	for (i = 0; i < APP_MAX_LCORE; i++) {
 		len = snprintf(path, sizeof(path), SYS_CPU_DIR, i);
 		if (len <= 0 || (unsigned)len >= sizeof(path))
 			continue;
@@ -162,7 +162,7 @@ static int
 app_parse_opt_vals(const char *conf_str, char separator, uint32_t n_vals, uint32_t *opt_vals)
 {
 	char *string;
-	uint32_t i, n_tokens;
+	int i, n_tokens;
 	char *tokens[MAX_OPT_VALUES];
 
 	if (conf_str == NULL || opt_vals == NULL || n_vals == 0 || n_vals > MAX_OPT_VALUES)
@@ -175,9 +175,11 @@ app_parse_opt_vals(const char *conf_str, char separator, uint32_t n_vals, uint32
 
 	n_tokens = rte_strsplit(string, strnlen(string, 32), tokens, n_vals, separator);
 
-	for(i = 0; i < n_tokens; i++) {
+	if (n_tokens > MAX_OPT_VALUES)
+		return -1;
+
+	for (i = 0; i < n_tokens; i++)
 		opt_vals[i] = (uint32_t)atol(tokens[i]);
-	}
 
 	free(string);
 
@@ -270,7 +272,7 @@ app_parse_flow_conf(const char *conf_str)
 	}
 	if (pconf->tx_port >= RTE_MAX_ETHPORTS) {
 		RTE_LOG(ERR, APP, "pfc %u: invalid tx port %"PRIu8" index\n",
-				nb_pfc, pconf->rx_port);
+				nb_pfc, pconf->tx_port);
 		return -1;
 	}
 

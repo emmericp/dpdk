@@ -568,7 +568,7 @@ virtio_tx_route(struct vhost_dev *vdev, struct rte_mbuf *m)
 	const uint16_t lcore_id = rte_lcore_id();
 	struct virtio_net *dev = vdev->dev;
 
-	LOG_DEBUG(VHOST_DATA, "(%"PRIu64") TX: MAC address is external\n",
+	RTE_LOG(DEBUG, VHOST_DATA, "(%" PRIu64 ") TX: MAC address is external\n",
 		dev->device_fh);
 
 	/* Add packet to the port tx queue */
@@ -651,7 +651,7 @@ switch_worker(__rte_unused void *arg)
 		if (unlikely(diff_tsc > drain_tsc)) {
 
 			if (tx_q->len) {
-				LOG_DEBUG(VHOST_DATA, "TX queue drained after "
+				RTE_LOG(DEBUG, VHOST_DATA, "TX queue drained after "
 					"timeout with burst size %u\n",
 					tx_q->len);
 				ret = overlay_options.tx_handle(ports[0],
@@ -1190,8 +1190,6 @@ main(int argc, char *argv[])
 
 	/* Get the number of physical ports. */
 	nb_ports = rte_eth_dev_count();
-	if (nb_ports > RTE_MAX_ETHPORTS)
-		nb_ports = RTE_MAX_ETHPORTS;
 
 	/*
 	 * Update the global var NB_PORTS and global array PORTS
@@ -1219,9 +1217,6 @@ main(int argc, char *argv[])
 
 	for (queue_id = 0; queue_id < MAX_QUEUES + 1; queue_id++)
 		vpool_array[queue_id].pool = mbuf_pool;
-
-	/* Set log level. */
-	rte_set_log_level(LOG_LEVEL);
 
 	/* initialize all ports */
 	for (portid = 0; portid < nb_ports; portid++) {

@@ -38,8 +38,12 @@
 #include "vhost-net-user.h"
 
 #define VHOST_USER_PROTOCOL_F_MQ	0
+#define VHOST_USER_PROTOCOL_F_LOG_SHMFD	1
+#define VHOST_USER_PROTOCOL_F_RARP	2
 
-#define VHOST_USER_PROTOCOL_FEATURES	(1ULL << VHOST_USER_PROTOCOL_F_MQ)
+#define VHOST_USER_PROTOCOL_FEATURES	((1ULL << VHOST_USER_PROTOCOL_F_MQ) | \
+					 (1ULL << VHOST_USER_PROTOCOL_F_LOG_SHMFD) |\
+					 (1ULL << VHOST_USER_PROTOCOL_F_RARP))
 
 int user_set_mem_table(struct vhost_device_ctx, struct VhostUserMsg *);
 
@@ -49,11 +53,12 @@ void user_set_vring_kick(struct vhost_device_ctx, struct VhostUserMsg *);
 
 void user_set_protocol_features(struct vhost_device_ctx ctx,
 				uint64_t protocol_features);
+int user_set_log_base(struct vhost_device_ctx ctx, struct VhostUserMsg *);
+int user_send_rarp(struct vhost_device_ctx ctx, struct VhostUserMsg *);
 
 int user_get_vring_base(struct vhost_device_ctx, struct vhost_vring_state *);
 
 int user_set_vring_enable(struct vhost_device_ctx ctx,
 			  struct vhost_vring_state *state);
 
-void user_destroy_device(struct vhost_device_ctx);
 #endif

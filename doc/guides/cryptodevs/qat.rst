@@ -1,5 +1,5 @@
 ..  BSD LICENSE
-    Copyright(c) 2015 Intel Corporation. All rights reserved.
+    Copyright(c) 2015-2016 Intel Corporation. All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
     modification, are permitted provided that the following conditions
@@ -33,9 +33,6 @@ Quick Assist Crypto Poll Mode Driver
 The QAT PMD provides poll mode crypto driver support for **Intel QuickAssist
 Technology DH895xxC** hardware accelerator.
 
-The QAT PMD has been tested on Fedora 21 64-bit with gcc and on the 4.3
-kernel.org Linux kernel.
-
 
 Features
 --------
@@ -47,6 +44,8 @@ Cipher algorithms:
 * ``RTE_CRYPTO_SYM_CIPHER_AES128_CBC``
 * ``RTE_CRYPTO_SYM_CIPHER_AES192_CBC``
 * ``RTE_CRYPTO_SYM_CIPHER_AES256_CBC``
+* ``RTE_CRYPTO_SYM_CIPHER_SNOW3G_UEA2``
+* ``RTE_CRYPTO_CIPHER_AES_GCM``
 
 Hash algorithms:
 
@@ -54,17 +53,20 @@ Hash algorithms:
 * ``RTE_CRYPTO_AUTH_SHA256_HMAC``
 * ``RTE_CRYPTO_AUTH_SHA512_HMAC``
 * ``RTE_CRYPTO_AUTH_AES_XCBC_MAC``
+* ``RTE_CRYPTO_AUTH_SNOW3G_UIA2``
 
 
 Limitations
 -----------
 
 * Chained mbufs are not supported.
-* Hash only is not supported.
-* Cipher only is not supported.
-* Only in-place is currently supported (destination address is the same as source address).
+* Hash only is not supported except Snow3G UIA2.
+* Cipher only is not supported except Snow3G UEA2.
 * Only supports the session-oriented API implementation (session-less APIs are not supported).
 * Not performance tuned.
+* Snow3g(UEA2) supported only if cipher length, cipher offset fields are byte-aligned.
+* Snow3g(UIA2) supported only if hash length, hash offset fields are byte-aligned.
+* No BSD support as BSD QAT kernel driver not available.
 
 
 Installation
@@ -73,9 +75,9 @@ Installation
 To use the DPDK QAT PMD an SRIOV-enabled QAT kernel driver is required. The
 VF devices exposed by this driver will be used by QAT PMD.
 
-If you are running on kernel 4.3 or greater, see instructions for
+If you are running on kernel 4.4 or greater, see instructions for
 `Installation using kernel.org driver`_ below. If you are on a kernel earlier
-than 4.3, see `Installation using 01.org QAT driver`_.
+than 4.4, see `Installation using 01.org QAT driver`_.
 
 
 Installation using 01.org QAT driver
@@ -157,13 +159,13 @@ If the build or install fails due to mismatching kernel sources you may need to 
 Installation using kernel.org driver
 ------------------------------------
 
-Assuming you are running on at least a 4.3 kernel, you can use the stock kernel.org QAT
+Assuming you are running on at least a 4.4 kernel, you can use the stock kernel.org QAT
 driver to start the QAT hardware.
 
 The steps below assume you are:
 
 * Running DPDK on a platform with one ``DH895xCC`` device.
-* On a kernel at least version 4.3.
+* On a kernel at least version 4.4.
 
 In BIOS ensure that SRIOV is enabled and VT-d is disabled.
 
@@ -190,12 +192,31 @@ Using the sysfs, enable the VFs::
 
     echo 32 > /sys/bus/pci/drivers/dh895xcc/0000\:03\:00.0/sriov_numvfs
 
-If you get an error, it's likely you're using a QAT kernel driver earlier than kernel 4.3.
+If you get an error, it's likely you're using a QAT kernel driver earlier than kernel 4.4.
 
 To verify that the VFs are available for use - use ``lspci -d:443`` to confirm
 the bdf of the 32 VF devices are available per ``DH895xCC`` device.
 
 To complete the installation - follow instructions in `Binding the available VFs to the DPDK UIO driver`_.
+
+**Note**: If the QAT kernel modules are not loaded and you see an error like
+    ``Failed to load MMP firmware qat_895xcc_mmp.bin`` this may be as a
+    result of not using a distribution, but just updating the kernel directly.
+
+Download firmware from the kernel firmware repo at:
+http://git.kernel.org/cgit/linux/kernel/git/firmware/linux-firmware.git/tree/
+
+Copy qat binaries to /lib/firmware:
+*    ``cp qat_895xcc.bin /lib/firmware``
+*    ``cp qat_895xcc_mmp.bin /lib/firmware``
+
+cd to your linux source root directory and start the qat kernel modules:
+*    ``insmod ./drivers/crypto/qat/qat_common/intel_qat.ko``
+*    ``insmod ./drivers/crypto/qat/qat_dh895xcc/qat_dh895xcc.ko``
+
+**Note**:The following warning in /var/log/messages can be ignored:
+    ``IOMMU should be enabled for SR-IOV to work correctly``
+
 
 
 Binding the available VFs to the DPDK UIO driver

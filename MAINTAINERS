@@ -25,6 +25,7 @@ M: Thomas Monjalon <thomas.monjalon@6wind.com>
 T: git://dpdk.org/dpdk
 F: MAINTAINERS
 F: scripts/check-maintainers.sh
+F: scripts/check-git-log.sh
 F: scripts/checkpatches.sh
 F: scripts/load-devel-config.sh
 F: scripts/test-build.sh
@@ -55,7 +56,6 @@ F: scripts/auto-config-h.sh
 F: scripts/depdirs-rule.sh
 F: scripts/gen-build-mk.sh
 F: scripts/gen-config-h.sh
-F: scripts/merge-maps.sh
 F: scripts/relpath.sh
 F: doc/build-sdk-quick.txt
 F: doc/guides/prog_guide/build_app.rst
@@ -131,6 +131,7 @@ F: doc/guides/sample_app_ug/multi_process.rst
 ARM v7
 M: Jan Viktorin <viktorin@rehivetech.com>
 M: Jianbo Liu <jianbo.liu@linaro.org>
+F: lib/librte_eal/common/arch/arm/
 F: lib/librte_eal/common/include/arch/arm/
 
 ARM v8
@@ -138,19 +139,25 @@ M: Jerin Jacob <jerin.jacob@caviumnetworks.com>
 M: Jianbo Liu <jianbo.liu@linaro.org>
 F: lib/librte_eal/common/include/arch/arm/*_64.h
 F: lib/librte_acl/acl_run_neon.*
+F: lib/librte_lpm/rte_lpm_neon.h
+F: lib/librte_hash/rte*_arm64.h
 
 EZchip TILE-Gx
 M: Zhigang Lu <zlu@ezchip.com>
+M: Liming Sun <lsun@ezchip.com>
+F: lib/librte_eal/common/arch/tile/
 F: lib/librte_eal/common/include/arch/tile/
 F: drivers/net/mpipe/
 
 IBM POWER
 M: Chao Zhu <chaozhu@linux.vnet.ibm.com>
+F: lib/librte_eal/common/arch/ppc_64/
 F: lib/librte_eal/common/include/arch/ppc_64/
 
 Intel x86
 M: Bruce Richardson <bruce.richardson@intel.com>
 M: Konstantin Ananyev <konstantin.ananyev@intel.com>
+F: lib/librte_eal/common/arch/x86/
 F: lib/librte_eal/common/include/arch/x86/
 
 Linux EAL (with overlaps)
@@ -160,6 +167,7 @@ F: lib/librte_eal/linuxapp/eal/
 F: doc/guides/linux_gsg/
 
 Linux UIO
+M: Ferruh Yigit <ferruh.yigit@intel.com>
 F: lib/librte_eal/linuxapp/igb_uio/
 F: lib/librte_eal/linuxapp/eal/*uio*
 
@@ -171,10 +179,8 @@ Linux Xen
 F: lib/librte_eal/linuxapp/xen_dom0/
 F: lib/librte_eal/linuxapp/eal/*xen*
 F: lib/librte_eal/linuxapp/eal/include/exec-env/rte_dom0_common.h
-F: lib/librte_mempool/rte_dom0_mempool.c
 F: drivers/net/xenvirt/
 F: doc/guides/xen/
-F: app/test-pmd/mempool_*
 F: examples/vhost_xen/
 
 FreeBSD EAL (with overlaps)
@@ -218,16 +224,12 @@ F: lib/librte_mbuf/
 F: doc/guides/prog_guide/mbuf_lib.rst
 F: app/test/test_mbuf.c
 
-Packet buffer offload - EXPERIMENTAL
-M: Declan Doherty <declan.doherty@intel.com>
-F: lib/librte_mbuf_offload/
-
 Ethernet API
 M: Thomas Monjalon <thomas.monjalon@6wind.com>
 F: lib/librte_ether/
 F: scripts/test-null.sh
 
-Crypto API - EXPERIMENTAL
+Crypto API
 M: Declan Doherty <declan.doherty@intel.com>
 F: lib/librte_cryptodev/
 F: app/test/test_cryptodev*
@@ -257,6 +259,14 @@ Linux AF_PACKET
 M: John W. Linville <linville@tuxdriver.com>
 F: drivers/net/af_packet/
 
+Amazon ENA
+M: Jan Medala <jan@semihalf.com>
+M: Jakub Palider <jpa@semihalf.com>
+M: Netanel Belgazal <netanel@amazon.com>
+M: Evgeny Schemeilin <evgenys@amazon.com>
+F: drivers/net/ena/
+F: doc/guides/nics/ena.rst
+
 Chelsio cxgbe
 M: Rahul Lakkireddy <rahul.lakkireddy@chelsio.com>
 F: drivers/net/cxgbe/
@@ -264,8 +274,9 @@ F: doc/guides/nics/cxgbe.rst
 
 Cisco enic
 M: John Daley <johndale@cisco.com>
-M: Sujith Sankar <ssujith@cisco.com>
+M: Nelson Escobar <neescoba@cisco.com>
 F: drivers/net/enic/
+F: doc/guides/nics/enic.rst
 
 Combo szedata2
 M: Matej Vido <matejvido@gmail.com>
@@ -287,7 +298,9 @@ F: doc/guides/nics/intel_vf.rst
 
 Intel i40e
 M: Helin Zhang <helin.zhang@intel.com>
+M: Jingjing Wu <jingjing.wu@intel.com>
 F: drivers/net/i40e/
+F: doc/guides/nics/i40e.rst
 F: doc/guides/nics/intel_vf.rst
 
 Intel fm10k
@@ -316,6 +329,13 @@ M: Rasesh Mody <rasesh.mody@qlogic.com>
 F: drivers/net/bnx2x/
 F: doc/guides/nics/bnx2x.rst
 
+QLogic qede PMD
+M: Harish Patil <harish.patil@qlogic.com>
+M: Rasesh Mody <rasesh.mody@qlogic.com>
+M: Sony Chacko <sony.chacko@qlogic.com>
+F: drivers/net/qede/
+F: doc/guides/nics/qede.rst
+
 RedHat virtio
 M: Huawei Xie <huawei.xie@intel.com>
 M: Yuanhan Liu <yuanhan.liu@linux.intel.com>
@@ -331,9 +351,14 @@ M: Yong Wang <yongwang@vmware.com>
 F: drivers/net/vmxnet3/
 F: doc/guides/nics/vmxnet3.rst
 
+Vhost PMD
+M: Tetsuya Mukawa <mukawa@igel.co.jp>
+M: Yuanhan Liu <yuanhan.liu@linux.intel.com>
+F: drivers/net/vhost/
+
 PCAP PMD
 M: Nicolás Pernas Maradei <nicolas.pernas.maradei@emutex.com>
-M: John McNamara <john.mcnamara@intel.com>
+M: Ferruh Yigit <ferruh.yigit@intel.com>
 F: drivers/net/pcap/
 F: doc/guides/nics/pcap_ring.rst
 
@@ -348,12 +373,32 @@ Null PMD
 M: Tetsuya Mukawa <mukawa@igel.co.jp>
 F: drivers/net/null/
 
+Intel AES-NI GCM PMD
+M: Declan Doherty <declan.doherty@intel.com>
+F: drivers/crypto/aesni_gcm/
+F: doc/guides/cryptodevs/aesni_gcm.rst
+
 Intel AES-NI Multi-Buffer
 M: Declan Doherty <declan.doherty@intel.com>
 F: drivers/crypto/aesni_mb/
+F: doc/guides/cryptodevs/aesni_mb.rst
 
 Intel QuickAssist
+M: John Griffin <john.griffin@intel.com>
+M: Fiona Trahe <fiona.trahe@intel.com>
+M: Deepak Kumar Jain <deepak.k.jain@intel.com>
 F: drivers/crypto/qat/
+F: doc/guides/cryptodevs/qat.rst
+
+SNOW 3G PMD
+M: Pablo de Lara <pablo.de.lara.guarch@intel.com>
+F: drivers/crypto/snow3g/
+F: doc/guides/cryptodevs/snow3g.rst
+
+Null Crypto PMD
+M: Declan Doherty <declan.doherty@intel.com>
+F: drivers/crypto/null/
+F: doc/guides/cryptodevs/null.rst
 
 
 Packet processing
@@ -437,6 +482,7 @@ F: lib/librte_lpm/
 F: doc/guides/prog_guide/lpm*
 F: app/test/test_lpm*
 F: app/test/test_func_reentrancy.c
+F: app/test/test_xmmt_ops.h
 
 Traffic metering
 M: Cristian Dumitrescu <cristian.dumitrescu@intel.com>
@@ -545,6 +591,10 @@ M: Pablo de Lara <pablo.de.lara.guarch@intel.com>
 F: examples/helloworld/
 F: doc/guides/sample_app_ug/hello_world.rst
 
+M: Sergio Gonzalez Monroy <sergio.gonzalez.monroy@intel.com>
+F: examples/ipsec-secgw/
+F: doc/guides/sample_app_ug/ipsec_secgw.rst
+
 F: examples/ipv4_multicast/
 F: doc/guides/sample_app_ug/ipv4_multicast.rst
 
@@ -552,6 +602,10 @@ M: Bruce Richardson <bruce.richardson@intel.com>
 M: Pablo de Lara <pablo.de.lara.guarch@intel.com>
 F: examples/l2fwd/
 F: doc/guides/sample_app_ug/l2_forward_real_virtual.rst
+
+M: Tomasz Kantecki <tomasz.kantecki@intel.com>
+F: doc/guides/sample_app_ug/l2_forward_cat.rst
+F: examples/l2fwd-cat/
 
 F: examples/l3fwd/
 F: doc/guides/sample_app_ug/l3_forward.rst
@@ -573,6 +627,10 @@ M: Ian Betts <ian.betts@intel.com>
 F: examples/performance-thread/
 F: doc/guides/sample_app_ug/performance_thread.rst
 
+M: Pablo de Lara <pablo.de.lara.guarch@intel.com>
+M: Daniel Mrzyglod <danielx.t.mrzyglod@intel.com>
+F: examples/ptpclient/
+
 F: examples/quota_watermark/
 F: doc/guides/sample_app_ug/quota_watermark.rst
 
@@ -592,7 +650,3 @@ F: examples/tep_termination/
 F: examples/vmdq/
 F: examples/vmdq_dcb/
 F: doc/guides/sample_app_ug/vmdq_dcb_forwarding.rst
-
-M: Pablo de Lara <pablo.de.lara.guarch@intel.com>
-M: Daniel Mrzyglod <danielx.t.mrzyglod@intel.com>
-F: examples/ptpclient/

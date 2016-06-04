@@ -93,31 +93,46 @@ struct rxq_elt {
 	struct rte_mbuf *buf; /* SGE buffer. */
 };
 
+/* Flow director queue structure. */
+struct fdir_queue {
+	struct ibv_qp *qp; /* Associated RX QP. */
+	struct ibv_exp_rwq_ind_table *ind_table; /* Indirection table. */
+};
+
 struct priv;
 
 /* RX queue descriptor. */
 struct rxq {
 	struct priv *priv; /* Back pointer to private data. */
 	struct rte_mempool *mp; /* Memory Pool for allocations. */
-	struct ibv_mr *mr; /* Memory Region (for mp). */
 	struct ibv_cq *cq; /* Completion Queue. */
 	struct ibv_exp_wq *wq; /* Work Queue. */
-	struct ibv_exp_wq_family *if_wq; /* WQ burst interface. */
-	struct ibv_exp_cq_family *if_cq; /* CQ interface. */
+	int32_t (*poll)(); /* Verbs poll function. */
+	int32_t (*recv)(); /* Verbs receive function. */
 	unsigned int port_id; /* Port ID for incoming packets. */
 	unsigned int elts_n; /* (*elts)[] length. */
 	unsigned int elts_head; /* Current index in (*elts)[]. */
+	unsigned int sp:1; /* Use scattered RX elements. */
+	unsigned int csum:1; /* Enable checksum offloading. */
+	unsigned int csum_l2tun:1; /* Same for L2 tunnels. */
+	unsigned int vlan_strip:1; /* Enable VLAN stripping. */
+	unsigned int crc_present:1; /* CRC must be subtracted. */
 	union {
 		struct rxq_elt_sp (*sp)[]; /* Scattered RX elements. */
 		struct rxq_elt (*no_sp)[]; /* RX elements. */
 	} elts;
-	unsigned int sp:1; /* Use scattered RX elements. */
-	unsigned int csum:1; /* Enable checksum offloading. */
-	unsigned int csum_l2tun:1; /* Same for L2 tunnels. */
 	uint32_t mb_len; /* Length of a mp-issued mbuf. */
-	struct mlx5_rxq_stats stats; /* RX queue counters. */
 	unsigned int socket; /* CPU socket ID for allocations. */
+	struct mlx5_rxq_stats stats; /* RX queue counters. */
 	struct ibv_exp_res_domain *rd; /* Resource Domain. */
+	struct fdir_queue fdir_queue; /* Flow director queue. */
+	struct ibv_mr *mr; /* Memory Region (for mp). */
+	struct ibv_exp_wq_family *if_wq; /* WQ burst interface. */
+#ifdef HAVE_EXP_DEVICE_ATTR_VLAN_OFFLOADS
+	struct ibv_exp_cq_family_v1 *if_cq; /* CQ interface. */
+#else /* HAVE_EXP_DEVICE_ATTR_VLAN_OFFLOADS */
+	struct ibv_exp_cq_family *if_cq; /* CQ interface. */
+#endif /* HAVE_EXP_DEVICE_ATTR_VLAN_OFFLOADS */
 };
 
 /* Hash RX queue types. */
@@ -176,11 +191,41 @@ struct ind_table_init {
 	unsigned int hash_types_n;
 };
 
+/* Initialization data for special flows. */
+struct special_flow_init {
+	uint8_t dst_mac_val[6];
+	uint8_t dst_mac_mask[6];
+	unsigned int hash_types;
+	unsigned int per_vlan:1;
+};
+
 enum hash_rxq_flow_type {
-	HASH_RXQ_FLOW_TYPE_MAC,
 	HASH_RXQ_FLOW_TYPE_PROMISC,
 	HASH_RXQ_FLOW_TYPE_ALLMULTI,
+	HASH_RXQ_FLOW_TYPE_BROADCAST,
+	HASH_RXQ_FLOW_TYPE_IPV6MULTI,
+	HASH_RXQ_FLOW_TYPE_MAC,
 };
+
+#ifndef NDEBUG
+static inline const char *
+hash_rxq_flow_type_str(enum hash_rxq_flow_type flow_type)
+{
+	switch (flow_type) {
+	case HASH_RXQ_FLOW_TYPE_PROMISC:
+		return "promiscuous";
+	case HASH_RXQ_FLOW_TYPE_ALLMULTI:
+		return "allmulticast";
+	case HASH_RXQ_FLOW_TYPE_BROADCAST:
+		return "broadcast";
+	case HASH_RXQ_FLOW_TYPE_IPV6MULTI:
+		return "IPv6 multicast";
+	case HASH_RXQ_FLOW_TYPE_MAC:
+		return "MAC";
+	}
+	return NULL;
+}
+#endif /* NDEBUG */
 
 struct hash_rxq {
 	struct priv *priv; /* Back pointer to private data. */
@@ -188,8 +233,8 @@ struct hash_rxq {
 	enum hash_rxq_type type; /* Hash RX queue type. */
 	/* MAC flow steering rules, one per VLAN ID. */
 	struct ibv_exp_flow *mac_flow[MLX5_MAX_MAC_ADDRESSES][MLX5_MAX_VLAN_IDS];
-	struct ibv_exp_flow *promisc_flow; /* Promiscuous flow. */
-	struct ibv_exp_flow *allmulti_flow; /* Multicast flow. */
+	struct ibv_exp_flow *special_flow
+		[MLX5_MAX_SPECIAL_FLOWS][MLX5_MAX_VLAN_IDS];
 };
 
 /* TX element. */
@@ -208,30 +253,53 @@ typedef uint8_t linear_t[16384];
 /* TX queue descriptor. */
 struct txq {
 	struct priv *priv; /* Back pointer to private data. */
-	struct {
-		const struct rte_mempool *mp; /* Cached Memory Pool. */
-		struct ibv_mr *mr; /* Memory Region (for mp). */
-		uint32_t lkey; /* mr->lkey */
-	} mp2mr[MLX5_PMD_TX_MP_CACHE]; /* MP to MR translation table. */
+	int32_t (*poll_cnt)(struct ibv_cq *cq, uint32_t max);
+	int (*send_pending)();
+#ifdef HAVE_VERBS_VLAN_INSERTION
+	int (*send_pending_vlan)();
+#endif
+#if MLX5_PMD_MAX_INLINE > 0
+	int (*send_pending_inline)();
+#ifdef HAVE_VERBS_VLAN_INSERTION
+	int (*send_pending_inline_vlan)();
+#endif
+#endif
+#if MLX5_PMD_SGE_WR_N > 1
+	int (*send_pending_sg_list)();
+#ifdef HAVE_VERBS_VLAN_INSERTION
+	int (*send_pending_sg_list_vlan)();
+#endif
+#endif
+	int (*send_flush)(struct ibv_qp *qp);
 	struct ibv_cq *cq; /* Completion Queue. */
 	struct ibv_qp *qp; /* Queue Pair. */
-	struct ibv_exp_qp_burst_family *if_qp; /* QP burst interface. */
-	struct ibv_exp_cq_family *if_cq; /* CQ interface. */
+	struct txq_elt (*elts)[]; /* TX elements. */
 #if MLX5_PMD_MAX_INLINE > 0
 	uint32_t max_inline; /* Max inline send size <= MLX5_PMD_MAX_INLINE. */
 #endif
 	unsigned int elts_n; /* (*elts)[] length. */
-	struct txq_elt (*elts)[]; /* TX elements. */
 	unsigned int elts_head; /* Current index in (*elts)[]. */
 	unsigned int elts_tail; /* First element awaiting completion. */
 	unsigned int elts_comp; /* Number of completion requests. */
 	unsigned int elts_comp_cd; /* Countdown for next completion request. */
 	unsigned int elts_comp_cd_init; /* Initial value for countdown. */
+	struct {
+		const struct rte_mempool *mp; /* Cached Memory Pool. */
+		struct ibv_mr *mr; /* Memory Region (for mp). */
+		uint32_t lkey; /* mr->lkey */
+	} mp2mr[MLX5_PMD_TX_MP_CACHE]; /* MP to MR translation table. */
 	struct mlx5_txq_stats stats; /* TX queue counters. */
+	/* Elements used only for init part are here. */
 	linear_t (*elts_linear)[]; /* Linearized buffers. */
 	struct ibv_mr *mr_linear; /* Memory Region for linearized buffers. */
-	unsigned int socket; /* CPU socket ID for allocations. */
+#ifdef HAVE_VERBS_VLAN_INSERTION
+	struct ibv_exp_qp_burst_family_v1 *if_qp; /* QP burst interface. */
+#else
+	struct ibv_exp_qp_burst_family *if_qp; /* QP burst interface. */
+#endif
+	struct ibv_exp_cq_family *if_cq; /* CQ interface. */
 	struct ibv_exp_res_domain *rd; /* Resource Domain. */
+	unsigned int socket; /* CPU socket ID for allocations. */
 };
 
 /* mlx5_rxq.c */
@@ -242,11 +310,12 @@ extern const unsigned int hash_rxq_init_n;
 extern uint8_t rss_hash_default_key[];
 extern const size_t rss_hash_default_key_len;
 
-size_t hash_rxq_flow_attr(const struct hash_rxq *, struct ibv_exp_flow_attr *,
-			  size_t);
+size_t priv_flow_attr(struct priv *, struct ibv_exp_flow_attr *,
+		      size_t, enum hash_rxq_type);
 int priv_create_hash_rxqs(struct priv *);
 void priv_destroy_hash_rxqs(struct priv *);
 int priv_allow_flow_type(struct priv *, enum hash_rxq_flow_type);
+int priv_rehash_flows(struct priv *);
 void rxq_cleanup(struct rxq *);
 int rxq_rehash(struct rte_eth_dev *, struct rxq *);
 int rxq_setup(struct rte_eth_dev *, struct rxq *, uint16_t, unsigned int,
@@ -254,17 +323,26 @@ int rxq_setup(struct rte_eth_dev *, struct rxq *, uint16_t, unsigned int,
 int mlx5_rx_queue_setup(struct rte_eth_dev *, uint16_t, uint16_t, unsigned int,
 			const struct rte_eth_rxconf *, struct rte_mempool *);
 void mlx5_rx_queue_release(void *);
+uint16_t mlx5_rx_burst_secondary_setup(void *dpdk_rxq, struct rte_mbuf **pkts,
+			      uint16_t pkts_n);
+
 
 /* mlx5_txq.c */
 
 void txq_cleanup(struct txq *);
+int txq_setup(struct rte_eth_dev *dev, struct txq *txq, uint16_t desc,
+	  unsigned int socket, const struct rte_eth_txconf *conf);
+
 int mlx5_tx_queue_setup(struct rte_eth_dev *, uint16_t, uint16_t, unsigned int,
 			const struct rte_eth_txconf *);
 void mlx5_tx_queue_release(void *);
+uint16_t mlx5_tx_burst_secondary_setup(void *dpdk_txq, struct rte_mbuf **pkts,
+			      uint16_t pkts_n);
 
 /* mlx5_rxtx.c */
 
-void txq_mp2mr_iter(const struct rte_mempool *, void *);
+struct ibv_mr *mlx5_mp2mr(struct ibv_pd *, struct rte_mempool *);
+void txq_mp2mr_iter(struct rte_mempool *, void *);
 uint16_t mlx5_tx_burst(void *, struct rte_mbuf **, uint16_t);
 uint16_t mlx5_rx_burst_sp(void *, struct rte_mbuf **, uint16_t);
 uint16_t mlx5_rx_burst(void *, struct rte_mbuf **, uint16_t);

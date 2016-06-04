@@ -36,7 +36,6 @@ DIRS-$(CONFIG_RTE_LIBRTE_EAL) += librte_eal
 DIRS-$(CONFIG_RTE_LIBRTE_RING) += librte_ring
 DIRS-$(CONFIG_RTE_LIBRTE_MEMPOOL) += librte_mempool
 DIRS-$(CONFIG_RTE_LIBRTE_MBUF) += librte_mbuf
-DIRS-$(CONFIG_RTE_LIBRTE_MBUF_OFFLOAD) += librte_mbuf_offload
 DIRS-$(CONFIG_RTE_LIBRTE_TIMER) += librte_timer
 DIRS-$(CONFIG_RTE_LIBRTE_CFGFILE) += librte_cfgfile
 DIRS-$(CONFIG_RTE_LIBRTE_CMDLINE) += librte_cmdline
@@ -64,5 +63,4 @@ DIRS-$(CONFIG_RTE_LIBRTE_KNI) += librte_kni
 DIRS-$(CONFIG_RTE_LIBRTE_IVSHMEM) += librte_ivshmem
 endif
 
-include $(RTE_SDK)/mk/rte.sharelib.mk
 include $(RTE_SDK)/mk/rte.subdir.mk

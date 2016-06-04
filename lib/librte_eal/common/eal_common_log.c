@@ -98,9 +98,10 @@ static int history_enabled = 1;
 struct log_cur_msg {
 	uint32_t loglevel; /**< log level - see rte_log.h */
 	uint32_t logtype;  /**< log type  - see rte_log.h */
-} __rte_cache_aligned;
-static struct log_cur_msg log_cur_msg[RTE_MAX_LCORE]; /**< per core log */
+};
 
+ /* per core log */
+static RTE_DEFINE_PER_LCORE(struct log_cur_msg, log_cur_msg);
 
 /* default logs */
 
@@ -205,21 +206,13 @@ rte_get_log_type(void)
 /* get the current loglevel for the message beeing processed */
 int rte_log_cur_msg_loglevel(void)
 {
-	unsigned lcore_id;
-	lcore_id = rte_lcore_id();
-	if (lcore_id >= RTE_MAX_LCORE)
-		return rte_get_log_level();
-	return log_cur_msg[lcore_id].loglevel;
+	return RTE_PER_LCORE(log_cur_msg).loglevel;
 }
 
 /* get the current logtype for the message beeing processed */
 int rte_log_cur_msg_logtype(void)
 {
-	unsigned lcore_id;
-	lcore_id = rte_lcore_id();
-	if (lcore_id >= RTE_MAX_LCORE)
-		return rte_get_log_type();
-	return log_cur_msg[lcore_id].logtype;
+	return RTE_PER_LCORE(log_cur_msg).logtype;
 }
 
 /* Dump log history to file */
@@ -273,17 +266,13 @@ rte_vlog(uint32_t level, uint32_t logtype, const char *format, va_list ap)
 {
 	int ret;
 	FILE *f = rte_logs.file;
-	unsigned lcore_id;
 
 	if ((level > rte_logs.level) || !(logtype & rte_logs.type))
 		return 0;
 
 	/* save loglevel and logtype in a global per-lcore variable */
-	lcore_id = rte_lcore_id();
-	if (lcore_id < RTE_MAX_LCORE) {
-		log_cur_msg[lcore_id].loglevel = level;
-		log_cur_msg[lcore_id].logtype = logtype;
-	}
+	RTE_PER_LCORE(log_cur_msg).loglevel = level;
+	RTE_PER_LCORE(log_cur_msg).logtype = logtype;
 
 	ret = vfprintf(f, format, ap);
 	fflush(f);
@@ -322,7 +311,7 @@ rte_eal_common_log_init(FILE *default_log)
 				LOG_ELT_SIZE, 0, 0,
 				NULL, NULL,
 				NULL, NULL,
-				SOCKET_ID_ANY, 0);
+				SOCKET_ID_ANY, MEMPOOL_F_NO_PHYS_CONTIG);
 
 	if ((log_history_mp == NULL) &&
 	    ((log_history_mp = rte_mempool_lookup(LOG_HISTORY_MP_NAME)) == NULL)){
@@ -333,5 +322,10 @@ rte_eal_common_log_init(FILE *default_log)
 
 	default_log_stream = default_log;
 	rte_openlog_stream(default_log);
+
+#if RTE_LOG_LEVEL >= RTE_LOG_DEBUG
+	RTE_LOG(NOTICE, EAL, "Debug logs available - lower performance\n");
+#endif
+
 	return 0;
 }

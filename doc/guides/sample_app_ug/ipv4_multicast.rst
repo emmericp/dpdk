@@ -39,8 +39,7 @@ Overview
 --------
 
 The application demonstrates the use of zero-copy buffers for packet forwarding.
-The initialization and run-time paths are very similar to those of the L2 forwarding application
-(see Chapter 9 "L2 Forwarding Sample Application (in Real and Virtualized Environments)" for details more information).
+The initialization and run-time paths are very similar to those of the :doc:`l2_forward_real_virtual`.
 This guide highlights the differences between the two applications.
 There are two key differences from the L2 Forwarding sample application:
 
@@ -134,8 +133,7 @@ Explanation
 
 The following sections provide some explanation of the code.
 As mentioned in the overview section,
-the initialization and run-time paths are very similar to those of the L2 Forwarding sample application
-(see Chapter 9 "L2 Forwarding Sample Application in Real and Virtualized Environments" for more information).
+the initialization and run-time paths are very similar to those of the :doc:`l2_forward_real_virtual`.
 The following sections describe aspects that are specific to the IPv4 Multicast sample application.
 
 Memory Pool Initialization
@@ -195,7 +193,7 @@ Firstly, the Ethernet* header is removed from the packet and the IPv4 address is
     /* Remove the Ethernet header from the input packet */
 
     iphdr = (struct ipv4_hdr *)rte_pktmbuf_adj(m, sizeof(struct ether_hdr));
-    RTE_MBUF_ASSERT(iphdr != NULL);
+    RTE_ASSERT(iphdr != NULL);
     dest_addr = rte_be_to_cpu_32(iphdr->dst_addr);
 
 Then, the packet is checked to see if it has a multicast destination address and
@@ -273,7 +271,7 @@ The actual packet transmission is done in the mcast_send_pkt() function:
 
         ethdr = (struct ether_hdr *)rte_pktmbuf_prepend(pkt, (uint16_t) sizeof(*ethdr));
 
-        RTE_MBUF_ASSERT(ethdr != NULL);
+        RTE_ASSERT(ethdr != NULL);
 
         ether_addr_copy(dest_addr, &ethdr->d_addr);
         ether_addr_copy(&ports_eth_addr[port], &ethdr->s_addr);

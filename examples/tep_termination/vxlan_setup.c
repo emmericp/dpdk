@@ -191,7 +191,7 @@ vxlan_port_init(uint8_t port, struct rte_mempool *mbuf_pool)
 	/* Configure UDP port for UDP tunneling */
 	tunnel_udp.udp_port = udp_port;
 	tunnel_udp.prot_type = RTE_TUNNEL_TYPE_VXLAN;
-	retval = rte_eth_dev_udp_tunnel_add(port, &tunnel_udp);
+	retval = rte_eth_dev_udp_tunnel_port_add(port, &tunnel_udp);
 	if (retval < 0)
 		return retval;
 	rte_eth_macaddr_get(port, &ports_eth_addr[port]);
@@ -278,11 +278,11 @@ vxlan_link(struct vhost_dev *vdev, struct rte_mbuf *m)
 	memset(&tunnel_filter_conf, 0,
 		sizeof(struct rte_eth_tunnel_filter_conf));
 
-	tunnel_filter_conf.outer_mac = &ports_eth_addr[0];
+	ether_addr_copy(&ports_eth_addr[0], &tunnel_filter_conf.outer_mac);
 	tunnel_filter_conf.filter_type = tep_filter_type[filter_idx];
 
 	/* inner MAC */
-	tunnel_filter_conf.inner_mac = &vdev->mac_address;
+	ether_addr_copy(&vdev->mac_address, &tunnel_filter_conf.inner_mac);
 
 	tunnel_filter_conf.queue_id = vdev->rx_q;
 	tunnel_filter_conf.tenant_id = tenant_id_conf[vdev->rx_q];
@@ -366,8 +366,8 @@ vxlan_unlink(struct vhost_dev *vdev)
 		memset(&tunnel_filter_conf, 0,
 			sizeof(struct rte_eth_tunnel_filter_conf));
 
-		tunnel_filter_conf.outer_mac = &ports_eth_addr[0];
-		tunnel_filter_conf.inner_mac = &vdev->mac_address;
+		ether_addr_copy(&ports_eth_addr[0], &tunnel_filter_conf.outer_mac);
+		ether_addr_copy(&vdev->mac_address, &tunnel_filter_conf.inner_mac);
 		tunnel_filter_conf.tenant_id = tenant_id_conf[vdev->rx_q];
 		tunnel_filter_conf.filter_type = tep_filter_type[filter_idx];
 

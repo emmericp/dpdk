@@ -65,6 +65,9 @@ static inline void dump_rxd(union fm10k_rx_desc *rxd)
 }
 #endif
 
+/* @note: When this function is changed, make corresponding change to
+ * fm10k_dev_supported_ptypes_get()
+ */
 static inline void
 rx_desc_to_ol_flags(struct rte_mbuf *m, const union fm10k_rx_desc *d)
 {
@@ -152,6 +155,12 @@ fm10k_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 		 */
 		mbuf->ol_flags |= PKT_RX_VLAN_PKT;
 		mbuf->vlan_tci = desc.w.vlan;
+		/**
+		 * mbuf->vlan_tci_outer is an idle field in fm10k driver,
+		 * so it can be selected to store sglort value.
+		 */
+		if (q->rx_ftag_en)
+			mbuf->vlan_tci_outer = rte_le_to_cpu_16(desc.w.sglort);
 
 		rx_pkts[count] = mbuf;
 		if (++next_dd == q->nb_desc) {
@@ -305,8 +314,15 @@ fm10k_recv_scattered_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 		 * So, always PKT_RX_VLAN_PKT flag is set and vlan_tci
 		 * is valid for each RX packet's mbuf.
 		 */
-		mbuf->ol_flags |= PKT_RX_VLAN_PKT;
+		first_seg->ol_flags |= PKT_RX_VLAN_PKT;
 		first_seg->vlan_tci = desc.w.vlan;
+		/**
+		 * mbuf->vlan_tci_outer is an idle field in fm10k driver,
+		 * so it can be selected to store sglort value.
+		 */
+		if (q->rx_ftag_en)
+			first_seg->vlan_tci_outer =
+				rte_le_to_cpu_16(desc.w.sglort);
 
 		/* Prefetch data of first segment, if configured to do so. */
 		rte_packet_prefetch((char *)first_seg->buf_addr +
@@ -369,6 +385,76 @@ fm10k_recv_scattered_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 	return nb_rcv;
 }
 
+int
+fm10k_dev_rx_descriptor_done(void *rx_queue, uint16_t offset)
+{
+	volatile union fm10k_rx_desc *rxdp;
+	struct fm10k_rx_queue *rxq = rx_queue;
+	uint16_t desc;
+	int ret;
+
+	if (unlikely(offset >= rxq->nb_desc)) {
+		PMD_DRV_LOG(ERR, "Invalid RX descriptor offset %u", offset);
+		return 0;
+	}
+
+	desc = rxq->next_dd + offset;
+	if (desc >= rxq->nb_desc)
+		desc -= rxq->nb_desc;
+
+	rxdp = &rxq->hw_ring[desc];
+
+	ret = !!(rxdp->w.status &
+			rte_cpu_to_le_16(FM10K_RXD_STATUS_DD));
+
+	return ret;
+}
+
+/*
+ * Free multiple TX mbuf at a time if they are in the same pool
+ *
+ * @txep: software desc ring index that starts to free
+ * @num: number of descs to free
+ *
+ */
+static inline void tx_free_bulk_mbuf(struct rte_mbuf **txep, int num)
+{
+	struct rte_mbuf *m, *free[RTE_FM10K_TX_MAX_FREE_BUF_SZ];
+	int i;
+	int nb_free = 0;
+
+	if (unlikely(num == 0))
+		return;
+
+	m = __rte_pktmbuf_prefree_seg(txep[0]);
+	if (likely(m != NULL)) {
+		free[0] = m;
+		nb_free = 1;
+		for (i = 1; i < num; i++) {
+			m = __rte_pktmbuf_prefree_seg(txep[i]);
+			if (likely(m != NULL)) {
+				if (likely(m->pool == free[0]->pool))
+					free[nb_free++] = m;
+				else {
+					rte_mempool_put_bulk(free[0]->pool,
+							(void *)free, nb_free);
+					free[0] = m;
+					nb_free = 1;
+				}
+			}
+			txep[i] = NULL;
+		}
+		rte_mempool_put_bulk(free[0]->pool, (void **)free, nb_free);
+	} else {
+		for (i = 1; i < num; i++) {
+			m = __rte_pktmbuf_prefree_seg(txep[i]);
+			if (m != NULL)
+				rte_mempool_put(m->pool, m);
+			txep[i] = NULL;
+		}
+	}
+}
+
 static inline void tx_free_descriptors(struct fm10k_tx_queue *q)
 {
 	uint16_t next_rs, count = 0;
@@ -385,11 +471,7 @@ static inline void tx_free_descriptors(struct fm10k_tx_queue *q)
 	 * including nb_desc */
 	if (q->last_free > next_rs) {
 		count = q->nb_desc - q->last_free;
-		while (q->last_free < q->nb_desc) {
-			rte_pktmbuf_free_seg(q->sw_ring[q->last_free]);
-			q->sw_ring[q->last_free] = NULL;
-			++q->last_free;
-		}
+		tx_free_bulk_mbuf(&q->sw_ring[q->last_free], count);
 		q->last_free = 0;
 	}
 
@@ -397,10 +479,10 @@ static inline void tx_free_descriptors(struct fm10k_tx_queue *q)
 	q->nb_free += count + (next_rs + 1 - q->last_free);
 
 	/* free buffers from last_free, up to and including next_rs */
-	while (q->last_free <= next_rs) {
-		rte_pktmbuf_free_seg(q->sw_ring[q->last_free]);
-		q->sw_ring[q->last_free] = NULL;
-		++q->last_free;
+	if (q->last_free <= next_rs) {
+		count = next_rs - q->last_free + 1;
+		tx_free_bulk_mbuf(&q->sw_ring[q->last_free], count);
+		q->last_free += count;
 	}
 
 	if (q->last_free == q->nb_desc)
@@ -432,6 +514,8 @@ static inline void tx_xmit_pkt(struct fm10k_tx_queue *q, struct rte_mbuf *mb)
 	q->nb_free -= mb->nb_segs;
 
 	q->hw_ring[q->next_free].flags = 0;
+	if (q->tx_ftag_en)
+		q->hw_ring[q->next_free].flags |= FM10K_TXD_FLAG_FTAG;
 	/* set checksum flags on first descriptor of packet. SCTP checksum
 	 * offload is not supported, but we do not explicitly check for this
 	 * case in favor of greatly simplified processing. */

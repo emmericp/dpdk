@@ -232,6 +232,7 @@ rte_cfgfile_load(const char *filename, int flags)
 	return cfg;
 
 error1:
+	cfg->num_sections = curr_section + 1;
 	rte_cfgfile_close(cfg);
 error2:
 	fclose(f);
@@ -328,6 +329,24 @@ rte_cfgfile_section_entries(struct rte_cfgfile *cfg, const char *sectionname,
 	const struct rte_cfgfile_section *sect = _get_section(cfg, sectionname);
 	if (sect == NULL)
 		return -1;
+	for (i = 0; i < max_entries && i < sect->num_entries; i++)
+		entries[i] = *sect->entries[i];
+	return i;
+}
+
+int
+rte_cfgfile_section_entries_by_index(struct rte_cfgfile *cfg, int index,
+		char *sectionname,
+		struct rte_cfgfile_entry *entries, int max_entries)
+{
+	int i;
+	const struct rte_cfgfile_section *sect;
+
+	if (index < 0 || index >= cfg->num_sections)
+		return -1;
+
+	sect = cfg->sections[index];
+	snprintf(sectionname, CFG_NAME_LEN, "%s", sect->name);
 	for (i = 0; i < max_entries && i < sect->num_entries; i++)
 		entries[i] = *sect->entries[i];
 	return i;

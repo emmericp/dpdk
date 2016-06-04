@@ -103,8 +103,6 @@ struct tx_pcaps {
 struct pmd_internals {
 	struct pcap_rx_queue rx_queue[RTE_PMD_RING_MAX_RX_RINGS];
 	struct pcap_tx_queue tx_queue[RTE_PMD_RING_MAX_TX_RINGS];
-	unsigned nb_rx_queues;
-	unsigned nb_tx_queues;
 	int if_index;
 	int single_iface;
 };
@@ -125,9 +123,10 @@ static int open_single_iface(const char *iface, pcap_t **pcap);
 static struct ether_addr eth_addr = { .addr_bytes = { 0, 0, 0, 0x1, 0x2, 0x3 } };
 static const char *drivername = "Pcap PMD";
 static struct rte_eth_link pmd_link = {
-		.link_speed = 10000,
+		.link_speed = ETH_SPEED_NUM_10G,
 		.link_duplex = ETH_LINK_FULL_DUPLEX,
-		.link_status = 0
+		.link_status = ETH_LINK_DOWN,
+		.link_autoneg = ETH_LINK_SPEED_FIXED,
 };
 
 static int
@@ -220,25 +219,25 @@ eth_pcap_rx(void *queue,
 		buf_size = (uint16_t)(rte_pktmbuf_data_room_size(pcap_q->mb_pool) -
 				RTE_PKTMBUF_HEADROOM);
 
-		if (header.len <= buf_size) {
+		if (header.caplen <= buf_size) {
 			/* pcap packet will fit in the mbuf, go ahead and copy */
 			rte_memcpy(rte_pktmbuf_mtod(mbuf, void *), packet,
-					header.len);
-			mbuf->data_len = (uint16_t)header.len;
+					header.caplen);
+			mbuf->data_len = (uint16_t)header.caplen;
 		} else {
 			/* Try read jumbo frame into multi mbufs. */
 			if (unlikely(eth_pcap_rx_jumbo(pcap_q->mb_pool,
 						       mbuf,
 						       packet,
-						       header.len) == -1))
+						       header.caplen) == -1))
 				break;
 		}
 
-		mbuf->pkt_len = (uint16_t)header.len;
+		mbuf->pkt_len = (uint16_t)header.caplen;
 		mbuf->port = pcap_q->in_port;
 		bufs[num_rx] = mbuf;
 		num_rx++;
-		rx_bytes += header.len;
+		rx_bytes += header.caplen;
 	}
 	pcap_q->rx_pkts += num_rx;
 	pcap_q->rx_bytes += rx_bytes;
@@ -396,7 +395,7 @@ eth_dev_start(struct rte_eth_dev *dev)
 	}
 
 	/* If not open already, open tx pcaps/dumpers */
-	for (i = 0; i < internals->nb_tx_queues; i++) {
+	for (i = 0; i < dev->data->nb_tx_queues; i++) {
 		tx = &internals->tx_queue[i];
 
 		if (!tx->dumper && strcmp(tx->type, ETH_PCAP_TX_PCAP_ARG) == 0) {
@@ -411,7 +410,7 @@ eth_dev_start(struct rte_eth_dev *dev)
 	}
 
 	/* If not open already, open rx pcaps */
-	for (i = 0; i < internals->nb_rx_queues; i++) {
+	for (i = 0; i < dev->data->nb_rx_queues; i++) {
 		rx = &internals->rx_queue[i];
 
 		if (rx->pcap != NULL)
@@ -430,7 +429,7 @@ eth_dev_start(struct rte_eth_dev *dev)
 
 status_up:
 
-	dev->data->dev_link.link_status = 1;
+	dev->data->dev_link.link_status = ETH_LINK_UP;
 	return 0;
 }
 
@@ -457,7 +456,7 @@ eth_dev_stop(struct rte_eth_dev *dev)
 		goto status_down;
 	}
 
-	for (i = 0; i < internals->nb_tx_queues; i++) {
+	for (i = 0; i < dev->data->nb_tx_queues; i++) {
 		tx = &internals->tx_queue[i];
 
 		if (tx->dumper != NULL) {
@@ -471,7 +470,7 @@ eth_dev_stop(struct rte_eth_dev *dev)
 		}
 	}
 
-	for (i = 0; i < internals->nb_rx_queues; i++) {
+	for (i = 0; i < dev->data->nb_rx_queues; i++) {
 		rx = &internals->rx_queue[i];
 
 		if (rx->pcap != NULL) {
@@ -481,7 +480,7 @@ eth_dev_stop(struct rte_eth_dev *dev)
 	}
 
 status_down:
-	dev->data->dev_link.link_status = 0;
+	dev->data->dev_link.link_status = ETH_LINK_DOWN;
 }
 
 static int
@@ -499,8 +498,8 @@ eth_dev_info(struct rte_eth_dev *dev,
 	dev_info->if_index = internals->if_index;
 	dev_info->max_mac_addrs = 1;
 	dev_info->max_rx_pktlen = (uint32_t) -1;
-	dev_info->max_rx_queues = (uint16_t)internals->nb_rx_queues;
-	dev_info->max_tx_queues = (uint16_t)internals->nb_tx_queues;
+	dev_info->max_rx_queues = dev->data->nb_rx_queues;
+	dev_info->max_tx_queues = dev->data->nb_tx_queues;
 	dev_info->min_rx_bufsize = 0;
 	dev_info->pci_dev = NULL;
 }
@@ -515,16 +514,16 @@ eth_stats_get(struct rte_eth_dev *dev,
 	unsigned long tx_packets_err_total = 0;
 	const struct pmd_internals *internal = dev->data->dev_private;
 
-	for (i = 0; i < RTE_ETHDEV_QUEUE_STAT_CNTRS && i < internal->nb_rx_queues;
-			i++) {
+	for (i = 0; i < RTE_ETHDEV_QUEUE_STAT_CNTRS &&
+			i < dev->data->nb_rx_queues; i++) {
 		igb_stats->q_ipackets[i] = internal->rx_queue[i].rx_pkts;
 		igb_stats->q_ibytes[i] = internal->rx_queue[i].rx_bytes;
 		rx_packets_total += igb_stats->q_ipackets[i];
 		rx_bytes_total += igb_stats->q_ibytes[i];
 	}
 
-	for (i = 0; i < RTE_ETHDEV_QUEUE_STAT_CNTRS && i < internal->nb_tx_queues;
-			i++) {
+	for (i = 0; i < RTE_ETHDEV_QUEUE_STAT_CNTRS &&
+			i < dev->data->nb_tx_queues; i++) {
 		igb_stats->q_opackets[i] = internal->tx_queue[i].tx_pkts;
 		igb_stats->q_obytes[i] = internal->tx_queue[i].tx_bytes;
 		igb_stats->q_errors[i] = internal->tx_queue[i].err_pkts;
@@ -545,11 +544,11 @@ eth_stats_reset(struct rte_eth_dev *dev)
 {
 	unsigned i;
 	struct pmd_internals *internal = dev->data->dev_private;
-	for (i = 0; i < internal->nb_rx_queues; i++) {
+	for (i = 0; i < dev->data->nb_rx_queues; i++) {
 		internal->rx_queue[i].rx_pkts = 0;
 		internal->rx_queue[i].rx_bytes = 0;
 	}
-	for (i = 0; i < internal->nb_tx_queues; i++) {
+	for (i = 0; i < dev->data->nb_tx_queues; i++) {
 		internal->tx_queue[i].tx_pkts = 0;
 		internal->tx_queue[i].tx_bytes = 0;
 		internal->tx_queue[i].err_pkts = 0;
@@ -840,9 +839,6 @@ rte_pmd_init_internals(const char *name, const unsigned nb_rx_queues,
 	/* NOTE: we'll replace the data element, of originally allocated eth_dev
 	 * so the rings are local per-process */
 
-	(*internals)->nb_rx_queues = nb_rx_queues;
-	(*internals)->nb_tx_queues = nb_tx_queues;
-
 	if (pair == NULL)
 		(*internals)->if_index = 0;
 	else
@@ -860,11 +856,11 @@ rte_pmd_init_internals(const char *name, const unsigned nb_rx_queues,
 
 	(*eth_dev)->data = data;
 	(*eth_dev)->dev_ops = &ops;
-	(*eth_dev)->data->dev_flags = RTE_ETH_DEV_DETACHABLE;
 	(*eth_dev)->driver = NULL;
-	(*eth_dev)->data->kdrv = RTE_KDRV_NONE;
-	(*eth_dev)->data->drv_name = drivername;
-	(*eth_dev)->data->numa_node = numa_node;
+	data->dev_flags = RTE_ETH_DEV_DETACHABLE;
+	data->kdrv = RTE_KDRV_NONE;
+	data->drv_name = drivername;
+	data->numa_node = numa_node;
 
 	return 0;
 
@@ -873,6 +869,47 @@ error:
 	rte_free(*internals);
 
 	return -1;
+}
+
+static int
+rte_eth_from_pcaps_common(const char *name, struct rx_pcaps *rx_queues,
+		const unsigned nb_rx_queues, struct tx_pcaps *tx_queues,
+		const unsigned nb_tx_queues, const unsigned numa_node,
+		struct rte_kvargs *kvlist, struct pmd_internals **internals,
+		struct rte_eth_dev **eth_dev)
+{
+	unsigned i;
+
+	/* do some parameter checking */
+	if (rx_queues == NULL && nb_rx_queues > 0)
+		return -1;
+	if (tx_queues == NULL && nb_tx_queues > 0)
+		return -1;
+
+	if (rte_pmd_init_internals(name, nb_rx_queues, nb_tx_queues, numa_node,
+			internals, eth_dev, kvlist) < 0)
+		return -1;
+
+	for (i = 0; i < nb_rx_queues; i++) {
+		(*internals)->rx_queue[i].pcap = rx_queues->pcaps[i];
+		snprintf((*internals)->rx_queue[i].name,
+			sizeof((*internals)->rx_queue[i].name), "%s",
+			rx_queues->names[i]);
+		snprintf((*internals)->rx_queue[i].type,
+			sizeof((*internals)->rx_queue[i].type), "%s",
+			rx_queues->types[i]);
+	}
+	for (i = 0; i < nb_tx_queues; i++) {
+		(*internals)->tx_queue[i].dumper = tx_queues->dumpers[i];
+		snprintf((*internals)->tx_queue[i].name,
+			sizeof((*internals)->tx_queue[i].name), "%s",
+			tx_queues->names[i]);
+		snprintf((*internals)->tx_queue[i].type,
+			sizeof((*internals)->tx_queue[i].type), "%s",
+			tx_queues->types[i]);
+	}
+
+	return 0;
 }
 
 static int
@@ -886,36 +923,14 @@ rte_eth_from_pcaps_n_dumpers(const char *name,
 {
 	struct pmd_internals *internals = NULL;
 	struct rte_eth_dev *eth_dev = NULL;
-	unsigned i;
+	int ret;
 
-	/* do some parameter checking */
-	if (rx_queues == NULL && nb_rx_queues > 0)
-		return -1;
-	if (tx_queues == NULL && nb_tx_queues > 0)
-		return -1;
+	ret = rte_eth_from_pcaps_common(name, rx_queues, nb_rx_queues,
+			tx_queues, nb_tx_queues, numa_node, kvlist,
+			&internals, &eth_dev);
 
-	if (rte_pmd_init_internals(name, nb_rx_queues, nb_tx_queues, numa_node,
-			&internals, &eth_dev, kvlist) < 0)
-		return -1;
-
-	for (i = 0; i < nb_rx_queues; i++) {
-		internals->rx_queue[i].pcap = rx_queues->pcaps[i];
-		snprintf(internals->rx_queue[i].name,
-			sizeof(internals->rx_queue[i].name), "%s",
-			rx_queues->names[i]);
-		snprintf(internals->rx_queue[i].type,
-			sizeof(internals->rx_queue[i].type), "%s",
-			rx_queues->types[i]);
-	}
-	for (i = 0; i < nb_tx_queues; i++) {
-		internals->tx_queue[i].dumper = tx_queues->dumpers[i];
-		snprintf(internals->tx_queue[i].name,
-			sizeof(internals->tx_queue[i].name), "%s",
-			tx_queues->names[i]);
-		snprintf(internals->tx_queue[i].type,
-			sizeof(internals->tx_queue[i].type), "%s",
-			tx_queues->types[i]);
-	}
+	if (ret < 0)
+		return ret;
 
 	/* using multiple pcaps/interfaces */
 	internals->single_iface = 0;
@@ -938,36 +953,14 @@ rte_eth_from_pcaps(const char *name,
 {
 	struct pmd_internals *internals = NULL;
 	struct rte_eth_dev *eth_dev = NULL;
-	unsigned i;
+	int ret;
 
-	/* do some parameter checking */
-	if (rx_queues == NULL && nb_rx_queues > 0)
-		return -1;
-	if (tx_queues == NULL && nb_tx_queues > 0)
-		return -1;
+	ret = rte_eth_from_pcaps_common(name, rx_queues, nb_rx_queues,
+			tx_queues, nb_tx_queues, numa_node, kvlist,
+			&internals, &eth_dev);
 
-	if (rte_pmd_init_internals(name, nb_rx_queues, nb_tx_queues, numa_node,
-			&internals, &eth_dev, kvlist) < 0)
-		return -1;
-
-	for (i = 0; i < nb_rx_queues; i++) {
-		internals->rx_queue[i].pcap = rx_queues->pcaps[i];
-		snprintf(internals->rx_queue[i].name,
-			sizeof(internals->rx_queue[i].name), "%s",
-			rx_queues->names[i]);
-		snprintf(internals->rx_queue[i].type,
-			sizeof(internals->rx_queue[i].type), "%s",
-			rx_queues->types[i]);
-	}
-	for (i = 0; i < nb_tx_queues; i++) {
-		internals->tx_queue[i].dumper = tx_queues->dumpers[i];
-		snprintf(internals->tx_queue[i].name,
-			sizeof(internals->tx_queue[i].name), "%s",
-			tx_queues->names[i]);
-		snprintf(internals->tx_queue[i].type,
-			sizeof(internals->tx_queue[i].type), "%s",
-			tx_queues->types[i]);
-	}
+	if (ret < 0)
+		return ret;
 
 	/* store wether we are using a single interface for rx/tx or not */
 	internals->single_iface = single_iface;

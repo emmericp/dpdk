@@ -67,7 +67,9 @@
 #define VIRTIO_SIMPLE_FLAGS ((uint32_t)ETH_TXQ_FLAGS_NOMULTSEGS | \
 	ETH_TXQ_FLAGS_NOOFFLOADS)
 
+#ifdef RTE_MACHINE_CPUFLAG_SSSE3
 static int use_simple_rxtx;
+#endif
 
 static void
 vq_ring_free_chain(struct virtqueue *vq, uint16_t desc_idx)
@@ -206,63 +208,77 @@ virtqueue_enqueue_recv_refill(struct virtqueue *vq, struct rte_mbuf *cookie)
 	return 0;
 }
 
-static int
-virtqueue_enqueue_xmit(struct virtqueue *txvq, struct rte_mbuf *cookie)
+static inline void
+virtqueue_enqueue_xmit(struct virtqueue *txvq, struct rte_mbuf *cookie,
+		       uint16_t needed, int use_indirect, int can_push)
 {
 	struct vq_desc_extra *dxp;
 	struct vring_desc *start_dp;
 	uint16_t seg_num = cookie->nb_segs;
-	uint16_t needed = 1 + seg_num;
 	uint16_t head_idx, idx;
-	size_t head_size = txvq->hw->vtnet_hdr_size;
+	uint16_t head_size = txvq->hw->vtnet_hdr_size;
+	unsigned long offs;
 
-	if (unlikely(txvq->vq_free_cnt == 0))
-		return -ENOSPC;
-	if (unlikely(txvq->vq_free_cnt < needed))
-		return -EMSGSIZE;
 	head_idx = txvq->vq_desc_head_idx;
-	if (unlikely(head_idx >= txvq->vq_nentries))
-		return -EFAULT;
-
 	idx = head_idx;
 	dxp = &txvq->vq_descx[idx];
 	dxp->cookie = (void *)cookie;
 	dxp->ndescs = needed;
 
 	start_dp = txvq->vq_ring.desc;
-	start_dp[idx].addr =
-		txvq->virtio_net_hdr_mem + idx * head_size;
-	start_dp[idx].len = head_size;
-	start_dp[idx].flags = VRING_DESC_F_NEXT;
 
-	for (; ((seg_num > 0) && (cookie != NULL)); seg_num--) {
-		idx = start_dp[idx].next;
-		start_dp[idx].addr  = RTE_MBUF_DATA_DMA_ADDR(cookie);
-		start_dp[idx].len   = cookie->data_len;
+	if (can_push) {
+		/* put on zero'd transmit header (no offloads) */
+		void *hdr = rte_pktmbuf_prepend(cookie, head_size);
+
+		memset(hdr, 0, head_size);
+	} else if (use_indirect) {
+		/* setup tx ring slot to point to indirect
+		 * descriptor list stored in reserved region.
+		 *
+		 * the first slot in indirect ring is already preset
+		 * to point to the header in reserved region
+		 */
+		struct virtio_tx_region *txr = txvq->virtio_net_hdr_mz->addr;
+
+		offs = idx * sizeof(struct virtio_tx_region)
+			+ offsetof(struct virtio_tx_region, tx_indir);
+
+		start_dp[idx].addr  = txvq->virtio_net_hdr_mem + offs;
+		start_dp[idx].len   = (seg_num + 1) * sizeof(struct vring_desc);
+		start_dp[idx].flags = VRING_DESC_F_INDIRECT;
+
+		/* loop below will fill in rest of the indirect elements */
+		start_dp = txr[idx].tx_indir;
+		idx = 1;
+	} else {
+		/* setup first tx ring slot to point to header
+		 * stored in reserved region.
+		 */
+		offs = idx * sizeof(struct virtio_tx_region)
+			+ offsetof(struct virtio_tx_region, tx_hdr);
+
+		start_dp[idx].addr  = txvq->virtio_net_hdr_mem + offs;
+		start_dp[idx].len   = txvq->hw->vtnet_hdr_size;
 		start_dp[idx].flags = VRING_DESC_F_NEXT;
-		cookie = cookie->next;
+		idx = start_dp[idx].next;
 	}
 
-	start_dp[idx].flags &= ~VRING_DESC_F_NEXT;
-	idx = start_dp[idx].next;
+	do {
+		start_dp[idx].addr  = rte_mbuf_data_dma_addr(cookie);
+		start_dp[idx].len   = cookie->data_len;
+		start_dp[idx].flags = cookie->next ? VRING_DESC_F_NEXT : 0;
+		idx = start_dp[idx].next;
+	} while ((cookie = cookie->next) != NULL);
+
+	if (use_indirect)
+		idx = txvq->vq_ring.desc[head_idx].next;
+
 	txvq->vq_desc_head_idx = idx;
 	if (txvq->vq_desc_head_idx == VQ_RING_DESC_CHAIN_END)
 		txvq->vq_desc_tail_idx = idx;
 	txvq->vq_free_cnt = (uint16_t)(txvq->vq_free_cnt - needed);
 	vq_update_avail_ring(txvq, head_idx);
-
-	return 0;
-}
-
-static inline struct rte_mbuf *
-rte_rxmbuf_alloc(struct rte_mempool *mp)
-{
-	struct rte_mbuf *m;
-
-	m = __rte_mbuf_raw_alloc(mp);
-	__rte_mbuf_sanity_check_raw(m, 0);
-
-	return m;
 }
 
 static void
@@ -287,10 +303,7 @@ virtio_dev_vring_start(struct virtqueue *vq, int queue_type)
 	vq->vq_free_cnt = vq->vq_nentries;
 	memset(vq->vq_descx, 0, sizeof(struct vq_desc_extra) * vq->vq_nentries);
 
-	/* Chain all the descriptors in the ring with an END */
-	for (i = 0; i < size - 1; i++)
-		vr->desc[i].next = (uint16_t)(i + 1);
-	vr->desc[i].next = VQ_RING_DESC_CHAIN_END;
+	vring_desc_init(vr->desc, size);
 
 	/*
 	 * Disable device(host) interrupting guest
@@ -307,27 +320,30 @@ virtio_dev_vring_start(struct virtqueue *vq, int queue_type)
 		nbufs = 0;
 		error = ENOSPC;
 
+#ifdef RTE_MACHINE_CPUFLAG_SSSE3
 		if (use_simple_rxtx)
 			for (i = 0; i < vq->vq_nentries; i++) {
 				vq->vq_ring.avail->ring[i] = i;
 				vq->vq_ring.desc[i].flags = VRING_DESC_F_WRITE;
 			}
-
+#endif
 		memset(&vq->fake_mbuf, 0, sizeof(vq->fake_mbuf));
 		for (i = 0; i < RTE_PMD_VIRTIO_RX_MAX_BURST; i++)
 			vq->sw_ring[vq->vq_nentries + i] = &vq->fake_mbuf;
 
 		while (!virtqueue_full(vq)) {
-			m = rte_rxmbuf_alloc(vq->mpool);
+			m = rte_mbuf_raw_alloc(vq->mpool);
 			if (m == NULL)
 				break;
 
 			/******************************************
 			*         Enqueue allocated buffers        *
 			*******************************************/
+#ifdef RTE_MACHINE_CPUFLAG_SSSE3
 			if (use_simple_rxtx)
 				error = virtqueue_enqueue_recv_refill_simple(vq, m);
 			else
+#endif
 				error = virtqueue_enqueue_recv_refill(vq, m);
 			if (error) {
 				rte_pktmbuf_free(m);
@@ -340,6 +356,7 @@ virtio_dev_vring_start(struct virtqueue *vq, int queue_type)
 
 		PMD_INIT_LOG(DEBUG, "Allocated %d bufs", nbufs);
 	} else if (queue_type == VTNET_TQ) {
+#ifdef RTE_MACHINE_CPUFLAG_SSSE3
 		if (use_simple_rxtx) {
 			int mid_idx  = vq->vq_nentries >> 1;
 			for (i = 0; i < mid_idx; i++) {
@@ -347,7 +364,7 @@ virtio_dev_vring_start(struct virtqueue *vq, int queue_type)
 				vq->vq_ring.desc[i + mid_idx].next = i;
 				vq->vq_ring.desc[i + mid_idx].addr =
 					vq->virtio_net_hdr_mem +
-						mid_idx * vq->hw->vtnet_hdr_size;
+					offsetof(struct virtio_tx_region, tx_hdr);
 				vq->vq_ring.desc[i + mid_idx].len =
 					vq->hw->vtnet_hdr_size;
 				vq->vq_ring.desc[i + mid_idx].flags =
@@ -357,6 +374,7 @@ virtio_dev_vring_start(struct virtqueue *vq, int queue_type)
 			for (i = mid_idx; i < vq->vq_nentries; i++)
 				vq->vq_ring.avail->ring[i] = i;
 		}
+#endif
 	}
 }
 
@@ -423,7 +441,9 @@ virtio_dev_rx_queue_setup(struct rte_eth_dev *dev,
 
 	dev->data->rx_queues[queue_idx] = vq;
 
+#ifdef RTE_MACHINE_CPUFLAG_SSSE3
 	virtio_rxq_vec_setup(vq);
+#endif
 
 	return 0;
 }
@@ -449,7 +469,10 @@ virtio_dev_tx_queue_setup(struct rte_eth_dev *dev,
 			const struct rte_eth_txconf *tx_conf)
 {
 	uint8_t vtpci_queue_idx = 2 * queue_idx + VTNET_SQ_TQ_QUEUE_IDX;
+
+#ifdef RTE_MACHINE_CPUFLAG_SSSE3
 	struct virtio_hw *hw = dev->data->dev_private;
+#endif
 	struct virtqueue *vq;
 	uint16_t tx_free_thresh;
 	int ret;
@@ -462,6 +485,7 @@ virtio_dev_tx_queue_setup(struct rte_eth_dev *dev,
 		return -EINVAL;
 	}
 
+#ifdef RTE_MACHINE_CPUFLAG_SSSE3
 	/* Use simple rx/tx func if single segment and no offloads */
 	if ((tx_conf->txq_flags & VIRTIO_SIMPLE_FLAGS) == VIRTIO_SIMPLE_FLAGS &&
 	     !vtpci_with_feature(hw, VIRTIO_NET_F_MRG_RXBUF)) {
@@ -470,6 +494,7 @@ virtio_dev_tx_queue_setup(struct rte_eth_dev *dev,
 		dev->rx_pkt_burst = virtio_recv_pkts_vec;
 		use_simple_rxtx = 1;
 	}
+#endif
 
 	ret = virtio_dev_queue_setup(dev, VTNET_TQ, queue_idx, vtpci_queue_idx,
 			nb_desc, socket_id, &vq);
@@ -543,8 +568,12 @@ virtio_update_packet_stats(struct virtqueue *vq, struct rte_mbuf *mbuf)
 	}
 
 	ea = rte_pktmbuf_mtod(mbuf, struct ether_addr *);
-	vq->multicast += is_multicast_ether_addr(ea);
-	vq->broadcast += is_broadcast_ether_addr(ea);
+	if (is_multicast_ether_addr(ea)) {
+		if (is_broadcast_ether_addr(ea))
+			vq->broadcast++;
+		else
+			vq->multicast++;
+	}
 }
 
 #define VIRTIO_MBUF_BURST_SZ 64
@@ -570,9 +599,6 @@ virtio_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 	num = (uint16_t)(likely(num <= VIRTIO_MBUF_BURST_SZ) ? num : VIRTIO_MBUF_BURST_SZ);
 	if (likely(num > DESC_PER_CACHELINE))
 		num = num - ((rxvq->vq_used_cons_idx + num) % DESC_PER_CACHELINE);
-
-	if (num == 0)
-		return 0;
 
 	num = virtqueue_dequeue_burst_rx(rxvq, rcv_pkts, len, num);
 	PMD_RX_LOG(DEBUG, "used:%d dequeue:%d", nb_used, num);
@@ -621,7 +647,7 @@ virtio_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 	/* Allocate new mbuf for the used descriptor */
 	error = ENOSPC;
 	while (likely(!virtqueue_full(rxvq))) {
-		new_mbuf = rte_rxmbuf_alloc(rxvq->mpool);
+		new_mbuf = rte_mbuf_raw_alloc(rxvq->mpool);
 		if (unlikely(new_mbuf == NULL)) {
 			struct rte_eth_dev *dev
 				= &rte_eth_devices[rxvq->port_id];
@@ -641,7 +667,7 @@ virtio_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 
 		if (unlikely(virtqueue_kick_prepare(rxvq))) {
 			virtqueue_notify(rxvq);
-			PMD_RX_LOG(DEBUG, "Notified\n");
+			PMD_RX_LOG(DEBUG, "Notified");
 		}
 	}
 
@@ -671,10 +697,7 @@ virtio_recv_mergeable_pkts(void *rx_queue,
 
 	virtio_rmb();
 
-	if (nb_used == 0)
-		return 0;
-
-	PMD_RX_LOG(DEBUG, "used:%d\n", nb_used);
+	PMD_RX_LOG(DEBUG, "used:%d", nb_used);
 
 	hw = rxvq->hw;
 	nb_rx = 0;
@@ -697,13 +720,13 @@ virtio_recv_mergeable_pkts(void *rx_queue,
 
 		i++;
 
-		PMD_RX_LOG(DEBUG, "dequeue:%d\n", num);
-		PMD_RX_LOG(DEBUG, "packet len:%d\n", len[0]);
+		PMD_RX_LOG(DEBUG, "dequeue:%d", num);
+		PMD_RX_LOG(DEBUG, "packet len:%d", len[0]);
 
 		rxm = rcv_pkts[0];
 
 		if (unlikely(len[0] < hdr_size + ETHER_HDR_LEN)) {
-			PMD_RX_LOG(ERR, "Packet drop\n");
+			PMD_RX_LOG(ERR, "Packet drop");
 			nb_enqueued++;
 			virtio_discard_rxbuf(rxvq, rxm);
 			rxvq->errors++;
@@ -745,7 +768,7 @@ virtio_recv_mergeable_pkts(void *rx_queue,
 				rcv_cnt = rx_num;
 			} else {
 				PMD_RX_LOG(ERR,
-					"No enough segments for packet.\n");
+					   "No enough segments for packet.");
 				nb_enqueued++;
 				virtio_discard_rxbuf(rxvq, rxm);
 				rxvq->errors++;
@@ -788,7 +811,7 @@ virtio_recv_mergeable_pkts(void *rx_queue,
 	/* Allocate new mbuf for the used descriptor */
 	error = ENOSPC;
 	while (likely(!virtqueue_full(rxvq))) {
-		new_mbuf = rte_rxmbuf_alloc(rxvq->mpool);
+		new_mbuf = rte_mbuf_raw_alloc(rxvq->mpool);
 		if (unlikely(new_mbuf == NULL)) {
 			struct rte_eth_dev *dev
 				= &rte_eth_devices[rxvq->port_id];
@@ -819,6 +842,8 @@ uint16_t
 virtio_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 {
 	struct virtqueue *txvq = tx_queue;
+	struct virtio_hw *hw = txvq->hw;
+	uint16_t hdr_size = hw->vtnet_hdr_size;
 	uint16_t nb_used, nb_tx;
 	int error;
 
@@ -834,23 +859,7 @@ virtio_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 
 	for (nb_tx = 0; nb_tx < nb_pkts; nb_tx++) {
 		struct rte_mbuf *txm = tx_pkts[nb_tx];
-		/* Need one more descriptor for virtio header. */
-		int need = txm->nb_segs - txvq->vq_free_cnt + 1;
-
-		/* Positive value indicates it need free vring descriptors */
-		if (unlikely(need > 0)) {
-			nb_used = VIRTQUEUE_NUSED(txvq);
-			virtio_rmb();
-			need = RTE_MIN(need, (int)nb_used);
-
-			virtio_xmit_cleanup(txvq, need);
-			need = txm->nb_segs - txvq->vq_free_cnt + 1;
-			if (unlikely(need > 0)) {
-				PMD_TX_LOG(ERR,
-					   "No free tx descriptors to transmit");
-				break;
-			}
-		}
+		int can_push = 0, use_indirect = 0, slots, need;
 
 		/* Do VLAN tag insertion */
 		if (unlikely(txm->ol_flags & PKT_TX_VLAN_PKT)) {
@@ -861,17 +870,43 @@ virtio_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 			}
 		}
 
-		/* Enqueue Packet buffers */
-		error = virtqueue_enqueue_xmit(txvq, txm);
-		if (unlikely(error)) {
-			if (error == ENOSPC)
-				PMD_TX_LOG(ERR, "virtqueue_enqueue Free count = 0");
-			else if (error == EMSGSIZE)
-				PMD_TX_LOG(ERR, "virtqueue_enqueue Free count < 1");
-			else
-				PMD_TX_LOG(ERR, "virtqueue_enqueue error: %d", error);
-			break;
+		/* optimize ring usage */
+		if (vtpci_with_feature(hw, VIRTIO_F_ANY_LAYOUT) &&
+		    rte_mbuf_refcnt_read(txm) == 1 &&
+		    txm->nb_segs == 1 &&
+		    rte_pktmbuf_headroom(txm) >= hdr_size &&
+		    rte_is_aligned(rte_pktmbuf_mtod(txm, char *),
+				   __alignof__(struct virtio_net_hdr_mrg_rxbuf)))
+			can_push = 1;
+		else if (vtpci_with_feature(hw, VIRTIO_RING_F_INDIRECT_DESC) &&
+			 txm->nb_segs < VIRTIO_MAX_TX_INDIRECT)
+			use_indirect = 1;
+
+		/* How many main ring entries are needed to this Tx?
+		 * any_layout => number of segments
+		 * indirect   => 1
+		 * default    => number of segments + 1
+		 */
+		slots = use_indirect ? 1 : (txm->nb_segs + !can_push);
+		need = slots - txvq->vq_free_cnt;
+
+		/* Positive value indicates it need free vring descriptors */
+		if (unlikely(need > 0)) {
+			nb_used = VIRTQUEUE_NUSED(txvq);
+			virtio_rmb();
+			need = RTE_MIN(need, (int)nb_used);
+
+			virtio_xmit_cleanup(txvq, need);
+			need = slots - txvq->vq_free_cnt;
+			if (unlikely(need > 0)) {
+				PMD_TX_LOG(ERR,
+					   "No free tx descriptors to transmit");
+				break;
+			}
 		}
+
+		/* Enqueue Packet buffers */
+		virtqueue_enqueue_xmit(txvq, txm, slots, use_indirect, can_push);
 
 		txvq->bytes += txm->pkt_len;
 		virtio_update_packet_stats(txvq, txm);

@@ -76,13 +76,8 @@
 #define I40E_TX_CKSUM_OFFLOAD_MASK (		 \
 		PKT_TX_IP_CKSUM |		 \
 		PKT_TX_L4_MASK |		 \
+		PKT_TX_TCP_SEG |		 \
 		PKT_TX_OUTER_IP_CKSUM)
-
-#define RTE_MBUF_DATA_DMA_ADDR_DEFAULT(mb) \
-	(uint64_t) ((mb)->buf_physaddr + RTE_PKTMBUF_HEADROOM)
-
-#define RTE_MBUF_DATA_DMA_ADDR(mb) \
-	((uint64_t)((mb)->buf_physaddr + (mb)->data_off))
 
 static uint16_t i40e_xmit_pkts_simple(void *tx_queue,
 				      struct rte_mbuf **tx_pkts,
@@ -194,11 +189,14 @@ i40e_get_iee15888_flags(struct rte_mbuf *mb, uint64_t qword)
 }
 #endif
 
-/* For each value it means, datasheet of hardware can tell more details */
+/* For each value it means, datasheet of hardware can tell more details
+ *
+ * @note: fix i40e_dev_supported_ptypes_get() if any change here.
+ */
 static inline uint32_t
 i40e_rxd_pkt_type_mapping(uint8_t ptype)
 {
-	static const uint32_t ptype_table[UINT8_MAX] __rte_cache_aligned = {
+	static const uint32_t type_table[UINT8_MAX + 1] __rte_cache_aligned = {
 		/* L2 types */
 		/* [0] reserved */
 		[1] = RTE_PTYPE_L2_ETHER,
@@ -724,7 +722,7 @@ i40e_rxd_pkt_type_mapping(uint8_t ptype)
 		/* All others reserved */
 	};
 
-	return ptype_table[ptype];
+	return type_table[ptype];
 }
 
 #define I40E_RX_DESC_EXT_STATUS_FLEXBH_MASK   0x03
@@ -841,17 +839,6 @@ i40e_txd_enable_checksum(uint64_t ol_flags,
 	default:
 		break;
 	}
-}
-
-static inline struct rte_mbuf *
-rte_rxmbuf_alloc(struct rte_mempool *mp)
-{
-	struct rte_mbuf *m;
-
-	m = __rte_mbuf_raw_alloc(mp);
-	__rte_mbuf_sanity_check_raw(m, 0);
-
-	return m;
 }
 
 /* Construct the tx flags */
@@ -1098,7 +1085,7 @@ i40e_rx_alloc_bufs(struct i40e_rx_queue *rxq)
 		mb->nb_segs = 1;
 		mb->port = rxq->port_id;
 		dma_addr = rte_cpu_to_le_64(\
-			RTE_MBUF_DATA_DMA_ADDR_DEFAULT(mb));
+			rte_mbuf_data_dma_addr_default(mb));
 		rxdp[i].read.hdr_addr = 0;
 		rxdp[i].read.pkt_addr = dma_addr;
 	}
@@ -1181,6 +1168,14 @@ i40e_recv_pkts_bulk_alloc(void *rx_queue,
 
 	return nb_rx;
 }
+#else
+static uint16_t
+i40e_recv_pkts_bulk_alloc(void __rte_unused *rx_queue,
+			  struct rte_mbuf __rte_unused **rx_pkts,
+			  uint16_t __rte_unused nb_pkts)
+{
+	return 0;
+}
 #endif /* RTE_LIBRTE_I40E_RX_ALLOW_BULK_ALLOC */
 
 uint16_t
@@ -1219,7 +1214,7 @@ i40e_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 		if (!(rx_status & (1 << I40E_RX_DESC_STATUS_DD_SHIFT)))
 			break;
 
-		nmb = rte_rxmbuf_alloc(rxq->mp);
+		nmb = rte_mbuf_raw_alloc(rxq->mp);
 		if (unlikely(!nmb))
 			break;
 		rxd = *rxdp;
@@ -1245,7 +1240,7 @@ i40e_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 		rxm = rxe->mbuf;
 		rxe->mbuf = nmb;
 		dma_addr =
-			rte_cpu_to_le_64(RTE_MBUF_DATA_DMA_ADDR_DEFAULT(nmb));
+			rte_cpu_to_le_64(rte_mbuf_data_dma_addr_default(nmb));
 		rxdp->read.hdr_addr = 0;
 		rxdp->read.pkt_addr = dma_addr;
 
@@ -1330,7 +1325,7 @@ i40e_recv_scattered_pkts(void *rx_queue,
 		if (!(rx_status & (1 << I40E_RX_DESC_STATUS_DD_SHIFT)))
 			break;
 
-		nmb = rte_rxmbuf_alloc(rxq->mp);
+		nmb = rte_mbuf_raw_alloc(rxq->mp);
 		if (unlikely(!nmb))
 			break;
 		rxd = *rxdp;
@@ -1356,7 +1351,7 @@ i40e_recv_scattered_pkts(void *rx_queue,
 		rxm = rxe->mbuf;
 		rxe->mbuf = nmb;
 		dma_addr =
-			rte_cpu_to_le_64(RTE_MBUF_DATA_DMA_ADDR_DEFAULT(nmb));
+			rte_cpu_to_le_64(rte_mbuf_data_dma_addr_default(nmb));
 
 		/* Set data buffer address and data length of the mbuf */
 		rxdp->read.hdr_addr = 0;
@@ -1691,7 +1686,7 @@ i40e_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 
 			/* Setup TX Descriptor */
 			slen = m_seg->data_len;
-			buf_dma_addr = RTE_MBUF_DATA_DMA_ADDR(m_seg);
+			buf_dma_addr = rte_mbuf_data_dma_addr(m_seg);
 
 			PMD_TX_LOG(DEBUG, "mbuf: %p, TDD[%u]:\n"
 				"buf_dma_addr: %#"PRIx64";\n"
@@ -1762,7 +1757,7 @@ i40e_tx_free_bufs(struct i40e_tx_queue *txq)
 	for (i = 0; i < txq->tx_rs_thresh; i++)
 		rte_prefetch0((txep + i)->mbuf);
 
-	if (!(txq->txq_flags & (uint32_t)ETH_TXQ_FLAGS_NOREFCOUNT)) {
+	if (txq->txq_flags & (uint32_t)ETH_TXQ_FLAGS_NOREFCOUNT) {
 		for (i = 0; i < txq->tx_rs_thresh; ++i, ++txep) {
 			rte_mempool_put(txep->mbuf->pool, txep->mbuf);
 			txep->mbuf = NULL;
@@ -1790,7 +1785,7 @@ tx4(volatile struct i40e_tx_desc *txdp, struct rte_mbuf **pkts)
 	uint32_t i;
 
 	for (i = 0; i < 4; i++, txdp++, pkts++) {
-		dma_addr = RTE_MBUF_DATA_DMA_ADDR(*pkts);
+		dma_addr = rte_mbuf_data_dma_addr(*pkts);
 		txdp->buffer_addr = rte_cpu_to_le_64(dma_addr);
 		txdp->cmd_type_offset_bsz =
 			i40e_build_ctob((uint32_t)I40E_TD_CMD, 0,
@@ -1804,7 +1799,7 @@ tx1(volatile struct i40e_tx_desc *txdp, struct rte_mbuf **pkts)
 {
 	uint64_t dma_addr;
 
-	dma_addr = RTE_MBUF_DATA_DMA_ADDR(*pkts);
+	dma_addr = rte_mbuf_data_dma_addr(*pkts);
 	txdp->buffer_addr = rte_cpu_to_le_64(dma_addr);
 	txdp->cmd_type_offset_bsz =
 		i40e_build_ctob((uint32_t)I40E_TD_CMD, 0,
@@ -2093,6 +2088,47 @@ i40e_dev_tx_queue_stop(struct rte_eth_dev *dev, uint16_t tx_queue_id)
 	return 0;
 }
 
+const uint32_t *
+i40e_dev_supported_ptypes_get(struct rte_eth_dev *dev)
+{
+	static const uint32_t ptypes[] = {
+		/* refers to i40e_rxd_pkt_type_mapping() */
+		RTE_PTYPE_L2_ETHER,
+		RTE_PTYPE_L2_ETHER_TIMESYNC,
+		RTE_PTYPE_L2_ETHER_LLDP,
+		RTE_PTYPE_L2_ETHER_ARP,
+		RTE_PTYPE_L3_IPV4_EXT_UNKNOWN,
+		RTE_PTYPE_L3_IPV6_EXT_UNKNOWN,
+		RTE_PTYPE_L4_FRAG,
+		RTE_PTYPE_L4_ICMP,
+		RTE_PTYPE_L4_NONFRAG,
+		RTE_PTYPE_L4_SCTP,
+		RTE_PTYPE_L4_TCP,
+		RTE_PTYPE_L4_UDP,
+		RTE_PTYPE_TUNNEL_GRENAT,
+		RTE_PTYPE_TUNNEL_IP,
+		RTE_PTYPE_INNER_L2_ETHER,
+		RTE_PTYPE_INNER_L2_ETHER_VLAN,
+		RTE_PTYPE_INNER_L3_IPV4_EXT_UNKNOWN,
+		RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN,
+		RTE_PTYPE_INNER_L4_FRAG,
+		RTE_PTYPE_INNER_L4_ICMP,
+		RTE_PTYPE_INNER_L4_NONFRAG,
+		RTE_PTYPE_INNER_L4_SCTP,
+		RTE_PTYPE_INNER_L4_TCP,
+		RTE_PTYPE_INNER_L4_UDP,
+		RTE_PTYPE_UNKNOWN
+	};
+
+	if (dev->rx_pkt_burst == i40e_recv_pkts ||
+#ifdef RTE_LIBRTE_I40E_RX_ALLOW_BULK_ALLOC
+	    dev->rx_pkt_burst == i40e_recv_pkts_bulk_alloc ||
+#endif
+	    dev->rx_pkt_burst == i40e_recv_scattered_pkts)
+		return ptypes;
+	return NULL;
+}
+
 int
 i40e_dev_rx_queue_setup(struct rte_eth_dev *dev,
 			uint16_t queue_idx,
@@ -2113,7 +2149,7 @@ i40e_dev_rx_queue_setup(struct rte_eth_dev *dev,
 	uint16_t base, bsf, tc_mapping;
 	int use_def_burst_func = 1;
 
-	if (hw->mac.type == I40E_MAC_VF) {
+	if (hw->mac.type == I40E_MAC_VF || hw->mac.type == I40E_MAC_X722_VF) {
 		struct i40e_vf *vf =
 			I40EVF_DEV_PRIVATE_TO_VF(dev->data->dev_private);
 		vsi = &vf->vsi;
@@ -2153,7 +2189,7 @@ i40e_dev_rx_queue_setup(struct rte_eth_dev *dev,
 	rxq->nb_rx_desc = nb_desc;
 	rxq->rx_free_thresh = rx_conf->rx_free_thresh;
 	rxq->queue_id = queue_idx;
-	if (hw->mac.type == I40E_MAC_VF)
+	if (hw->mac.type == I40E_MAC_VF || hw->mac.type == I40E_MAC_X722_VF)
 		rxq->reg_idx = queue_idx;
 	else /* PF device */
 		rxq->reg_idx = vsi->base_queue +
@@ -2330,7 +2366,7 @@ i40e_dev_tx_queue_setup(struct rte_eth_dev *dev,
 	uint16_t tx_rs_thresh, tx_free_thresh;
 	uint16_t i, base, bsf, tc_mapping;
 
-	if (hw->mac.type == I40E_MAC_VF) {
+	if (hw->mac.type == I40E_MAC_VF || hw->mac.type == I40E_MAC_X722_VF) {
 		struct i40e_vf *vf =
 			I40EVF_DEV_PRIVATE_TO_VF(dev->data->dev_private);
 		vsi = &vf->vsi;
@@ -2458,7 +2494,7 @@ i40e_dev_tx_queue_setup(struct rte_eth_dev *dev,
 	txq->hthresh = tx_conf->tx_thresh.hthresh;
 	txq->wthresh = tx_conf->tx_thresh.wthresh;
 	txq->queue_id = queue_idx;
-	if (hw->mac.type == I40E_MAC_VF)
+	if (hw->mac.type == I40E_MAC_VF || hw->mac.type == I40E_MAC_X722_VF)
 		txq->reg_idx = queue_idx;
 	else /* PF device */
 		txq->reg_idx = vsi->base_queue +
@@ -2727,7 +2763,7 @@ i40e_alloc_rx_queue_mbufs(struct i40e_rx_queue *rxq)
 
 	for (i = 0; i < rxq->nb_rx_desc; i++) {
 		volatile union i40e_rx_desc *rxd;
-		struct rte_mbuf *mbuf = rte_rxmbuf_alloc(rxq->mp);
+		struct rte_mbuf *mbuf = rte_mbuf_raw_alloc(rxq->mp);
 
 		if (unlikely(!mbuf)) {
 			PMD_DRV_LOG(ERR, "Failed to allocate mbuf for RX");
@@ -2741,7 +2777,7 @@ i40e_alloc_rx_queue_mbufs(struct i40e_rx_queue *rxq)
 		mbuf->port = rxq->port_id;
 
 		dma_addr =
-			rte_cpu_to_le_64(RTE_MBUF_DATA_DMA_ADDR_DEFAULT(mbuf));
+			rte_cpu_to_le_64(rte_mbuf_data_dma_addr_default(mbuf));
 
 		rxd = &rxq->rx_ring[i];
 		rxd->read.pkt_addr = dma_addr;
@@ -2857,7 +2893,12 @@ i40e_rx_queue_init(struct i40e_rx_queue *rxq)
 	rx_ctx.lrxqthresh = 2;
 	rx_ctx.crcstrip = (rxq->crc_len == 0) ? 1 : 0;
 	rx_ctx.l2tsel = 1;
-	rx_ctx.showiv = 1;
+	/* showiv indicates if inner VLAN is stripped inside of tunnel
+	 * packet. When set it to 1, vlan information is stripped from
+	 * the inner header, but the hardware does not put it in the
+	 * descriptor. So set it zero by default.
+	 */
+	rx_ctx.showiv = 0;
 	rx_ctx.prefena = 1;
 
 	err = i40e_clear_lan_rx_queue_context(hw, pf_q);

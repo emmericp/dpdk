@@ -179,7 +179,7 @@ rte_port_ring_reader_stats_read(void *port,
 struct rte_port_ring_writer {
 	struct rte_port_out_stats stats;
 
-	struct rte_mbuf *tx_buf[RTE_PORT_IN_BURST_SIZE_MAX];
+	struct rte_mbuf *tx_buf[2 * RTE_PORT_IN_BURST_SIZE_MAX];
 	struct rte_ring *ring;
 	uint32_t tx_burst_sz;
 	uint32_t tx_buf_count;
@@ -300,7 +300,7 @@ rte_port_ring_writer_tx_bulk_internal(void *port,
 	struct rte_port_ring_writer *p =
 		(struct rte_port_ring_writer *) port;
 
-	uint32_t bsz_mask = p->bsz_mask;
+	uint64_t bsz_mask = p->bsz_mask;
 	uint32_t tx_buf_count = p->tx_buf_count;
 	uint64_t expr = (pkts_mask & (pkts_mask + 1)) |
 			((pkts_mask & bsz_mask) ^ bsz_mask);
@@ -447,7 +447,7 @@ rte_port_ring_writer_stats_read(void *port,
 struct rte_port_ring_writer_nodrop {
 	struct rte_port_out_stats stats;
 
-	struct rte_mbuf *tx_buf[RTE_PORT_IN_BURST_SIZE_MAX];
+	struct rte_mbuf *tx_buf[2 * RTE_PORT_IN_BURST_SIZE_MAX];
 	struct rte_ring *ring;
 	uint32_t tx_burst_sz;
 	uint32_t tx_buf_count;
@@ -520,16 +520,20 @@ send_burst_nodrop(struct rte_port_ring_writer_nodrop *p)
 				p->tx_buf_count);
 
 	/* We sent all the packets in a first try */
-	if (nb_tx >= p->tx_buf_count)
+	if (nb_tx >= p->tx_buf_count) {
+		p->tx_buf_count = 0;
 		return;
+	}
 
 	for (i = 0; i < p->n_retries; i++) {
 		nb_tx += rte_ring_sp_enqueue_burst(p->ring,
 				(void **) (p->tx_buf + nb_tx), p->tx_buf_count - nb_tx);
 
 		/* We sent all the packets in more than one try */
-		if (nb_tx >= p->tx_buf_count)
+		if (nb_tx >= p->tx_buf_count) {
+			p->tx_buf_count = 0;
 			return;
+		}
 	}
 
 	/* We didn't send the packets in maximum allowed attempts */
@@ -549,16 +553,20 @@ send_burst_mp_nodrop(struct rte_port_ring_writer_nodrop *p)
 				p->tx_buf_count);
 
 	/* We sent all the packets in a first try */
-	if (nb_tx >= p->tx_buf_count)
+	if (nb_tx >= p->tx_buf_count) {
+		p->tx_buf_count = 0;
 		return;
+	}
 
 	for (i = 0; i < p->n_retries; i++) {
 		nb_tx += rte_ring_mp_enqueue_burst(p->ring,
 				(void **) (p->tx_buf + nb_tx), p->tx_buf_count - nb_tx);
 
 		/* We sent all the packets in more than one try */
-		if (nb_tx >= p->tx_buf_count)
+		if (nb_tx >= p->tx_buf_count) {
+			p->tx_buf_count = 0;
 			return;
+		}
 	}
 
 	/* We didn't send the packets in maximum allowed attempts */
@@ -606,7 +614,7 @@ rte_port_ring_writer_nodrop_tx_bulk_internal(void *port,
 	struct rte_port_ring_writer_nodrop *p =
 		(struct rte_port_ring_writer_nodrop *) port;
 
-	uint32_t bsz_mask = p->bsz_mask;
+	uint64_t bsz_mask = p->bsz_mask;
 	uint32_t tx_buf_count = p->tx_buf_count;
 	uint64_t expr = (pkts_mask & (pkts_mask + 1)) |
 			((pkts_mask & bsz_mask) ^ bsz_mask);

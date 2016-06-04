@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
+ *   Copyright(c) 2010-2016 Intel Corporation. All rights reserved.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -49,7 +49,7 @@
 #include "pipeline.h"
 
 #define APP_PARAM_NAME_SIZE                      PIPELINE_NAME_SIZE
-
+#define APP_LINK_PCI_BDF_SIZE                    16
 struct app_mempool_params {
 	char *name;
 	uint32_t parsed;
@@ -64,7 +64,7 @@ struct app_link_params {
 	uint32_t parsed;
 	uint32_t pmd_id; /* Generated based on port mask */
 	uint32_t arp_q; /* 0 = Disabled (packets go to default queue 0) */
-	uint32_t tcp_syn_local_q; /* 0 = Disabled (pkts go to default queue) */
+	uint32_t tcp_syn_q; /* 0 = Disabled (pkts go to default queue) */
 	uint32_t ip_local_q; /* 0 = Disabled (pkts go to default queue 0) */
 	uint32_t tcp_local_q; /* 0 = Disabled (pkts go to default queue 0) */
 	uint32_t udp_local_q; /* 0 = Disabled (pkts go to default queue 0) */
@@ -73,6 +73,7 @@ struct app_link_params {
 	uint32_t ip; /* 0 = Invalid */
 	uint32_t depth; /* Valid only when IP is valid */
 	uint64_t mac_addr; /* Read from HW */
+	char pci_bdf[APP_LINK_PCI_BDF_SIZE];
 
 	struct rte_eth_conf conf;
 	uint8_t promisc;
@@ -148,11 +149,15 @@ struct app_pktq_source_params {
 	uint32_t parsed;
 	uint32_t mempool_id; /* Position in the app->mempool_params array */
 	uint32_t burst;
+	char *file_name; /* Full path of PCAP file to be copied to mbufs */
+	uint32_t n_bytes_per_pkt;
 };
 
 struct app_pktq_sink_params {
 	char *name;
 	uint8_t parsed;
+	char *file_name; /* Full path of PCAP file to be copied to mbufs */
+	uint32_t n_pkts_to_dump;
 };
 
 struct app_msgq_params {
@@ -263,7 +268,15 @@ struct app_thread_data {
 
 	struct rte_ring *msgq_in;
 	struct rte_ring *msgq_out;
+
+	uint64_t headroom_time;
+	uint64_t headroom_cycles;
+	double headroom_ratio;
 };
+
+#ifndef APP_MAX_LINKS
+#define APP_MAX_LINKS                            16
+#endif
 
 struct app_eal_params {
 	/* Map lcore set to physical cpu set */
@@ -286,13 +299,13 @@ struct app_eal_params {
 	uint32_t ranks;
 
 	/* Add a PCI device in black list. */
-	char *pci_blacklist;
+	char *pci_blacklist[APP_MAX_LINKS];
 
 	/* Add a PCI device in white list. */
-	char *pci_whitelist;
+	char *pci_whitelist[APP_MAX_LINKS];
 
 	/* Add a virtual device. */
-	char *vdev;
+	char *vdev[APP_MAX_LINKS];
 
 	 /* Use VMware TSC map instead of native RDTSC */
 	uint32_t vmware_tsc_map_present;
@@ -367,10 +380,6 @@ struct app_eal_params {
 #define APP_MAX_MEMPOOLS                         8
 #endif
 
-#ifndef APP_MAX_LINKS
-#define APP_MAX_LINKS                            16
-#endif
-
 #ifndef APP_LINK_MAX_HWQ_IN
 #define APP_LINK_MAX_HWQ_IN                      64
 #endif
@@ -406,7 +415,7 @@ struct app_eal_params {
 #endif
 
 #ifndef APP_EAL_ARGC
-#define APP_EAL_ARGC                             32
+#define APP_EAL_ARGC                             64
 #endif
 
 #ifndef APP_MAX_PIPELINE_TYPES
@@ -419,6 +428,10 @@ struct app_eal_params {
 
 #ifndef APP_MAX_CMDS
 #define APP_MAX_CMDS                             64
+#endif
+
+#ifndef APP_THREAD_HEADROOM_STATS_COLLECT
+#define APP_THREAD_HEADROOM_STATS_COLLECT        1
 #endif
 
 struct app_params {

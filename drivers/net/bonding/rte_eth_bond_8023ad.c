@@ -512,7 +512,7 @@ mux_machine(struct bond_dev_private *internals, uint8_t slave_id)
 
 	if (!ACTOR_STATE(port, SYNCHRONIZATION)) {
 		/* attach mux to aggregator */
-		RTE_VERIFY((port->actor_state & (STATE_COLLECTING |
+		RTE_ASSERT((port->actor_state & (STATE_COLLECTING |
 			STATE_DISTRIBUTING)) == 0);
 
 		ACTOR_STATE_SET(port, SYNCHRONIZATION);
@@ -708,25 +708,25 @@ link_speed_key(uint16_t speed) {
 	uint16_t key_speed;
 
 	switch (speed) {
-	case ETH_LINK_SPEED_AUTONEG:
+	case ETH_SPEED_NUM_NONE:
 		key_speed = 0x00;
 		break;
-	case ETH_LINK_SPEED_10:
+	case ETH_SPEED_NUM_10M:
 		key_speed = BOND_LINK_SPEED_KEY_10M;
 		break;
-	case ETH_LINK_SPEED_100:
+	case ETH_SPEED_NUM_100M:
 		key_speed = BOND_LINK_SPEED_KEY_100M;
 		break;
-	case ETH_LINK_SPEED_1000:
+	case ETH_SPEED_NUM_1G:
 		key_speed = BOND_LINK_SPEED_KEY_1000M;
 		break;
-	case ETH_LINK_SPEED_10G:
+	case ETH_SPEED_NUM_10G:
 		key_speed = BOND_LINK_SPEED_KEY_10G;
 		break;
-	case ETH_LINK_SPEED_20G:
+	case ETH_SPEED_NUM_20G:
 		key_speed = BOND_LINK_SPEED_KEY_20G;
 		break;
-	case ETH_LINK_SPEED_40G:
+	case ETH_SPEED_NUM_40G:
 		key_speed = BOND_LINK_SPEED_KEY_40G;
 		break;
 	default:
@@ -813,7 +813,7 @@ bond_mode_8023ad_periodic_cb(void *arg)
 			struct lacpdu_header *lacp;
 
 			lacp = rte_pktmbuf_mtod(lacp_pkt, struct lacpdu_header *);
-			RTE_VERIFY(lacp->lacpdu.subtype == SLOW_SUBTYPE_LACP);
+			RTE_ASSERT(lacp->lacpdu.subtype == SLOW_SUBTYPE_LACP);
 
 			/* This is LACP frame so pass it to rx_machine */
 			rx_machine(internals, slave_id, &lacp->lacpdu);
@@ -856,8 +856,9 @@ bond_mode_8023ad_activate_slave(struct rte_eth_dev *bond_dev, uint8_t slave_id)
 	uint16_t q_id;
 
 	/* Given slave mus not be in active list */
-	RTE_VERIFY(find_slave_by_id(internals->active_slaves,
+	RTE_ASSERT(find_slave_by_id(internals->active_slaves,
 	internals->active_slave_count, slave_id) == internals->active_slave_count);
+	RTE_SET_USED(internals); /* used only for assert when enabled */
 
 	memcpy(&port->actor, &initial, sizeof(struct port_params));
 	/* Standard requires that port ID must be grater than 0.
@@ -880,8 +881,8 @@ bond_mode_8023ad_activate_slave(struct rte_eth_dev *bond_dev, uint8_t slave_id)
 	if (port->mbuf_pool != NULL)
 		return;
 
-	RTE_VERIFY(port->rx_ring == NULL);
-	RTE_VERIFY(port->tx_ring == NULL);
+	RTE_ASSERT(port->rx_ring == NULL);
+	RTE_ASSERT(port->tx_ring == NULL);
 	socket_id = rte_eth_devices[slave_id].data->numa_node;
 
 	element_size = sizeof(struct slow_protocol_frame) + sizeof(struct rte_mbuf)
@@ -890,7 +891,7 @@ bond_mode_8023ad_activate_slave(struct rte_eth_dev *bond_dev, uint8_t slave_id)
 	/* The size of the mempool should be at least:
 	 * the sum of the TX descriptors + BOND_MODE_8023AX_SLAVE_TX_PKTS */
 	total_tx_desc = BOND_MODE_8023AX_SLAVE_TX_PKTS;
-	for (q_id = 0; q_id < bond_dev->data->nb_rx_queues; q_id++) {
+	for (q_id = 0; q_id < bond_dev->data->nb_tx_queues; q_id++) {
 		bd_tx_q = (struct bond_tx_queue*)bond_dev->data->tx_queues[q_id];
 		total_tx_desc += bd_tx_q->nb_tx_desc;
 	}
@@ -939,7 +940,7 @@ bond_mode_8023ad_deactivate_slave(struct rte_eth_dev *bond_dev,
 	uint8_t i;
 
 	/* Given slave must be in active list */
-	RTE_VERIFY(find_slave_by_id(internals->active_slaves,
+	RTE_ASSERT(find_slave_by_id(internals->active_slaves,
 	internals->active_slave_count, slave_id) < internals->active_slave_count);
 
 	/* Exclude slave from transmit policy. If this slave is an aggregator
@@ -1019,6 +1020,7 @@ bond_mode_8023ad_conf_get(struct rte_eth_dev *dev,
 	conf->aggregate_wait_timeout_ms = mode4->aggregate_wait_timeout / ms_ticks;
 	conf->tx_period_ms = mode4->tx_period_timeout / ms_ticks;
 	conf->update_timeout_ms = mode4->update_timeout_us / 1000;
+	conf->rx_marker_period_ms = mode4->rx_marker_timeout / ms_ticks;
 }
 
 void

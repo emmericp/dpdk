@@ -79,22 +79,6 @@
 		PKT_TX_L4_MASK |		 \
 		PKT_TX_TCP_SEG)
 
-static inline struct rte_mbuf *
-rte_rxmbuf_alloc(struct rte_mempool *mp)
-{
-	struct rte_mbuf *m;
-
-	m = __rte_mbuf_raw_alloc(mp);
-	__rte_mbuf_sanity_check_raw(m, 0);
-	return m;
-}
-
-#define RTE_MBUF_DATA_DMA_ADDR(mb) \
-	(uint64_t) ((mb)->buf_physaddr + (mb)->data_off)
-
-#define RTE_MBUF_DATA_DMA_ADDR_DEFAULT(mb) \
-	(uint64_t) ((mb)->buf_physaddr + RTE_PKTMBUF_HEADROOM)
-
 /**
  * Structure associated with each descriptor of the RX ring of a RX queue.
  */
@@ -331,9 +315,9 @@ igbe_set_xmit_ctx(struct igb_tx_queue* txq,
 	}
 
 	txq->ctx_cache[ctx_curr].flags = ol_flags;
-	txq->ctx_cache[ctx_idx].tx_offload.data =
+	txq->ctx_cache[ctx_curr].tx_offload.data =
 		tx_offload_mask.data & tx_offload.data;
-	txq->ctx_cache[ctx_idx].tx_offload_mask = tx_offload_mask;
+	txq->ctx_cache[ctx_curr].tx_offload_mask = tx_offload_mask;
 
 	ctx_txd->type_tucmd_mlhl = rte_cpu_to_le_32(type_tucmd_mlhl);
 	vlan_macip_lens = (uint32_t)tx_offload.data;
@@ -456,7 +440,7 @@ eth_igb_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 			ctx = what_advctx_update(txq, tx_ol_req, tx_offload);
 			/* Only allocate context descriptor if required*/
 			new_ctx = (ctx == IGB_CTX_NUM);
-			ctx = txq->ctx_curr;
+			ctx = txq->ctx_curr + txq->ctx_start;
 			tx_last = (uint16_t) (tx_last + new_ctx);
 		}
 		if (tx_last >= txq->nb_tx_desc)
@@ -596,7 +580,7 @@ eth_igb_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 			 * Set up transmit descriptor.
 			 */
 			slen = (uint16_t) m_seg->data_len;
-			buf_dma_addr = RTE_MBUF_DATA_DMA_ADDR(m_seg);
+			buf_dma_addr = rte_mbuf_data_dma_addr(m_seg);
 			txd->read.buffer_addr =
 				rte_cpu_to_le_64(buf_dma_addr);
 			txd->read.cmd_type_len =
@@ -844,7 +828,7 @@ eth_igb_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 			   (unsigned) rx_id, (unsigned) staterr,
 			   (unsigned) rte_le_to_cpu_16(rxd.wb.upper.length));
 
-		nmb = rte_rxmbuf_alloc(rxq->mb_pool);
+		nmb = rte_mbuf_raw_alloc(rxq->mb_pool);
 		if (nmb == NULL) {
 			PMD_RX_LOG(DEBUG, "RX mbuf alloc failed port_id=%u "
 				   "queue_id=%u", (unsigned) rxq->port_id,
@@ -875,7 +859,7 @@ eth_igb_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 		rxm = rxe->mbuf;
 		rxe->mbuf = nmb;
 		dma_addr =
-			rte_cpu_to_le_64(RTE_MBUF_DATA_DMA_ADDR_DEFAULT(nmb));
+			rte_cpu_to_le_64(rte_mbuf_data_dma_addr_default(nmb));
 		rxdp->read.hdr_addr = 0;
 		rxdp->read.pkt_addr = dma_addr;
 
@@ -1027,7 +1011,7 @@ eth_igb_recv_scattered_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 			   (unsigned) rx_id, (unsigned) staterr,
 			   (unsigned) rte_le_to_cpu_16(rxd.wb.upper.length));
 
-		nmb = rte_rxmbuf_alloc(rxq->mb_pool);
+		nmb = rte_mbuf_raw_alloc(rxq->mb_pool);
 		if (nmb == NULL) {
 			PMD_RX_LOG(DEBUG, "RX mbuf alloc failed port_id=%u "
 				   "queue_id=%u", (unsigned) rxq->port_id,
@@ -1061,7 +1045,7 @@ eth_igb_recv_scattered_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 		 */
 		rxm = rxe->mbuf;
 		rxe->mbuf = nmb;
-		dma = rte_cpu_to_le_64(RTE_MBUF_DATA_DMA_ADDR_DEFAULT(nmb));
+		dma = rte_cpu_to_le_64(rte_mbuf_data_dma_addr_default(nmb));
 		rxdp->read.pkt_addr = dma;
 		rxdp->read.hdr_addr = 0;
 
@@ -1315,13 +1299,13 @@ eth_igb_tx_queue_setup(struct rte_eth_dev *dev,
 	 * driver.
 	 */
 	if (tx_conf->tx_free_thresh != 0)
-		PMD_INIT_LOG(WARNING, "The tx_free_thresh parameter is not "
+		PMD_INIT_LOG(INFO, "The tx_free_thresh parameter is not "
 			     "used for the 1G driver.");
 	if (tx_conf->tx_rs_thresh != 0)
-		PMD_INIT_LOG(WARNING, "The tx_rs_thresh parameter is not "
+		PMD_INIT_LOG(INFO, "The tx_rs_thresh parameter is not "
 			     "used for the 1G driver.");
-	if (tx_conf->tx_thresh.wthresh == 0)
-		PMD_INIT_LOG(WARNING, "To improve 1G driver performance, "
+	if (tx_conf->tx_thresh.wthresh == 0 && hw->mac.type != e1000_82576)
+		PMD_INIT_LOG(INFO, "To improve 1G driver performance, "
 			     "consider setting the TX WTHRESH value to 4, 8, "
 			     "or 16.");
 
@@ -1472,7 +1456,8 @@ eth_igb_rx_queue_setup(struct rte_eth_dev *dev,
 	rxq->pthresh = rx_conf->rx_thresh.pthresh;
 	rxq->hthresh = rx_conf->rx_thresh.hthresh;
 	rxq->wthresh = rx_conf->rx_thresh.wthresh;
-	if (rxq->wthresh > 0 && hw->mac.type == e1000_82576)
+	if (rxq->wthresh > 0 &&
+	    (hw->mac.type == e1000_82576 || hw->mac.type == e1000_vfadapt_i350))
 		rxq->wthresh = 1;
 	rxq->drop_en = rx_conf->rx_drop_en;
 	rxq->rx_free_thresh = rx_conf->rx_free_thresh;
@@ -1962,7 +1947,7 @@ igb_alloc_rx_queue_mbufs(struct igb_rx_queue *rxq)
 	/* Initialize software ring entries. */
 	for (i = 0; i < rxq->nb_rx_desc; i++) {
 		volatile union e1000_adv_rx_desc *rxd;
-		struct rte_mbuf *mbuf = rte_rxmbuf_alloc(rxq->mb_pool);
+		struct rte_mbuf *mbuf = rte_mbuf_raw_alloc(rxq->mb_pool);
 
 		if (mbuf == NULL) {
 			PMD_INIT_LOG(ERR, "RX mbuf alloc failed "
@@ -1970,7 +1955,7 @@ igb_alloc_rx_queue_mbufs(struct igb_rx_queue *rxq)
 			return -ENOMEM;
 		}
 		dma_addr =
-			rte_cpu_to_le_64(RTE_MBUF_DATA_DMA_ADDR_DEFAULT(mbuf));
+			rte_cpu_to_le_64(rte_mbuf_data_dma_addr_default(mbuf));
 		rxd = &rxq->rx_ring[i];
 		rxd->read.hdr_addr = 0;
 		rxd->read.pkt_addr = dma_addr;

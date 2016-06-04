@@ -74,6 +74,11 @@ STATIC s32 fm10k_stop_hw_vf(struct fm10k_hw *hw)
 		FM10K_WRITE_REG(hw, FM10K_TDBAH(i), bah);
 		FM10K_WRITE_REG(hw, FM10K_RDBAL(i), bal);
 		FM10K_WRITE_REG(hw, FM10K_RDBAH(i), bah);
+		/* Restore ITR scale in software-defined mechanism in TDLEN
+		 * for next VF initialization. See definition of
+		 * FM10K_TDLEN_ITR_SCALE_SHIFT for more details on the use of
+		 * TDLEN here.
+		 */
 		FM10K_WRITE_REG(hw, FM10K_TDLEN(i), tdlen);
 	}
 
@@ -128,8 +133,10 @@ STATIC s32 fm10k_init_hw_vf(struct fm10k_hw *hw)
 
 	/* verify we have at least 1 queue */
 	if (!~FM10K_READ_REG(hw, FM10K_TXQCTL(0)) ||
-	    !~FM10K_READ_REG(hw, FM10K_RXQCTL(0)))
-		return FM10K_ERR_NO_RESOURCES;
+	    !~FM10K_READ_REG(hw, FM10K_RXQCTL(0))) {
+		err = FM10K_ERR_NO_RESOURCES;
+		goto reset_max_queues;
+	}
 
 	/* determine how many queues we have */
 	for (i = 1; tqdloc0 && (i < FM10K_MAX_QUEUES_POOL); i++) {
@@ -147,7 +154,7 @@ STATIC s32 fm10k_init_hw_vf(struct fm10k_hw *hw)
 	/* shut down queues we own and reset DMA configuration */
 	err = fm10k_disable_queues_generic(hw, i);
 	if (err)
-		return err;
+		goto reset_max_queues;
 
 	/* record maximum queue count */
 	hw->mac.max_queues = i;
@@ -155,17 +162,23 @@ STATIC s32 fm10k_init_hw_vf(struct fm10k_hw *hw)
 	/* fetch default VLAN and ITR scale */
 	hw->mac.default_vid = (FM10K_READ_REG(hw, FM10K_TXQCTL(0)) &
 			       FM10K_TXQCTL_VID_MASK) >> FM10K_TXQCTL_VID_SHIFT;
+	/* Read the ITR scale from TDLEN. See the definition of
+	 * FM10K_TDLEN_ITR_SCALE_SHIFT for more information about how TDLEN is
+	 * used here.
+	 */
 	hw->mac.itr_scale = (FM10K_READ_REG(hw, FM10K_TDLEN(0)) &
 			     FM10K_TDLEN_ITR_SCALE_MASK) >>
 			    FM10K_TDLEN_ITR_SCALE_SHIFT;
 
-	/* ensure a non-zero itr scale */
-	if (!hw->mac.itr_scale)
-		hw->mac.itr_scale = FM10K_TDLEN_ITR_SCALE_GEN3;
-
 	return FM10K_SUCCESS;
+
+reset_max_queues:
+	hw->mac.max_queues = 0;
+
+	return err;
 }
 
+#ifndef NO_IS_SLOT_APPROPRIATE_CHECK
 /**
  *  fm10k_is_slot_appropriate_vf - Indicate appropriate slot for this SKU
  *  @hw: pointer to hardware structure
@@ -182,6 +195,7 @@ STATIC bool fm10k_is_slot_appropriate_vf(struct fm10k_hw *hw)
 	return TRUE;
 }
 
+#endif
 /* This structure defines the attibutes to be parsed below */
 const struct fm10k_tlv_attr fm10k_mac_vlan_msg_attr[] = {
 	FM10K_TLV_ATTR_U32(FM10K_MAC_VLAN_MSG_VLAN),
@@ -414,8 +428,6 @@ const struct fm10k_tlv_attr fm10k_lport_state_msg_attr[] = {
 	FM10K_TLV_ATTR_LAST
 };
 
-extern const struct fm10k_tlv_attr fm10k_1588_msg_attr[];
-
 /**
  *  fm10k_msg_lport_state_vf - Message handler for lport_state message from PF
  *  @hw: Pointer to hardware structure
@@ -638,7 +650,9 @@ s32 fm10k_init_ops_vf(struct fm10k_hw *hw)
 	mac->ops.init_hw = &fm10k_init_hw_vf;
 	mac->ops.start_hw = &fm10k_start_hw_generic;
 	mac->ops.stop_hw = &fm10k_stop_hw_vf;
+#ifndef NO_IS_SLOT_APPROPRIATE_CHECK
 	mac->ops.is_slot_appropriate = &fm10k_is_slot_appropriate_vf;
+#endif
 	mac->ops.update_vlan = &fm10k_update_vlan_vf;
 	mac->ops.read_mac_addr = &fm10k_read_mac_addr_vf;
 	mac->ops.update_uc_addr = &fm10k_update_uc_addr_vf;

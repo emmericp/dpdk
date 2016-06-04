@@ -498,9 +498,9 @@ Set the VLAN QinQ (extended queue in queue) on for a port::
 vlan set tpid
 ~~~~~~~~~~~~~
 
-Set the outer VLAN TPID for packet filtering on a port::
+Set the inner or outer VLAN TPID for packet filtering on a port::
 
-   testpmd> vlan set tpid (value) (port_id)
+   testpmd> vlan set (inner|outer) tpid (value) (port_id)
 
 .. note::
 
@@ -540,20 +540,43 @@ Remove a VLAN ID, from the set of VLAN identifiers filtered for VF(s) for port I
 
    testpmd> rx_vlan rm (vlan_id) port (port_id) vf (vf_mask)
 
-rx_vlan set tpid
-~~~~~~~~~~~~~~~~
-
-Set the outer VLAN TPID for packet filtering on a port::
-
-   testpmd> rx_vlan set tpid (value) (port_id)
-
 tunnel_filter add
 ~~~~~~~~~~~~~~~~~
 
 Add a tunnel filter on a port::
 
    testpmd> tunnel_filter add (port_id) (outer_mac) (inner_mac) (ip_addr) \
-            (inner_vlan) (tunnel_type) (filter_type) (tenant_id) (queue_id)
+            (inner_vlan) (vxlan|nvgre|ipingre) (imac-ivlan|imac-ivlan-tenid|\
+            imac-tenid|imac|omac-imac-tenid|oip|iip) (tenant_id) (queue_id)
+
+The available information categories are:
+
+* ``vxlan``: Set tunnel type as VXLAN.
+
+* ``nvgre``: Set tunnel type as NVGRE.
+
+* ``ipingre``: Set tunnel type as IP-in-GRE.
+
+* ``imac-ivlan``: Set filter type as Inner MAC and VLAN.
+
+* ``imac-ivlan-tenid``: Set filter type as Inner MAC, VLAN and tenant ID.
+
+* ``imac-tenid``: Set filter type as Inner MAC and tenant ID.
+
+* ``imac``: Set filter type as Inner MAC.
+
+* ``omac-imac-tenid``: Set filter type as Outer MAC, Inner MAC and tenant ID.
+
+* ``oip``: Set filter type as Outer IP.
+
+* ``iip``: Set filter type as Inner IP.
+
+Example::
+
+   testpmd> tunnel_filter add 0 68:05:CA:28:09:82 00:00:00:00:00:00 \
+            192.168.2.2 0 ipingre oip 1 1
+
+   Set an IP-in-GRE tunnel on port 0, and the filter type is Outer IP.
 
 tunnel_filter remove
 ~~~~~~~~~~~~~~~~~~~~
@@ -561,7 +584,8 @@ tunnel_filter remove
 Remove a tunnel filter on a port::
 
    testpmd> tunnel_filter rm (port_id) (outer_mac) (inner_mac) (ip_addr) \
-            (inner_vlan) (tunnel_type) (filter_type) (tenant_id) (queue_id)
+            (inner_vlan) (vxlan|nvgre|ipingre) (imac-ivlan|imac-ivlan-tenid|\
+            imac-tenid|imac|omac-imac-tenid|oip|iip) (tenant_id) (queue_id)
 
 rx_vxlan_port add
 ~~~~~~~~~~~~~~~~~
@@ -917,6 +941,32 @@ Set link down for a port::
 
    testpmd> set link-down port (port id)
 
+E-tag set
+~~~~~~~~~
+
+Enable E-tag insertion for a VF on a port::
+
+   testpmd> E-tag set insertion on port-tag-id (value) port (port_id) vf (vf_id)
+
+Disable E-tag insertion for a VF on a port::
+
+   testpmd> E-tag set insertion off port (port_id) vf (vf_id)
+
+Enable/disable E-tag stripping on a port::
+
+   testpmd> E-tag set stripping (on|off) port (port_id)
+
+Enable/disable E-tag based forwarding on a port::
+
+   testpmd> E-tag set forwarding (on|off) port (port_id)
+
+Add an E-tag forwarding filter on a port::
+
+   testpmd> E-tag set filter add e-tag-id (value) dst-pool (pool_id) port (port_id)
+
+Delete an E-tag forwarding filter on a port::
+   testpmd> E-tag set filter del e-tag-id (value) port (port_id)
+
 
 Port Functions
 --------------
@@ -1105,7 +1155,7 @@ port config - speed
 
 Set the speed and duplex mode for all ports or a specific port::
 
-   testpmd> port config (port_id|all) speed (10|100|1000|10000|auto) \
+   testpmd> port config (port_id|all) speed (10|100|1000|10000|40000|100000|auto) \
             duplex (half|full|auto)
 
 port config - queues/descriptors
@@ -1267,6 +1317,17 @@ Where the threshold type can be:
 * ``txrst:`` Set the transmit RS bit threshold of TX rings, 0 <= value <= txd.
 
 These threshold options are also available from the command-line.
+
+port config - E-tag
+~~~~~~~~~~~~~~~~~~~
+
+Set the value of ether-type for E-tag::
+
+   testpmd> port config (port_id|all) l2-tunnel E-tag ether-type (value)
+
+Enable/disable the E-tag support::
+
+   testpmd> port config (port_id|all) l2-tunnel E-tag (enable|disable)
 
 
 Link Bonding Functions
@@ -1678,8 +1739,9 @@ Different NICs may have different capabilities, command show port fdir (port_id)
 # Commands to add flow director filters of different flow types::
 
    flow_director_filter (port_id) mode IP (add|del|update) \
-                        flow (ipv4-other|ipv4-frag|ipv6-other|ipv6-frag)
+                        flow (ipv4-other|ipv4-frag|ipv6-other|ipv6-frag) \
                         src (src_ip_address) dst (dst_ip_address) \
+                        tos (tos_value) proto (proto_value) ttl (ttl_value) \
                         vlan (vlan_value) flexbytes (flexbytes_value) \
                         (drop|fwd) pf|vf(vf_id) queue (queue_id) \
                         fd_id (fd_id_value)
@@ -1688,6 +1750,7 @@ Different NICs may have different capabilities, command show port fdir (port_id)
                         flow (ipv4-tcp|ipv4-udp|ipv6-tcp|ipv6-udp) \
                         src (src_ip_address) (src_port) \
                         dst (dst_ip_address) (dst_port) \
+                        tos (tos_value) ttl (ttl_value) \
                         vlan (vlan_value) flexbytes (flexbytes_value) \
                         (drop|fwd) queue pf|vf(vf_id) (queue_id) \
                         fd_id (fd_id_value)
@@ -1695,7 +1758,8 @@ Different NICs may have different capabilities, command show port fdir (port_id)
    flow_director_filter (port_id) mode IP (add|del|update) \
                         flow (ipv4-sctp|ipv6-sctp) \
                         src (src_ip_address) (src_port) \
-                        dst (dst_ip_address) (dst_port)
+                        dst (dst_ip_address) (dst_port) \
+                        tos (tos_value) ttl (ttl_value) \
                         tag (verification_tag) vlan (vlan_value) \
                         flexbytes (flexbytes_value) (drop|fwd) \
                         pf|vf(vf_id) queue (queue_id) fd_id (fd_id_value)
@@ -1719,12 +1783,14 @@ Different NICs may have different capabilities, command show port fdir (port_id)
 For example, to add an ipv4-udp flow type filter::
 
    testpmd> flow_director_filter 0 add flow ipv4-udp src 2.2.2.3 32 \
-            dst 2.2.2.5 33 vlan 0x1 flexbytes (0x88,0x48) fwd pf queue 1 fd_id 1
+            dst 2.2.2.5 33 tos 2 ttl 40 vlan 0x1 flexbytes (0x88,0x48) \
+            fwd pf queue 1 fd_id 1
 
 For example, add an ipv4-other flow type filter::
 
    testpmd> flow_director_filter 0 add flow ipv4-other src 2.2.2.3 \
-             dst 2.2.2.5 vlan 0x1 flexbytes (0x88,0x48) fwd pf queue 1 fd_id 1
+             dst 2.2.2.5 tos 2 proto 20 ttl 40 vlan 0x1 \
+             flexbytes (0x88,0x48) fwd pf queue 1 fd_id 1
 
 flush_flow_director
 ~~~~~~~~~~~~~~~~~~~
@@ -1841,33 +1907,36 @@ set_hash_input_set
 
 Set the input set for hash::
 
-   set_hash_input_set (port_id) (ipv4|ipv4-frag|ipv4-tcp|ipv4-udp|ipv4-sctp| \
-   ipv4-other|ipv6|ipv6-frag|ipv6-tcp|ipv6-udp|ipv6-sctp|ipv6-other| \
+   set_hash_input_set (port_id) (ipv4-frag|ipv4-tcp|ipv4-udp|ipv4-sctp| \
+   ipv4-other|ipv6-frag|ipv6-tcp|ipv6-udp|ipv6-sctp|ipv6-other| \
    l2_payload) (ovlan|ivlan|src-ipv4|dst-ipv4|src-ipv6|dst-ipv6|ipv4-tos| \
    ipv4-proto|ipv6-tc|ipv6-next-header|udp-src-port|udp-dst-port| \
    tcp-src-port|tcp-dst-port|sctp-src-port|sctp-dst-port|sctp-veri-tag| \
    udp-key|gre-key|fld-1st|fld-2nd|fld-3rd|fld-4th|fld-5th|fld-6th|fld-7th| \
    fld-8th|none) (select|add)
 
-For example, to add source IP to hash input set for flow type of ipv4 on port 0::
+For example, to add source IP to hash input set for flow type of ipv4-udp on port 0::
 
-   testpmd> set_hash_input_set 0 ipv4 src-ipv4 add
+   testpmd> set_hash_input_set 0 ipv4-udp src-ipv4 add
 
 set_fdir_input_set
 ~~~~~~~~~~~~~~~~~~
 
-Set the input set for Fdir::
+The Flow Director filters can match the different fields for different type of packet, i.e. specific input set
+on per flow type and the flexible payload. This command can be used to change input set for each flow type.
 
-   set_fdir_input_set (port_id) (ipv4|ipv4-frag|ipv4-tcp|ipv4-udp|ipv4-sctp| \
-   ipv4-other|ipv6|ipv6-frag|ipv6-tcp|ipv6-udp|ipv6-sctp|ipv6-other|l2_payload)
-   (src-ipv4|dst-ipv4|src-ipv6|dst-ipv6|udp-src-port|udp-dst-port| \
-   tcp-src-port|tcp-dst-port|sctp-src-port|sctp-dst-port|sctp-veri-tag| \
-   fld-1st|fld-2nd|fld-3rd|fld-4th|fld-5th|fld-6th|fld-7th|fld-8th|none) \
-   (select|add)
+Set the input set for flow director::
 
-For example to add source IP to FD input set for flow type of ipv4 on port 0::
+   set_fdir_input_set (port_id) (ipv4-frag|ipv4-tcp|ipv4-udp|ipv4-sctp| \
+   ipv4-other|ipv6|ipv6-frag|ipv6-tcp|ipv6-udp|ipv6-sctp|ipv6-other| \
+   l2_payload) (ivlan|ethertype|src-ipv4|dst-ipv4|src-ipv6|dst-ipv6|ipv4-tos| \
+   ipv4-proto|ipv4-ttl|ipv6-tc|ipv6-next-header|ipv6-hop-limits| \
+   tudp-src-port|udp-dst-port|cp-src-port|tcp-dst-port|sctp-src-port| \
+   sctp-dst-port|sctp-veri-tag|none) (select|add)
 
-   testpmd> set_fdir_input_set 0 ipv4 src-ipv4 add
+For example to add source IP to FD input set for flow type of ipv4-udp on port 0::
+
+   testpmd> set_fdir_input_set 0 ipv4-udp src-ipv4 add
 
 global_config
 ~~~~~~~~~~~~~

@@ -440,7 +440,7 @@ get_dst_port(struct ipv4_hdr *ipv4_hdr,  uint8_t portid, lookup_struct_t * l3fwd
 static inline uint8_t
 get_dst_port(struct ipv4_hdr *ipv4_hdr,  uint8_t portid, lookup_struct_t * l3fwd_lookup_struct)
 {
-	uint8_t next_hop;
+	uint32_t next_hop;
 
 	return (uint8_t) ((rte_lpm_lookup(l3fwd_lookup_struct,
 			rte_be_to_cpu_32(ipv4_hdr->dst_addr), &next_hop) == 0)?
@@ -869,10 +869,16 @@ setup_lpm(int socketid)
 	int ret;
 	char s[64];
 
+	struct rte_lpm_config lpm_ipv4_config;
+
+	lpm_ipv4_config.max_rules = L3FWD_LPM_MAX_RULES;
+	lpm_ipv4_config.number_tbl8s = 256;
+	lpm_ipv4_config.flags = 0;
+
 	/* create the LPM table */
 	snprintf(s, sizeof(s), "L3FWD_LPM_%d", socketid);
-	l3fwd_lookup_struct[socketid] = rte_lpm_create(s, socketid,
-				L3FWD_LPM_MAX_RULES, 0);
+	l3fwd_lookup_struct[socketid] =
+			rte_lpm_create(s, socketid, &lpm_ipv4_config);
 	if (l3fwd_lookup_struct[socketid] == NULL)
 		rte_exit(EXIT_FAILURE, "Unable to create the l3fwd LPM table"
 				" on socket %d\n", socketid);
@@ -976,8 +982,6 @@ main(int argc, char **argv)
 		rte_exit(EXIT_FAILURE, "init_lcore_rx_queues failed\n");
 
 	nb_ports = rte_eth_dev_count();
-	if (nb_ports > RTE_MAX_ETHPORTS)
-		nb_ports = RTE_MAX_ETHPORTS;
 
 	if (check_port_config(nb_ports) < 0)
 		rte_exit(EXIT_FAILURE, "check_port_config failed\n");

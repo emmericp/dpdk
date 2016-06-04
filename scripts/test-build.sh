@@ -30,14 +30,22 @@
 # (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 # OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
+default_path=$PATH
+
 # Load config options:
-# - DPDK_BUILD_TEST_CONFIGS (target1+option1+option2 target2)
+# - AESNI_MULTI_BUFFER_LIB_PATH
+# - DPDK_BUILD_TEST_CONFIGS (defconfig1+option1+option2 defconfig2)
 # - DPDK_DEP_CFLAGS
 # - DPDK_DEP_LDFLAGS
 # - DPDK_DEP_MOFED (y/[n])
 # - DPDK_DEP_PCAP (y/[n])
+# - DPDK_DEP_SSL (y/[n])
+# - DPDK_DEP_SZE (y/[n])
+# - DPDK_DEP_ZLIB (y/[n])
+# - DPDK_MAKE_JOBS (int)
 # - DPDK_NOTIFY (notify-send)
-. scripts/load-devel-config.sh
+# - LIBSSO_PATH
+. $(dirname $(readlink -e $0))/load-devel-config.sh
 
 print_usage () {
 	echo "usage: $(basename $0) [-h] [-jX] [-s] [config1 [config2] ...]]"
@@ -54,19 +62,26 @@ print_help () {
 	        -jX   use X parallel jobs in "make"
 	        -s    short test with only first config without examples/doc
 
-	config: defconfig name followed by switches delimited with "+" sign
-	        Example: x86_64-native-linuxapp-gcc+next+shared+combined
-	        Default is to enable most of the options.
+	config: defconfig[[~][+]option1[[~][+]option2...]]
+	        Example: x86_64-native-linuxapp-gcc+debug~RXTX_CALLBACKS
+	        The lowercase options are defined inside $(basename $0).
+	        The uppercase options can be the end of a defconfig option
+	        to enable if prefixed with '+' or to disable if prefixed with '~'.
+	        Default is to automatically enable most of the options.
 	        The external dependencies are setup with DPDK_DEP_* variables.
+	        If no config on command line, DPDK_BUILD_TEST_CONFIGS is used.
 	END_OF_HELP
 }
 
 J=$DPDK_MAKE_JOBS
 short=false
-while getopts hj:s ARG ; do
+unset verbose
+maxerr=-Wfatal-errors
+while getopts hj:sv ARG ; do
 	case $ARG in
 		j ) J=$OPTARG ;;
 		s ) short=true ;;
+		v ) verbose='V=1' ;;
 		h ) print_help ; exit 0 ;;
 		? ) print_usage ; exit 1 ;;
 	esac
@@ -92,28 +107,51 @@ trap on_exit EXIT
 
 cd $(dirname $(readlink -m $0))/..
 
+reset_env ()
+{
+	export PATH=$default_path
+	unset CROSS
+	unset DPDK_DEP_CFLAGS
+	unset DPDK_DEP_LDFLAGS
+	unset DPDK_DEP_MOFED
+	unset DPDK_DEP_PCAP
+	unset DPDK_DEP_SSL
+	unset DPDK_DEP_SZE
+	unset DPDK_DEP_ZLIB
+	unset AESNI_MULTI_BUFFER_LIB_PATH
+	unset LIBSSO_PATH
+	unset PQOS_INSTALL_PATH
+}
+
 config () # <directory> <target> <options>
 {
 	if [ ! -e $1/.config ] ; then
-		echo Custom configuration
+		echo "================== Configure $1"
 		make T=$2 O=$1 config
-		echo $3 | grep -q next || \
+
+		echo 'Customize configuration'
+		# Built-in options (lowercase)
+		! echo $3 | grep -q '+default' || \
+		sed -ri 's,(RTE_MACHINE=")native,\1default,' $1/.config
+		echo $3 | grep -q '+next' || \
 		sed -ri           's,(NEXT_ABI=)y,\1n,' $1/.config
-		! echo $3 | grep -q shared || \
+		! echo $3 | grep -q '+shared' || \
 		sed -ri         's,(SHARED_LIB=)n,\1y,' $1/.config
-		! echo $3 | grep -q combined || \
-		sed -ri       's,(COMBINE_LIBS=)n,\1y,' $1/.config
-		echo $2 | grep -q '^i686' || \
+		! echo $3 | grep -q '+debug' || ( \
+		sed -ri     's,(RTE_LOG_LEVEL=).*,\1RTE_LOG_DEBUG,' $1/.config
+		sed -ri           's,(_DEBUG.*=)n,\1y,' $1/.config
+		sed -ri            's,(_STAT.*=)n,\1y,' $1/.config
+		sed -ri 's,(TEST_PMD_RECORD_.*=)n,\1y,' $1/.config )
+
+		# Automatic configuration
+		! echo $2 | grep -q '^x86_64' || \
 		sed -ri               's,(NUMA=)n,\1y,' $1/.config
 		sed -ri         's,(PCI_CONFIG=)n,\1y,' $1/.config
 		sed -ri    's,(LIBRTE_IEEE1588=)n,\1y,' $1/.config
 		sed -ri             's,(BYPASS=)n,\1y,' $1/.config
 		test "$DPDK_DEP_MOFED" != y || \
-		echo $2 | grep -q '^clang$' || \
-		echo $3 | grep -q 'shared.*combined' || \
 		sed -ri           's,(MLX._PMD=)n,\1y,' $1/.config
 		test "$DPDK_DEP_SZE" != y || \
-		echo $2 | grep -q '^i686' || \
 		sed -ri       's,(PMD_SZEDATA2=)n,\1y,' $1/.config
 		test "$DPDK_DEP_ZLIB" != y || \
 		sed -ri          's,(BNX2X_PMD=)n,\1y,' $1/.config
@@ -121,42 +159,62 @@ config () # <directory> <target> <options>
 		test "$DPDK_DEP_PCAP" != y || \
 		sed -ri               's,(PCAP=)n,\1y,' $1/.config
 		test -z "$AESNI_MULTI_BUFFER_LIB_PATH" || \
-		echo $2 | grep -q '^i686' || \
-		echo $3 | grep -q 'shared.*combined' || \
 		sed -ri       's,(PMD_AESNI_MB=)n,\1y,' $1/.config
+		test -z "$AESNI_MULTI_BUFFER_LIB_PATH" || \
+		sed -ri      's,(PMD_AESNI_GCM=)n,\1y,' $1/.config
+		test -z "$LIBSSO_PATH" || \
+		sed -ri         's,(PMD_SNOW3G=)n,\1y,' $1/.config
 		test "$DPDK_DEP_SSL" != y || \
-		echo $2 | grep -q '^i686' || \
-		echo $3 | grep -q 'shared.*combined' || \
 		sed -ri            's,(PMD_QAT=)n,\1y,' $1/.config
 		sed -ri        's,(KNI_VHOST.*=)n,\1y,' $1/.config
 		sed -ri           's,(SCHED_.*=)n,\1y,' $1/.config
-		! echo $2 | grep -q '^i686' || \
-		sed -ri              's,(POWER=)y,\1n,' $1/.config
-		sed -ri 's,(TEST_PMD_RECORD_.*=)n,\1y,' $1/.config
-		sed -ri            's,(DEBUG.*=)n,\1y,' $1/.config
+		build_config_hook $1 $2 $3
+
+		# Explicit enabler/disabler (uppercase)
+		for option in $(echo $3 | sed 's,[~+], &,g') ; do
+			pattern=$(echo $option | cut -c2-)
+			if echo $option | grep -q '^~' ; then
+				sed -ri "s,($pattern=)y,\1n," $1/.config
+			elif echo $option | grep -q '^+' ; then
+				sed -ri "s,($pattern=)n,\1y," $1/.config
+			fi
+		done
 	fi
 }
 
+# default empty hook to override in devel config
+build_config_hook () # <directory> <target> <options>
+{
+	:
+}
+
 for conf in $configs ; do
-	target=$(echo $conf | cut -d'+' -f1)
-	options=$(echo $conf | cut -d'+' -sf2- --output-delimiter='-')
-	if [ -z "$options" ] ; then
-		dir=$target
-		config $dir $target
-		# Use install rule
-		make -j$J T=$target install EXTRA_CFLAGS="$DPDK_DEP_CFLAGS" EXTRA_LDFLAGS="$DPDK_DEP_LDFLAGS"
-		$short || make -j$J T=$target examples O=$dir/examples EXTRA_LDFLAGS="$DPDK_DEP_LDFLAGS"
-	else
-		dir=$target-$options
-		config $dir $target $options
-		echo "================== Build $dir"
-		# Use O variable without install
-		make -j$J O=$dir EXTRA_CFLAGS="$DPDK_DEP_CFLAGS" EXTRA_LDFLAGS="$DPDK_DEP_LDFLAGS"
-		echo "================== Build examples for $dir"
-		make -j$J -sC examples RTE_SDK=$(pwd) RTE_TARGET=$dir O=$(readlink -m $dir/examples) EXTRA_LDFLAGS="$DPDK_DEP_LDFLAGS"
-	fi
-	echo "################## $dir done."
+	target=$(echo $conf | sed 's,[~+].*,,')
+	# reload config with DPDK_TARGET set
+	DPDK_TARGET=$target
+	reset_env
+	. $(dirname $(readlink -e $0))/load-devel-config.sh
+
+	options=$(echo $conf | sed 's,[^~+]*,,')
+	dir=$conf
+	config $dir $target $options
+
+	echo "================== Build $dir"
+	make -j$J EXTRA_CFLAGS="$maxerr $DPDK_DEP_CFLAGS" \
+		EXTRA_LDFLAGS="$DPDK_DEP_LDFLAGS" $verbose O=$dir
 	! $short || break
+	echo "================== Build examples for $dir"
+	export RTE_SDK=$(pwd)
+	export RTE_TARGET=$dir
+	make -j$J -sC examples \
+		EXTRA_LDFLAGS="$DPDK_DEP_LDFLAGS" $verbose \
+		O=$(readlink -m $dir/examples)
+	! echo $target | grep -q '^x86_64' || \
+	make -j$J -sC examples/performance-thread \
+		EXTRA_LDFLAGS="$DPDK_DEP_LDFLAGS" $verbose \
+		O=$(readlink -m $dir/examples/performance-thread)
+	unset RTE_TARGET
+	echo "################## $dir done."
 done
 
 if ! $short ; then

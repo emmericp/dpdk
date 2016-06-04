@@ -39,15 +39,19 @@ Network Interface Controller Drivers
     bnx2x
     cxgbe
     e1000em
+    ena
     enic
     fm10k
+    i40e
     ixgbe
     intel_vf
     mlx4
     mlx5
     nfp
+    qede
     szedata2
     virtio
+    vhost
     vmxnet3
     pcap_ring
 

@@ -229,7 +229,7 @@ rte_port_ethdev_writer_tx_bulk(void *port,
 {
 	struct rte_port_ethdev_writer *p =
 		(struct rte_port_ethdev_writer *) port;
-	uint32_t bsz_mask = p->bsz_mask;
+	uint64_t bsz_mask = p->bsz_mask;
 	uint32_t tx_buf_count = p->tx_buf_count;
 	uint64_t expr = (pkts_mask & (pkts_mask + 1)) |
 			((pkts_mask & bsz_mask) ^ bsz_mask);
@@ -390,16 +390,20 @@ send_burst_nodrop(struct rte_port_ethdev_writer_nodrop *p)
 			p->tx_buf_count);
 
 	/* We sent all the packets in a first try */
-	if (nb_tx >= p->tx_buf_count)
+	if (nb_tx >= p->tx_buf_count) {
+		p->tx_buf_count = 0;
 		return;
+	}
 
 	for (i = 0; i < p->n_retries; i++) {
 		nb_tx += rte_eth_tx_burst(p->port_id, p->queue_id,
 							 p->tx_buf + nb_tx, p->tx_buf_count - nb_tx);
 
 		/* We sent all the packets in more than one try */
-		if (nb_tx >= p->tx_buf_count)
+		if (nb_tx >= p->tx_buf_count) {
+			p->tx_buf_count = 0;
 			return;
+		}
 	}
 
 	/* We didn't send the packets in maximum allowed attempts */
@@ -432,7 +436,7 @@ rte_port_ethdev_writer_nodrop_tx_bulk(void *port,
 	struct rte_port_ethdev_writer_nodrop *p =
 		(struct rte_port_ethdev_writer_nodrop *) port;
 
-	uint32_t bsz_mask = p->bsz_mask;
+	uint64_t bsz_mask = p->bsz_mask;
 	uint32_t tx_buf_count = p->tx_buf_count;
 	uint64_t expr = (pkts_mask & (pkts_mask + 1)) |
 			((pkts_mask & bsz_mask) ^ bsz_mask);

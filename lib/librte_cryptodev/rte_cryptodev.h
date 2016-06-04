@@ -1,6 +1,6 @@
 /*-
  *
- *   Copyright(c) 2015 Intel Corporation. All rights reserved.
+ *   Copyright(c) 2015-2016 Intel Corporation. All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -39,17 +39,13 @@
  *
  * Defines RTE Crypto Device APIs for the provisioning of cipher and
  * authentication operations.
- *
- * @warning
- * @b EXPERIMENTAL: this API may change without prior notice
  */
 
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-#include "stddef.h"
-
+#include "rte_kvargs.h"
 #include "rte_crypto.h"
 #include "rte_dev.h"
 
@@ -57,15 +53,23 @@ extern "C" {
 /**< Null crypto PMD device name */
 #define CRYPTODEV_NAME_AESNI_MB_PMD	("cryptodev_aesni_mb_pmd")
 /**< AES-NI Multi buffer PMD device name */
-#define CRYPTODEV_NAME_QAT_PMD		("cryptodev_qat_pmd")
-/**< Intel QAT PMD device name */
+#define CRYPTODEV_NAME_AESNI_GCM_PMD	("cryptodev_aesni_gcm_pmd")
+/**< AES-NI GCM PMD device name */
+#define CRYPTODEV_NAME_QAT_SYM_PMD	("cryptodev_qat_sym_pmd")
+/**< Intel QAT Symmetric Crypto PMD device name */
+#define CRYPTODEV_NAME_SNOW3G_PMD	("cryptodev_snow3g_pmd")
+/**< SNOW 3G PMD device name */
 
 /** Crypto device type */
 enum rte_cryptodev_type {
 	RTE_CRYPTODEV_NULL_PMD = 1,	/**< Null crypto PMD */
+	RTE_CRYPTODEV_AESNI_GCM_PMD,	/**< AES-NI GCM PMD */
 	RTE_CRYPTODEV_AESNI_MB_PMD,	/**< AES-NI multi buffer PMD */
-	RTE_CRYPTODEV_QAT_PMD,		/**< QAT PMD */
+	RTE_CRYPTODEV_QAT_SYM_PMD,	/**< QAT PMD Symmetric Crypto */
+	RTE_CRYPTODEV_SNOW3G_PMD,	/**< SNOW 3G PMD */
 };
+
+extern const char **rte_cyptodev_names;
 
 /* Logging Macros */
 
@@ -91,16 +95,152 @@ enum rte_cryptodev_type {
 #define CDEV_PMD_TRACE(fmt, args...)
 #endif
 
+/**
+ * Symmetric Crypto Capability
+ */
+struct rte_cryptodev_symmetric_capability {
+	enum rte_crypto_sym_xform_type xform_type;
+	/**< Transform type : Authentication / Cipher */
+	union {
+		struct {
+			enum rte_crypto_auth_algorithm algo;
+			/**< authentication algorithm */
+			uint16_t block_size;
+			/**< algorithm block size */
+			struct {
+				uint16_t min;	/**< minimum key size */
+				uint16_t max;	/**< maximum key size */
+				uint16_t increment;
+				/**< if a range of sizes are supported,
+				 * this parameter is used to indicate
+				 * increments in byte size that are supported
+				 * between the minimum and maximum */
+			} key_size;
+			/**< auth key size range */
+			struct {
+				uint16_t min;	/**< minimum digest size */
+				uint16_t max;	/**< maximum digest size */
+				uint16_t increment;
+				/**< if a range of sizes are supported,
+				 * this parameter is used to indicate
+				 * increments in byte size that are supported
+				 * between the minimum and maximum */
+			} digest_size;
+			/**< digest size range */
+			struct {
+				uint16_t min;	/**< minimum aad size */
+				uint16_t max;	/**< maximum aad size */
+				uint16_t increment;
+				/**< if a range of sizes are supported,
+				 * this parameter is used to indicate
+				 * increments in byte size that are supported
+				 * between the minimum and maximum */
+			} aad_size;
+			/**< Additional authentication data size range */
+		} auth;
+		/**< Symmetric Authentication transform capabilities */
+		struct {
+			enum rte_crypto_cipher_algorithm algo;
+			/**< cipher algorithm */
+			uint16_t block_size;
+			/**< algorithm block size */
+			struct {
+				uint16_t min;	/**< minimum key size */
+				uint16_t max;	/**< maximum key size */
+				uint16_t increment;
+				/**< if a range of sizes are supported,
+				 * this parameter is used to indicate
+				 * increments in byte size that are supported
+				 * between the minimum and maximum */
+			} key_size;
+			/**< cipher key size range */
+			struct {
+				uint16_t min;	/**< minimum iv size */
+				uint16_t max;	/**< maximum iv size */
+				uint16_t increment;
+				/**< if a range of sizes are supported,
+				 * this parameter is used to indicate
+				 * increments in byte size that are supported
+				 * between the minimum and maximum */
+			} iv_size;
+			/**< Initialisation vector data size range */
+		} cipher;
+		/**< Symmetric Cipher transform capabilities */
+	};
+};
+
+/** Structure used to capture a capability of a crypto device */
+struct rte_cryptodev_capabilities {
+	enum rte_crypto_op_type op;
+	/**< Operation type */
+
+	union {
+		struct rte_cryptodev_symmetric_capability sym;
+		/**< Symmetric operation capability parameters */
+	};
+};
+
+/** Macro used at end of crypto PMD list */
+#define RTE_CRYPTODEV_END_OF_CAPABILITIES_LIST() \
+	{ RTE_CRYPTO_OP_TYPE_UNDEFINED }
+
+
+/**
+ * Crypto device supported feature flags
+ *
+ * Note:
+ * New features flags should be added to the end of the list
+ *
+ * Keep these flags synchronised with rte_cryptodev_get_feature_name()
+ */
+#define	RTE_CRYPTODEV_FF_SYMMETRIC_CRYPTO	(1ULL << 0)
+/**< Symmetric crypto operations are supported */
+#define	RTE_CRYPTODEV_FF_ASYMMETRIC_CRYPTO	(1ULL << 1)
+/**< Asymmetric crypto operations are supported */
+#define	RTE_CRYPTODEV_FF_SYM_OPERATION_CHAINING	(1ULL << 2)
+/**< Chaining symmetric crypto operations are supported */
+#define	RTE_CRYPTODEV_FF_CPU_SSE		(1ULL << 3)
+/**< Utilises CPU SIMD SSE instructions */
+#define	RTE_CRYPTODEV_FF_CPU_AVX		(1ULL << 4)
+/**< Utilises CPU SIMD AVX instructions */
+#define	RTE_CRYPTODEV_FF_CPU_AVX2		(1ULL << 5)
+/**< Utilises CPU SIMD AVX2 instructions */
+#define	RTE_CRYPTODEV_FF_CPU_AESNI		(1ULL << 6)
+/**< Utilises CPU AES-NI instructions */
+#define	RTE_CRYPTODEV_FF_HW_ACCELERATED		(1ULL << 7)
+/**< Operations are off-loaded to an external hardware accelerator */
+
+
+/**
+ * Get the name of a crypto device feature flag
+ *
+ * @param	flag	The mask describing the flag.
+ *
+ * @return
+ *   The name of this flag, or NULL if it's not a valid feature flag.
+ */
+
+extern const char *
+rte_cryptodev_get_feature_name(uint64_t flag);
+
 /**  Crypto device information */
 struct rte_cryptodev_info {
 	const char *driver_name;		/**< Driver name. */
 	enum rte_cryptodev_type dev_type;	/**< Device type */
 	struct rte_pci_device *pci_dev;		/**< PCI information. */
 
+	uint64_t feature_flags;			/**< Feature flags */
+
+	const struct rte_cryptodev_capabilities *capabilities;
+	/**< Array of devices supported capabilities */
+
 	unsigned max_nb_queue_pairs;
 	/**< Maximum number of queues pairs supported by device. */
-	unsigned max_nb_sessions;
-	/**< Maximum number of sessions supported by device. */
+
+	struct {
+		unsigned max_nb_sessions;
+		/**< Maximum number of sessions supported by device. */
+	} sym;
 };
 
 #define RTE_CRYPTODEV_DETACHED  (0)
@@ -130,17 +270,6 @@ struct rte_cryptodev_qp_conf {
 typedef void (*rte_cryptodev_cb_fn)(uint8_t dev_id,
 		enum rte_cryptodev_event_type event, void *cb_arg);
 
-#ifdef RTE_CRYPTODEV_PERF
-/**
- * Crypto Device performance counter statistics structure. This structure is
- * used for RDTSC counters for measuring crypto operations.
- */
-struct rte_cryptodev_perf_stats {
-	uint64_t t_accumlated;	/**< Accumulated time processing operation */
-	uint64_t t_min;		/**< Max time */
-	uint64_t t_max;		/**< Min time */
-};
-#endif
 
 /** Crypto Device statistics */
 struct rte_cryptodev_stats {
@@ -153,29 +282,123 @@ struct rte_cryptodev_stats {
 	/**< Total error count on operations enqueued */
 	uint64_t dequeue_err_count;
 	/**< Total error count on operations dequeued */
+};
 
-#ifdef RTE_CRYPTODEV_DETAILED_STATS
-	struct {
-		uint64_t encrypt_ops;	/**< Count of encrypt operations */
-		uint64_t encrypt_bytes;	/**< Number of bytes encrypted */
+#define RTE_CRYPTODEV_VDEV_DEFAULT_MAX_NB_QUEUE_PAIRS	8
+#define RTE_CRYPTODEV_VDEV_DEFAULT_MAX_NB_SESSIONS	2048
 
-		uint64_t decrypt_ops;	/**< Count of decrypt operations */
-		uint64_t decrypt_bytes;	/**< Number of bytes decrypted */
-	} cipher; /**< Cipher operations stats */
+/**
+ * @internal
+ * Initialisation parameters for virtual crypto devices
+ */
+struct rte_crypto_vdev_init_params {
+	unsigned max_nb_queue_pairs;
+	unsigned max_nb_sessions;
+	uint8_t socket_id;
+};
 
-	struct {
-		uint64_t generate_ops;	/**< Count of generate operations */
-		uint64_t bytes_hashed;	/**< Number of bytes hashed */
+#define RTE_CRYPTODEV_VDEV_MAX_NB_QP_ARG		("max_nb_queue_pairs")
+#define RTE_CRYPTODEV_VDEV_MAX_NB_SESS_ARG		("max_nb_sessions")
+#define RTE_CRYPTODEV_VDEV_SOCKET_ID			("socket_id")
 
-		uint64_t verify_ops;	/**< Count of verify operations */
-		uint64_t bytes_verified;/**< Number of bytes verified */
-	} hash;	 /**< Hash operations stats */
-#endif
+static const char *cryptodev_vdev_valid_params[] = {
+	RTE_CRYPTODEV_VDEV_MAX_NB_QP_ARG,
+	RTE_CRYPTODEV_VDEV_MAX_NB_SESS_ARG,
+	RTE_CRYPTODEV_VDEV_SOCKET_ID
+};
 
-#ifdef RTE_CRYPTODEV_PERF
-	struct rte_cryptodev_perf_stats op_perf; /**< Operations stats */
-#endif
-} __rte_cache_aligned;
+static inline uint8_t
+number_of_sockets(void)
+{
+	int sockets = 0;
+	int i;
+	const struct rte_memseg *ms = rte_eal_get_physmem_layout();
+
+	for (i = 0; ((i < RTE_MAX_MEMSEG) && (ms[i].addr != NULL)); i++) {
+		if (sockets < ms[i].socket_id)
+			sockets = ms[i].socket_id;
+	}
+
+	/* Number of sockets = maximum socket_id + 1 */
+	return ++sockets;
+}
+
+/** Parse integer from integer argument */
+static inline int
+__rte_cryptodev_parse_integer_arg(const char *key __rte_unused,
+		const char *value, void *extra_args)
+{
+	int *i = (int *) extra_args;
+
+	*i = atoi(value);
+	if (*i < 0) {
+		CDEV_LOG_ERR("Argument has to be positive.");
+		return -1;
+	}
+
+	return 0;
+}
+
+/**
+ * Parse virtual device initialisation parameters input arguments
+ * @internal
+ *
+ * @params	params		Initialisation parameters with defaults set.
+ * @params	input_args	Command line arguments
+ *
+ * @return
+ * 0 on successful parse
+ * <0 on failure to parse
+ */
+static inline int
+rte_cryptodev_parse_vdev_init_params(struct rte_crypto_vdev_init_params *params,
+		const char *input_args)
+{
+	struct rte_kvargs *kvlist;
+	int ret;
+
+	if (params == NULL)
+		return -EINVAL;
+
+	if (input_args) {
+		kvlist = rte_kvargs_parse(input_args,
+				cryptodev_vdev_valid_params);
+		if (kvlist == NULL)
+			return -1;
+
+		ret = rte_kvargs_process(kvlist,
+					RTE_CRYPTODEV_VDEV_MAX_NB_QP_ARG,
+					&__rte_cryptodev_parse_integer_arg,
+					&params->max_nb_queue_pairs);
+		if (ret < 0)
+			goto free_kvlist;
+
+		ret = rte_kvargs_process(kvlist,
+					RTE_CRYPTODEV_VDEV_MAX_NB_SESS_ARG,
+					&__rte_cryptodev_parse_integer_arg,
+					&params->max_nb_sessions);
+		if (ret < 0)
+			goto free_kvlist;
+
+		ret = rte_kvargs_process(kvlist, RTE_CRYPTODEV_VDEV_SOCKET_ID,
+					&__rte_cryptodev_parse_integer_arg,
+					&params->socket_id);
+		if (ret < 0)
+			goto free_kvlist;
+
+		if (params->socket_id >= number_of_sockets()) {
+			CDEV_LOG_ERR("Invalid socket id specified to create "
+				"the virtual crypto device on");
+			goto free_kvlist;
+		}
+	}
+
+	return 0;
+
+free_kvlist:
+	rte_kvargs_free(kvlist);
+	return ret;
+}
 
 /**
  * Create a virtual crypto device
@@ -242,8 +465,6 @@ struct rte_cryptodev_config {
 
 /**
  * Configure a device.
- *
- * EXPERIMENTAL: this API file may change without prior notice
  *
  * This function must be invoked first before any other function in the
  * API. This function can also be re-invoked when a device is in the
@@ -440,13 +661,15 @@ rte_cryptodev_callback_unregister(uint8_t dev_id,
 		rte_cryptodev_cb_fn cb_fn, void *cb_arg);
 
 
-typedef uint16_t (*dequeue_pkt_burst_t)(void *qp, struct rte_mbuf **pkts,
-		uint16_t nb_pkts);
+typedef uint16_t (*dequeue_pkt_burst_t)(void *qp,
+		struct rte_crypto_op **ops,	uint16_t nb_ops);
 /**< Dequeue processed packets from queue pair of a device. */
 
-typedef uint16_t (*enqueue_pkt_burst_t)(void *qp, struct rte_mbuf **pkts,
-		uint16_t nb_pkts);
+typedef uint16_t (*enqueue_pkt_burst_t)(void *qp,
+		struct rte_crypto_op **ops,	uint16_t nb_ops);
 /**< Enqueue packets for processing on queue pair of a device. */
+
+
 
 
 struct rte_cryptodev_callback;
@@ -467,6 +690,8 @@ struct rte_cryptodev {
 	/**< Pointer to device data */
 	struct rte_cryptodev_ops *dev_ops;
 	/**< Functions exported by PMD */
+	uint64_t feature_flags;
+	/**< Supported features */
 	struct rte_pci_device *pci_dev;
 	/**< PCI info. supplied by probing */
 
@@ -518,66 +743,65 @@ struct rte_cryptodev_data {
 extern struct rte_cryptodev *rte_cryptodevs;
 /**
  *
- * Dequeue a burst of processed packets from a queue of the crypto device.
- * The dequeued packets are stored in *rte_mbuf* structures whose pointers are
- * supplied in the *pkts* array.
+ * Dequeue a burst of processed crypto operations from a queue on the crypto
+ * device. The dequeued operation are stored in *rte_crypto_op* structures
+ * whose pointers are supplied in the *ops* array.
  *
- * The rte_crypto_dequeue_burst() function returns the number of packets
- * actually dequeued, which is the number of *rte_mbuf* data structures
- * effectively supplied into the *pkts* array.
+ * The rte_cryptodev_dequeue_burst() function returns the number of ops
+ * actually dequeued, which is the number of *rte_crypto_op* data structures
+ * effectively supplied into the *ops* array.
  *
- * A return value equal to *nb_pkts* indicates that the queue contained
- * at least *rx_pkts* packets, and this is likely to signify that other
- * received packets remain in the input queue. Applications implementing
- * a "retrieve as much received packets as possible" policy can check this
- * specific case and keep invoking the rte_crypto_dequeue_burst() function
- * until a value less than *nb_pkts* is returned.
+ * A return value equal to *nb_ops* indicates that the queue contained
+ * at least *nb_ops* operations, and this is likely to signify that other
+ * processed operations remain in the devices output queue. Applications
+ * implementing a "retrieve as many processed operations as possible" policy
+ * can check this specific case and keep invoking the
+ * rte_cryptodev_dequeue_burst() function until a value less than
+ * *nb_ops* is returned.
  *
- * The rte_crypto_dequeue_burst() function does not provide any error
+ * The rte_cryptodev_dequeue_burst() function does not provide any error
  * notification to avoid the corresponding overhead.
  *
- * @param	dev_id		The identifier of the device.
+ * @param	dev_id		The symmetric crypto device identifier
  * @param	qp_id		The index of the queue pair from which to
  *				retrieve processed packets. The value must be
  *				in the range [0, nb_queue_pair - 1] previously
  *				supplied to rte_cryptodev_configure().
- * @param	pkts		The address of an array of pointers to
- *				*rte_mbuf* structures that must be large enough
- *				to store *nb_pkts* pointers in it.
- * @param	nb_pkts		The maximum number of packets to dequeue.
+ * @param	ops		The address of an array of pointers to
+ *				*rte_crypto_op* structures that must be
+ *				large enough to store *nb_ops* pointers in it.
+ * @param	nb_ops		The maximum number of operations to dequeue.
  *
  * @return
- *   - The number of packets actually dequeued, which is the number
- *   of pointers to *rte_mbuf* structures effectively supplied to the
- *   *pkts* array.
+ *   - The number of operations actually dequeued, which is the number
+ *   of pointers to *rte_crypto_op* structures effectively supplied to the
+ *   *ops* array.
  */
 static inline uint16_t
 rte_cryptodev_dequeue_burst(uint8_t dev_id, uint16_t qp_id,
-		struct rte_mbuf **pkts, uint16_t nb_pkts)
+		struct rte_crypto_op **ops, uint16_t nb_ops)
 {
 	struct rte_cryptodev *dev = &rte_cryptodevs[dev_id];
 
-	nb_pkts = (*dev->dequeue_burst)
-			(dev->data->queue_pairs[qp_id], pkts, nb_pkts);
+	nb_ops = (*dev->dequeue_burst)
+			(dev->data->queue_pairs[qp_id], ops, nb_ops);
 
-	return nb_pkts;
+	return nb_ops;
 }
 
 /**
- * Enqueue a burst of packets for processing on a crypto device.
+ * Enqueue a burst of operations for processing on a crypto device.
  *
- * The rte_crypto_enqueue_burst() function is invoked to place packets
- * on the queue *queue_id* of the device designated by its *dev_id*.
+ * The rte_cryptodev_enqueue_burst() function is invoked to place
+ * crypto operations on the queue *qp_id* of the device designated by
+ * its *dev_id*.
  *
- * The *nb_pkts* parameter is the number of packets to process which are
- * supplied in the *pkts* array of *rte_mbuf* structures.
+ * The *nb_ops* parameter is the number of operations to process which are
+ * supplied in the *ops* array of *rte_crypto_op* structures.
  *
- * The rte_crypto_enqueue_burst() function returns the number of packets it
- * actually sent. A return value equal to *nb_pkts* means that all packets
- * have been sent.
- *
- * Each mbuf in the *pkts* array must have a valid *rte_mbuf_offload* structure
- * attached which contains a valid crypto operation.
+ * The rte_cryptodev_enqueue_burst() function returns the number of
+ * operations it actually enqueued for processing. A return value equal to
+ * *nb_ops* means that all packets have been enqueued.
  *
  * @param	dev_id		The identifier of the device.
  * @param	qp_id		The index of the queue pair which packets are
@@ -585,26 +809,43 @@ rte_cryptodev_dequeue_burst(uint8_t dev_id, uint16_t qp_id,
  *				must be in the range [0, nb_queue_pairs - 1]
  *				previously supplied to
  *				 *rte_cryptodev_configure*.
- * @param	pkts		The address of an array of *nb_pkts* pointers
- *				to *rte_mbuf* structures which contain the
- *				output packets.
- * @param	nb_pkts		The number of packets to transmit.
+ * @param	ops		The address of an array of *nb_ops* pointers
+ *				to *rte_crypto_op* structures which contain
+ *				the crypto operations to be processed.
+ * @param	nb_ops		The number of operations to process.
  *
  * @return
- * The number of packets actually enqueued on the crypto device. The return
- * value can be less than the value of the *nb_pkts* parameter when the
- * crypto devices queue is full or has been filled up.
- * The number of packets is 0 if the device hasn't been started.
+ * The number of operations actually enqueued on the crypto device. The return
+ * value can be less than the value of the *nb_ops* parameter when the
+ * crypto devices queue is full or if invalid parameters are specified in
+ * a *rte_crypto_op*.
  */
 static inline uint16_t
 rte_cryptodev_enqueue_burst(uint8_t dev_id, uint16_t qp_id,
-		struct rte_mbuf **pkts, uint16_t nb_pkts)
+		struct rte_crypto_op **ops, uint16_t nb_ops)
 {
 	struct rte_cryptodev *dev = &rte_cryptodevs[dev_id];
 
 	return (*dev->enqueue_burst)(
-			dev->data->queue_pairs[qp_id], pkts, nb_pkts);
+			dev->data->queue_pairs[qp_id], ops, nb_ops);
 }
+
+
+/** Cryptodev symmetric crypto session */
+struct rte_cryptodev_sym_session {
+	struct {
+		uint8_t dev_id;
+		/**< Device Id */
+		enum rte_cryptodev_type dev_type;
+		/** Crypto Device type session created on */
+		struct rte_mempool *mp;
+		/**< Mempool session allocated from */
+	} __rte_aligned(8);
+	/**< Public symmetric session details */
+
+	char _private[0];
+	/**< Private session material */
+};
 
 
 /**
@@ -628,25 +869,24 @@ rte_cryptodev_enqueue_burst(uint8_t dev_id, uint16_t qp_id,
  * @return
  *  Pointer to the created session or NULL
  */
-extern struct rte_cryptodev_session *
-rte_cryptodev_session_create(uint8_t dev_id,
-		struct rte_crypto_xform *xform);
-
+extern struct rte_cryptodev_sym_session *
+rte_cryptodev_sym_session_create(uint8_t dev_id,
+		struct rte_crypto_sym_xform *xform);
 
 /**
  * Free the memory associated with a previously allocated session.
  *
  * @param	dev_id		The device identifier.
  * @param	session		Session pointer previously allocated by
- *				*rte_cryptodev_session_create*.
+ *				*rte_cryptodev_sym_session_create*.
  *
  * @return
  *   NULL on successful freeing of session.
  *   Session pointer on failure to free session.
  */
-extern struct rte_cryptodev_session *
-rte_cryptodev_session_free(uint8_t dev_id,
-		struct rte_cryptodev_session *session);
+extern struct rte_cryptodev_sym_session *
+rte_cryptodev_sym_session_free(uint8_t dev_id,
+		struct rte_cryptodev_sym_session *session);
 
 
 #ifdef __cplusplus

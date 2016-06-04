@@ -48,7 +48,6 @@ struct fm10k_mbx_info;
 /* XOR provides means of switching from Tx to Rx FIFO */
 #define FM10K_MBMEM_PF_XOR	(FM10K_MBMEM_SM(0) ^ FM10K_MBMEM_PF(0))
 #define FM10K_MBX(_n)		((_n) + 0x18800)
-#define FM10K_MBX_OWNER				0x00000001
 #define FM10K_MBX_REQ				0x00000002
 #define FM10K_MBX_ACK				0x00000004
 #define FM10K_MBX_REQ_INTERRUPT			0x00000008
@@ -144,11 +143,11 @@ enum fm10k_mbx_state {
  *		The maximum message size is provided during connect to avoid
  *		jamming the mailbox with messages that do not fit.
  * Err_no: Error number - Applies only to error headers
- *		The error number provides a indication of the type of error
+ *		The error number provides an indication of the type of error
  *		experienced.
  */
 
-/* macros for retriving and setting header values */
+/* macros for retrieving and setting header values */
 #define FM10K_MSG_HDR_MASK(name) \
 	((0x1u << FM10K_MSG_##name##_SIZE) - 1)
 #define FM10K_MSG_HDR_FIELD_SET(value, name) \
@@ -213,7 +212,6 @@ enum fm10k_msg_type {
 /* version number for switch manager mailboxes */
 #define FM10K_SM_MBX_VERSION		1
 #define FM10K_SM_MBX_FIFO_LEN		(FM10K_MBMEM_PF_XOR - 1)
-#define FM10K_SM_MBX_FIFO_HDR_LEN	1
 
 /* offsets shared between all SM FIFO headers */
 #define FM10K_MSG_SM_TAIL_SHIFT			0
@@ -233,18 +231,13 @@ enum fm10k_msg_type {
  */
 #define FM10K_MBX_ERR(_n) ((_n) - 512)
 #define FM10K_MBX_ERR_NO_MBX		FM10K_MBX_ERR(0x01)
-#define FM10K_MBX_ERR_NO_MSG		FM10K_MBX_ERR(0x02)
 #define FM10K_MBX_ERR_NO_SPACE		FM10K_MBX_ERR(0x03)
-#define FM10K_MBX_ERR_LOCK		FM10K_MBX_ERR(0x04)
 #define FM10K_MBX_ERR_TAIL		FM10K_MBX_ERR(0x05)
 #define FM10K_MBX_ERR_HEAD		FM10K_MBX_ERR(0x06)
-#define FM10K_MBX_ERR_DST		FM10K_MBX_ERR(0x07)
 #define FM10K_MBX_ERR_SRC		FM10K_MBX_ERR(0x08)
 #define FM10K_MBX_ERR_TYPE		FM10K_MBX_ERR(0x09)
-#define FM10K_MBX_ERR_LEN		FM10K_MBX_ERR(0x0A)
 #define FM10K_MBX_ERR_SIZE		FM10K_MBX_ERR(0x0B)
 #define FM10K_MBX_ERR_BUSY		FM10K_MBX_ERR(0x0C)
-#define FM10K_MBX_ERR_VALUE		FM10K_MBX_ERR(0x0D)
 #define FM10K_MBX_ERR_RSVD0		FM10K_MBX_ERR(0x0E)
 #define FM10K_MBX_ERR_CRC		FM10K_MBX_ERR(0x0F)
 

@@ -318,8 +318,6 @@ main_loop(__rte_unused void *arg)
 	};
 	enum lcore_rxtx flag = LCORE_NONE;
 
-	nb_ports = (uint8_t)(nb_ports < RTE_MAX_ETHPORTS ?
-				nb_ports : RTE_MAX_ETHPORTS);
 	for (i = 0; i < nb_ports; i++) {
 		if (!kni_port_params_array[i])
 			continue;
@@ -670,7 +668,7 @@ check_all_ports_link_status(uint8_t port_num, uint32_t port_mask)
 				continue;
 			}
 			/* clear all_ports_up flag if any link down */
-			if (link.link_status == 0) {
+			if (link.link_status == ETH_LINK_DOWN) {
 				all_ports_up = 0;
 				break;
 			}
@@ -831,7 +829,8 @@ kni_free_kni(uint8_t port_id)
 		return -1;
 
 	for (i = 0; i < p[port_id]->nb_kni; i++) {
-		rte_kni_release(p[port_id]->kni[i]);
+		if (rte_kni_release(p[port_id]->kni[i]))
+			printf("Fail to release kni\n");
 		p[port_id]->kni[i] = NULL;
 	}
 	rte_eth_dev_stop(port_id);

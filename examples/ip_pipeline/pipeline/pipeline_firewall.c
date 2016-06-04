@@ -256,10 +256,10 @@ app_pipeline_firewall_key_check_and_normalize(struct pipeline_firewall_key *key)
 			return -1;
 
 		if (src_ip_depth)
-			src_ip_netmask = (~0) << (32 - src_ip_depth);
+			src_ip_netmask = (~0U) << (32 - src_ip_depth);
 
 		if (dst_ip_depth)
-			dst_ip_netmask = ((~0) << (32 - dst_ip_depth));
+			dst_ip_netmask = ((~0U) << (32 - dst_ip_depth));
 
 		key->key.ipv4_5tuple.src_ip &= src_ip_netmask;
 		key->key.ipv4_5tuple.dst_ip &= dst_ip_netmask;
@@ -834,7 +834,7 @@ app_pipeline_firewall_add_bulk(struct app_params *app,
 		rules[i] = app_pipeline_firewall_rule_find(p, &keys[i]);
 		new_rules[i] = (rules[i] == NULL);
 		if (rules[i] == NULL) {
-			rules[i] = rte_malloc(NULL, sizeof(rules[i]),
+			rules[i] = rte_malloc(NULL, sizeof(*rules[i]),
 					RTE_CACHE_LINE_SIZE);
 
 			if (rules[i] == NULL) {

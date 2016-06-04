@@ -362,7 +362,7 @@ pci_scan_one(const char *dirname, uint16_t domain, uint8_t bus,
 		else
 			dev->kdrv = RTE_KDRV_UNKNOWN;
 	} else
-		dev->kdrv = RTE_KDRV_UNKNOWN;
+		dev->kdrv = RTE_KDRV_NONE;
 
 	/* device is valid, add in list (sorted) */
 	if (TAILQ_EMPTY(&pci_device_list)) {
@@ -481,96 +481,6 @@ error:
 	return -1;
 }
 
-#ifdef RTE_PCI_CONFIG
-static int
-pci_config_extended_tag(struct rte_pci_device *dev)
-{
-	struct rte_pci_addr *loc = &dev->addr;
-	char filename[PATH_MAX];
-	char buf[BUFSIZ];
-	FILE *f;
-
-	/* not configured, let it as is */
-	if (strncmp(RTE_PCI_EXTENDED_TAG, "on", 2) != 0 &&
-		strncmp(RTE_PCI_EXTENDED_TAG, "off", 3) != 0)
-		return 0;
-
-	snprintf(filename, sizeof(filename),
-		SYSFS_PCI_DEVICES "/" PCI_PRI_FMT "/" "extended_tag",
-		loc->domain, loc->bus, loc->devid, loc->function);
-	f = fopen(filename, "rw+");
-	if (!f)
-		return -1;
-
-	fgets(buf, sizeof(buf), f);
-	if (strncmp(RTE_PCI_EXTENDED_TAG, "on", 2) == 0) {
-		/* enable Extended Tag*/
-		if (strncmp(buf, "on", 2) != 0) {
-			fseek(f, 0, SEEK_SET);
-			fputs("on", f);
-		}
-	} else {
-		/* disable Extended Tag */
-		if (strncmp(buf, "off", 3) != 0) {
-			fseek(f, 0, SEEK_SET);
-			fputs("off", f);
-		}
-	}
-	fclose(f);
-
-	return 0;
-}
-
-static int
-pci_config_max_read_request_size(struct rte_pci_device *dev)
-{
-	struct rte_pci_addr *loc = &dev->addr;
-	char filename[PATH_MAX];
-	char buf[BUFSIZ], param[BUFSIZ];
-	FILE *f;
-	/* size can be 128, 256, 512, 1024, 2048, 4096 */
-	uint32_t max_size = RTE_PCI_MAX_READ_REQUEST_SIZE;
-
-	/* not configured, let it as is */
-	if (!max_size)
-		return 0;
-
-	snprintf(filename, sizeof(filename),
-		SYSFS_PCI_DEVICES "/" PCI_PRI_FMT "/" "max_read_request_size",
-			loc->domain, loc->bus, loc->devid, loc->function);
-	f = fopen(filename, "rw+");
-	if (!f)
-		return -1;
-
-	fgets(buf, sizeof(buf), f);
-	snprintf(param, sizeof(param), "%d", max_size);
-
-	/* check if the size to be set is the same as current */
-	if (strcmp(buf, param) == 0) {
-		fclose(f);
-		return 0;
-	}
-	fseek(f, 0, SEEK_SET);
-	fputs(param, f);
-	fclose(f);
-
-	return 0;
-}
-
-void
-pci_config_space_set(struct rte_pci_device *dev)
-{
-	if (rte_eal_process_type() != RTE_PROC_PRIMARY)
-		return;
-
-	/* configure extended tag */
-	pci_config_extended_tag(dev);
-
-	/* configure max read request size */
-	pci_config_max_read_request_size(dev);
-}
-#endif
-
 /* Read PCI config space. */
 int rte_eal_pci_read_config(const struct rte_pci_device *device,
 			    void *buf, size_t len, off_t offset)
@@ -619,6 +529,190 @@ int rte_eal_pci_write_config(const struct rte_pci_device *device,
 					intr_handle->fd);
 		return -1;
 	}
+}
+
+#if defined(RTE_ARCH_X86)
+static int
+pci_ioport_map(struct rte_pci_device *dev, int bar __rte_unused,
+	       struct rte_pci_ioport *p)
+{
+	uint16_t start, end;
+	FILE *fp;
+	char *line = NULL;
+	char pci_id[16];
+	int found = 0;
+	size_t linesz;
+
+	snprintf(pci_id, sizeof(pci_id), PCI_PRI_FMT,
+		 dev->addr.domain, dev->addr.bus,
+		 dev->addr.devid, dev->addr.function);
+
+	fp = fopen("/proc/ioports", "r");
+	if (fp == NULL) {
+		RTE_LOG(ERR, EAL, "%s(): can't open ioports\n", __func__);
+		return -1;
+	}
+
+	while (getdelim(&line, &linesz, '\n', fp) > 0) {
+		char *ptr = line;
+		char *left;
+		int n;
+
+		n = strcspn(ptr, ":");
+		ptr[n] = 0;
+		left = &ptr[n + 1];
+
+		while (*left && isspace(*left))
+			left++;
+
+		if (!strncmp(left, pci_id, strlen(pci_id))) {
+			found = 1;
+
+			while (*ptr && isspace(*ptr))
+				ptr++;
+
+			sscanf(ptr, "%04hx-%04hx", &start, &end);
+
+			break;
+		}
+	}
+
+	free(line);
+	fclose(fp);
+
+	if (!found)
+		return -1;
+
+	dev->intr_handle.type = RTE_INTR_HANDLE_UNKNOWN;
+	p->base = start;
+	RTE_LOG(DEBUG, EAL, "PCI Port IO found start=0x%x\n", start);
+
+	return 0;
+}
+#endif
+
+int
+rte_eal_pci_ioport_map(struct rte_pci_device *dev, int bar,
+		       struct rte_pci_ioport *p)
+{
+	int ret = -1;
+
+	switch (dev->kdrv) {
+#ifdef VFIO_PRESENT
+	case RTE_KDRV_VFIO:
+		if (pci_vfio_is_enabled())
+			ret = pci_vfio_ioport_map(dev, bar, p);
+		break;
+#endif
+	case RTE_KDRV_IGB_UIO:
+		ret = pci_uio_ioport_map(dev, bar, p);
+		break;
+	case RTE_KDRV_UIO_GENERIC:
+#if defined(RTE_ARCH_X86)
+		ret = pci_ioport_map(dev, bar, p);
+#else
+		ret = pci_uio_ioport_map(dev, bar, p);
+#endif
+		break;
+	case RTE_KDRV_NONE:
+#if defined(RTE_ARCH_X86)
+		ret = pci_ioport_map(dev, bar, p);
+#endif
+		break;
+	default:
+		break;
+	}
+
+	if (!ret)
+		p->dev = dev;
+
+	return ret;
+}
+
+void
+rte_eal_pci_ioport_read(struct rte_pci_ioport *p,
+			void *data, size_t len, off_t offset)
+{
+	switch (p->dev->kdrv) {
+#ifdef VFIO_PRESENT
+	case RTE_KDRV_VFIO:
+		pci_vfio_ioport_read(p, data, len, offset);
+		break;
+#endif
+	case RTE_KDRV_IGB_UIO:
+		pci_uio_ioport_read(p, data, len, offset);
+		break;
+	case RTE_KDRV_UIO_GENERIC:
+		pci_uio_ioport_read(p, data, len, offset);
+		break;
+	case RTE_KDRV_NONE:
+#if defined(RTE_ARCH_X86)
+		pci_uio_ioport_read(p, data, len, offset);
+#endif
+		break;
+	default:
+		break;
+	}
+}
+
+void
+rte_eal_pci_ioport_write(struct rte_pci_ioport *p,
+			 const void *data, size_t len, off_t offset)
+{
+	switch (p->dev->kdrv) {
+#ifdef VFIO_PRESENT
+	case RTE_KDRV_VFIO:
+		pci_vfio_ioport_write(p, data, len, offset);
+		break;
+#endif
+	case RTE_KDRV_IGB_UIO:
+		pci_uio_ioport_write(p, data, len, offset);
+		break;
+	case RTE_KDRV_UIO_GENERIC:
+		pci_uio_ioport_write(p, data, len, offset);
+		break;
+	case RTE_KDRV_NONE:
+#if defined(RTE_ARCH_X86)
+		pci_uio_ioport_write(p, data, len, offset);
+#endif
+		break;
+	default:
+		break;
+	}
+}
+
+int
+rte_eal_pci_ioport_unmap(struct rte_pci_ioport *p)
+{
+	int ret = -1;
+
+	switch (p->dev->kdrv) {
+#ifdef VFIO_PRESENT
+	case RTE_KDRV_VFIO:
+		if (pci_vfio_is_enabled())
+			ret = pci_vfio_ioport_unmap(p);
+		break;
+#endif
+	case RTE_KDRV_IGB_UIO:
+		ret = pci_uio_ioport_unmap(p);
+		break;
+	case RTE_KDRV_UIO_GENERIC:
+#if defined(RTE_ARCH_X86)
+		ret = 0;
+#else
+		ret = pci_uio_ioport_unmap(p);
+#endif
+		break;
+	case RTE_KDRV_NONE:
+#if defined(RTE_ARCH_X86)
+		ret = 0;
+#endif
+		break;
+	default:
+		break;
+	}
+
+	return ret;
 }
 
 /* Init the PCI EAL subsystem */

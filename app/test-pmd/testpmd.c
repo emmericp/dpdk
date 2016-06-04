@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
+ *   Copyright(c) 2010-2016 Intel Corporation. All rights reserved.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -77,7 +77,6 @@
 #endif
 
 #include "testpmd.h"
-#include "mempool_osdep.h"
 
 uint16_t verbose_level = 0; /**< Silent by default. */
 
@@ -354,17 +353,17 @@ set_default_fwd_lcores_config(void)
 
 	nb_lc = 0;
 	for (i = 0; i < RTE_MAX_LCORE; i++) {
-		if (! rte_lcore_is_enabled(i))
-			continue;
-		if (i == rte_get_master_lcore())
-			continue;
-		fwd_lcores_cpuids[nb_lc++] = i;
 		sock_num = rte_lcore_to_socket_id(i) + 1;
 		if (sock_num > max_socket) {
 			if (sock_num > RTE_MAX_NUMA_NODES)
 				rte_exit(EXIT_FAILURE, "Total sockets greater than %u\n", RTE_MAX_NUMA_NODES);
 			max_socket = sock_num;
 		}
+		if (!rte_lcore_is_enabled(i))
+			continue;
+		if (i == rte_get_master_lcore())
+			continue;
+		fwd_lcores_cpuids[nb_lc++] = i;
 	}
 	nb_lcores = (lcoreid_t) nb_lc;
 	nb_cfg_lcores = nb_lcores;
@@ -410,7 +409,7 @@ mbuf_pool_create(uint16_t mbuf_seg_size, unsigned nb_mbuf,
 		 unsigned int socket_id)
 {
 	char pool_name[RTE_MEMPOOL_NAMESIZE];
-	struct rte_mempool *rte_mp;
+	struct rte_mempool *rte_mp = NULL;
 	uint32_t mb_size;
 
 	mb_size = sizeof(struct rte_mbuf) + mbuf_seg_size;
@@ -423,23 +422,28 @@ mbuf_pool_create(uint16_t mbuf_seg_size, unsigned nb_mbuf,
 		rte_pktmbuf_pool_init, NULL,
 		rte_pktmbuf_init, NULL,
 		socket_id, 0);
-
-
-
-#else
-	if (mp_anon != 0)
-		rte_mp = mempool_anon_create(pool_name, nb_mbuf, mb_size,
-				    (unsigned) mb_mempool_cache,
-				    sizeof(struct rte_pktmbuf_pool_private),
-				    rte_pktmbuf_pool_init, NULL,
-				    rte_pktmbuf_init, NULL,
-				    socket_id, 0);
-	else
-		/* wrapper to rte_mempool_create() */
-		rte_mp = rte_pktmbuf_pool_create(pool_name, nb_mbuf,
-			mb_mempool_cache, 0, mbuf_seg_size, socket_id);
-
 #endif
+
+	/* if the former XEN allocation failed fall back to normal allocation */
+	if (rte_mp == NULL) {
+		if (mp_anon != 0) {
+			rte_mp = rte_mempool_create_empty(pool_name, nb_mbuf,
+				mb_size, (unsigned) mb_mempool_cache,
+				sizeof(struct rte_pktmbuf_pool_private),
+				socket_id, 0);
+
+			if (rte_mempool_populate_anon(rte_mp) == 0) {
+				rte_mempool_free(rte_mp);
+				rte_mp = NULL;
+			}
+			rte_pktmbuf_pool_init(rte_mp, NULL);
+			rte_mempool_obj_iter(rte_mp, rte_pktmbuf_init, NULL);
+		} else {
+			/* wrapper to rte_mempool_create() */
+			rte_mp = rte_pktmbuf_pool_create(pool_name, nb_mbuf,
+				mb_mempool_cache, 0, mbuf_seg_size, socket_id);
+		}
+	}
 
 	if (rte_mp == NULL) {
 		rte_exit(EXIT_FAILURE, "Creation of mbuf pool for socket %u "
@@ -608,6 +612,7 @@ init_fwd_streams(void)
 	portid_t pid;
 	struct rte_port *port;
 	streamid_t sm_id, nb_fwd_streams_new;
+	queueid_t q;
 
 	/* set socket id according to numa or not */
 	FOREACH_PORT(pid, ports) {
@@ -643,7 +648,12 @@ init_fwd_streams(void)
 		}
 	}
 
-	nb_fwd_streams_new = (streamid_t)(nb_ports * nb_rxq);
+	q = RTE_MAX(nb_rxq, nb_txq);
+	if (q == 0) {
+		printf("Fail: Cannot allocate fwd streams as number of queues is 0\n");
+		return -1;
+	}
+	nb_fwd_streams_new = (streamid_t)(nb_ports * q);
 	if (nb_fwd_streams_new == nb_fwd_streams)
 		return 0;
 	/* clear the old */
@@ -753,7 +763,7 @@ fwd_port_stats_display(portid_t port_id, struct rte_eth_stats *stats)
 		if (cur_fwd_eng == &csum_fwd_engine)
 			printf("  Bad-ipcsum: %-14"PRIu64" Bad-l4csum: %-14"PRIu64" \n",
 			       port->rx_bad_ip_csum, port->rx_bad_l4_csum);
-		if (((stats->ierrors - stats->imissed) + stats->rx_nombuf) > 0) {
+		if ((stats->ierrors + stats->rx_nombuf) > 0) {
 			printf("  RX-error: %-"PRIu64"\n",  stats->ierrors);
 			printf("  RX-nombufs: %-14"PRIu64"\n", stats->rx_nombuf);
 		}
@@ -772,7 +782,7 @@ fwd_port_stats_display(portid_t port_id, struct rte_eth_stats *stats)
 		if (cur_fwd_eng == &csum_fwd_engine)
 			printf("  Bad-ipcsum:%14"PRIu64"    Bad-l4csum:%14"PRIu64"\n",
 			       port->rx_bad_ip_csum, port->rx_bad_l4_csum);
-		if (((stats->ierrors - stats->imissed) + stats->rx_nombuf) > 0) {
+		if ((stats->ierrors + stats->rx_nombuf) > 0) {
 			printf("  RX-error:%"PRIu64"\n", stats->ierrors);
 			printf("  RX-nombufs:             %14"PRIu64"\n",
 			       stats->rx_nombuf);
@@ -954,6 +964,19 @@ start_packet_forwarding(int with_tx_first)
 	unsigned int i;
 	portid_t   pt_id;
 	streamid_t sm_id;
+
+	if (strcmp(cur_fwd_eng->fwd_mode_name, "rxonly") == 0 && !nb_rxq)
+		rte_exit(EXIT_FAILURE, "rxq are 0, cannot use rxonly fwd mode\n");
+
+	if (strcmp(cur_fwd_eng->fwd_mode_name, "txonly") == 0 && !nb_txq)
+		rte_exit(EXIT_FAILURE, "txq are 0, cannot use txonly fwd mode\n");
+
+	if ((strcmp(cur_fwd_eng->fwd_mode_name, "rxonly") != 0 &&
+		strcmp(cur_fwd_eng->fwd_mode_name, "txonly") != 0) &&
+		(!nb_rxq || !nb_txq))
+		rte_exit(EXIT_FAILURE,
+			"Either rxq or txq are 0, cannot use %s fwd mode\n",
+			cur_fwd_eng->fwd_mode_name);
 
 	if (all_ports_started() == 0) {
 		printf("Not all ports were started\n");
@@ -1622,7 +1645,7 @@ check_all_ports_link_status(uint32_t port_mask)
 				continue;
 			}
 			/* clear all_ports_up flag if any link down */
-			if (link.link_status == 0) {
+			if (link.link_status == ETH_LINK_DOWN) {
 				all_ports_up = 0;
 				break;
 			}
@@ -2037,7 +2060,10 @@ main(int argc, char** argv)
 	if (argc > 1)
 		launch_args_parse(argc, argv);
 
-	if (nb_rxq > nb_txq)
+	if (!nb_rxq && !nb_txq)
+		printf("Warning: Either rx or tx queues should be non-zero\n");
+
+	if (nb_rxq > 1 && nb_rxq > nb_txq)
 		printf("Warning: nb_rxq=%d enables RSS configuration, "
 		       "but nb_txq=%d will prevent to fully test it.\n",
 		       nb_rxq, nb_txq);

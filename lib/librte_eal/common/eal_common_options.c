@@ -139,7 +139,11 @@ eal_reset_internal_config(struct internal_config *internal_cfg)
 
 	internal_cfg->syslog_facility = LOG_DAEMON;
 	/* default value from build option */
+#if RTE_LOG_LEVEL >= RTE_LOG_DEBUG
+	internal_cfg->log_level = RTE_LOG_INFO;
+#else
 	internal_cfg->log_level = RTE_LOG_LEVEL;
+#endif
 
 	internal_cfg->xen_dom0_support = 0;
 
@@ -797,8 +801,7 @@ eal_parse_common_option(int opt, const char *optarg,
 	/* force number of channels */
 	case 'n':
 		conf->force_nchannel = atoi(optarg);
-		if (conf->force_nchannel == 0 ||
-		    conf->force_nchannel > 4) {
+		if (conf->force_nchannel == 0) {
 			RTE_LOG(ERR, EAL, "invalid channel number\n");
 			return -1;
 		}

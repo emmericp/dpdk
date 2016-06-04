@@ -1,6 +1,6 @@
 #   BSD LICENSE
 #
-#   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
+#   Copyright(c) 2010-2016 Intel Corporation. All rights reserved.
 #   Copyright(c) 2014-2015 6WIND S.A.
 #   All rights reserved.
 #
@@ -59,10 +59,6 @@ _LDLIBS-y += -L$(RTE_SDK_BIN)/lib
 
 _LDLIBS-y += --whole-archive
 
-_LDLIBS-$(CONFIG_RTE_BUILD_COMBINE_LIBS)    += -l$(RTE_LIBNAME)
-
-ifeq ($(CONFIG_RTE_BUILD_COMBINE_LIBS),n)
-
 _LDLIBS-$(CONFIG_RTE_LIBRTE_DISTRIBUTOR)    += -lrte_distributor
 _LDLIBS-$(CONFIG_RTE_LIBRTE_REORDER)        += -lrte_reorder
 
@@ -81,27 +77,22 @@ _LDLIBS-$(CONFIG_RTE_LIBRTE_LPM)            += -lrte_lpm
 _LDLIBS-$(CONFIG_RTE_LIBRTE_POWER)          += -lrte_power
 _LDLIBS-$(CONFIG_RTE_LIBRTE_ACL)            += -lrte_acl
 _LDLIBS-$(CONFIG_RTE_LIBRTE_METER)          += -lrte_meter
-
 _LDLIBS-$(CONFIG_RTE_LIBRTE_SCHED)          += -lrte_sched
-_LDLIBS-$(CONFIG_RTE_LIBRTE_SCHED)          += -lm
-_LDLIBS-$(CONFIG_RTE_LIBRTE_SCHED)          += -lrt
-
 _LDLIBS-$(CONFIG_RTE_LIBRTE_VHOST)          += -lrte_vhost
 
-endif # ! CONFIG_RTE_BUILD_COMBINE_LIBS
-
+# The static libraries do not know their dependencies.
+# So linking with static library requires explicit dependencies.
+ifeq ($(CONFIG_RTE_BUILD_SHARED_LIB),n)
+_LDLIBS-$(CONFIG_RTE_LIBRTE_SCHED)          += -lm
+_LDLIBS-$(CONFIG_RTE_LIBRTE_SCHED)          += -lrt
+_LDLIBS-$(CONFIG_RTE_LIBRTE_METER)          += -lm
 ifeq ($(CONFIG_RTE_LIBRTE_VHOST_NUMA),y)
 _LDLIBS-$(CONFIG_RTE_LIBRTE_VHOST)          += -lnuma
 endif
-
 ifeq ($(CONFIG_RTE_LIBRTE_VHOST_USER),n)
 _LDLIBS-$(CONFIG_RTE_LIBRTE_VHOST)          += -lfuse
 endif
-
-# The static libraries do not know their dependencies.
-# The combined library fails also to store this information.
-# So linking with static or combined library requires explicit dependencies.
-ifneq ($(CONFIG_RTE_BUILD_COMBINE_LIBS)$(CONFIG_RTE_BUILD_SHARED_LIB),ny)
+_LDLIBS-$(CONFIG_RTE_PORT_PCAP)             += -lpcap
 _LDLIBS-$(CONFIG_RTE_LIBRTE_PMD_PCAP)       += -lpcap
 _LDLIBS-$(CONFIG_RTE_LIBRTE_BNX2X_PMD)      += -lz
 _LDLIBS-$(CONFIG_RTE_LIBRTE_MLX4_PMD)       += -libverbs
@@ -109,17 +100,21 @@ _LDLIBS-$(CONFIG_RTE_LIBRTE_MLX5_PMD)       += -libverbs
 _LDLIBS-$(CONFIG_RTE_LIBRTE_PMD_SZEDATA2)   += -lsze2
 _LDLIBS-$(CONFIG_RTE_LIBRTE_PMD_XENVIRT)    += -lxenstore
 _LDLIBS-$(CONFIG_RTE_LIBRTE_MPIPE_PMD)      += -lgxio
-# QAT PMD has a dependency on libcrypto (from openssl) for calculating HMAC precomputes
-_LDLIBS-$(CONFIG_RTE_LIBRTE_PMD_QAT)        += -lcrypto
-endif # CONFIG_RTE_BUILD_COMBINE_LIBS or not CONFIG_RTE_BUILD_SHARED_LIBS
+_LDLIBS-$(CONFIG_RTE_LIBRTE_NFP_PMD)        += -lm
+_LDLIBS-$(CONFIG_RTE_LIBRTE_QEDE_PMD)       += -lz
+# QAT / AESNI GCM PMDs are dependent on libcrypto (from openssl)
+# for calculating HMAC precomputes
+ifeq ($(CONFIG_RTE_LIBRTE_PMD_QAT),y)
+_LDLIBS-y                                   += -lcrypto
+else ifeq ($(CONFIG_RTE_LIBRTE_PMD_AESNI_GCM),y)
+_LDLIBS-y                                   += -lcrypto
+endif
+endif # !CONFIG_RTE_BUILD_SHARED_LIBS
 
 _LDLIBS-y += --start-group
 
-ifeq ($(CONFIG_RTE_BUILD_COMBINE_LIBS),n)
-
 _LDLIBS-$(CONFIG_RTE_LIBRTE_KVARGS)         += -lrte_kvargs
 _LDLIBS-$(CONFIG_RTE_LIBRTE_MBUF)           += -lrte_mbuf
-_LDLIBS-$(CONFIG_RTE_LIBRTE_MBUF_OFFLOAD)   += -lrte_mbuf_offload
 _LDLIBS-$(CONFIG_RTE_LIBRTE_IP_FRAG)        += -lrte_ip_frag
 _LDLIBS-$(CONFIG_RTE_LIBRTE_ETHER)          += -lethdev
 _LDLIBS-$(CONFIG_RTE_LIBRTE_CRYPTODEV)      += -lrte_cryptodev
@@ -144,6 +139,7 @@ _LDLIBS-$(CONFIG_RTE_LIBRTE_I40E_PMD)       += -lrte_pmd_i40e
 _LDLIBS-$(CONFIG_RTE_LIBRTE_FM10K_PMD)      += -lrte_pmd_fm10k
 _LDLIBS-$(CONFIG_RTE_LIBRTE_IXGBE_PMD)      += -lrte_pmd_ixgbe
 _LDLIBS-$(CONFIG_RTE_LIBRTE_E1000_PMD)      += -lrte_pmd_e1000
+_LDLIBS-$(CONFIG_RTE_LIBRTE_ENA_PMD)        += -lrte_pmd_ena
 _LDLIBS-$(CONFIG_RTE_LIBRTE_MLX4_PMD)       += -lrte_pmd_mlx4
 _LDLIBS-$(CONFIG_RTE_LIBRTE_MLX5_PMD)       += -lrte_pmd_mlx5
 _LDLIBS-$(CONFIG_RTE_LIBRTE_NFP_PMD)        += -lrte_pmd_nfp
@@ -152,22 +148,48 @@ _LDLIBS-$(CONFIG_RTE_LIBRTE_MPIPE_PMD)      += -lrte_pmd_mpipe
 _LDLIBS-$(CONFIG_RTE_LIBRTE_PMD_RING)       += -lrte_pmd_ring
 _LDLIBS-$(CONFIG_RTE_LIBRTE_PMD_PCAP)       += -lrte_pmd_pcap
 _LDLIBS-$(CONFIG_RTE_LIBRTE_PMD_AF_PACKET)  += -lrte_pmd_af_packet
+_LDLIBS-$(CONFIG_RTE_LIBRTE_QEDE_PMD)       += -lrte_pmd_qede
 _LDLIBS-$(CONFIG_RTE_LIBRTE_PMD_NULL)       += -lrte_pmd_null
-_LDLIBS-$(CONFIG_RTE_LIBRTE_PMD_QAT)        += -lrte_pmd_qat
 
-# AESNI MULTI BUFFER is dependent on the IPSec_MB library
+ifeq ($(CONFIG_RTE_LIBRTE_CRYPTODEV),y)
+_LDLIBS-$(CONFIG_RTE_LIBRTE_PMD_QAT)        += -lrte_pmd_qat
 _LDLIBS-$(CONFIG_RTE_LIBRTE_PMD_AESNI_MB)   += -lrte_pmd_aesni_mb
-_LDLIBS-$(CONFIG_RTE_LIBRTE_PMD_AESNI_MB)   += -L$(AESNI_MULTI_BUFFER_LIB_PATH) -lIPSec_MB
+_LDLIBS-$(CONFIG_RTE_LIBRTE_PMD_AESNI_GCM)   += -lrte_pmd_aesni_gcm
+_LDLIBS-$(CONFIG_RTE_LIBRTE_PMD_NULL_CRYPTO) += -lrte_pmd_null_crypto
+
+# AESNI MULTI BUFFER / GCM PMDs are dependent on the IPSec_MB library
+ifeq ($(CONFIG_RTE_LIBRTE_PMD_AESNI_MB),y)
+_LDLIBS-y += -L$(AESNI_MULTI_BUFFER_LIB_PATH) -lIPSec_MB
+else ifeq ($(CONFIG_RTE_LIBRTE_PMD_AESNI_GCM),y)
+_LDLIBS-y += -L$(AESNI_MULTI_BUFFER_LIB_PATH) -lIPSec_MB
+endif
+
+# SNOW3G PMD is dependent on the LIBSSO library
+_LDLIBS-$(CONFIG_RTE_LIBRTE_PMD_SNOW3G)     += -lrte_pmd_snow3g
+_LDLIBS-$(CONFIG_RTE_LIBRTE_PMD_SNOW3G)     += -L$(LIBSSO_PATH)/build -lsso
+endif # CONFIG_RTE_LIBRTE_CRYPTODEV
+
+ifeq ($(CONFIG_RTE_LIBRTE_VHOST),y)
+
+_LDLIBS-$(CONFIG_RTE_LIBRTE_PMD_VHOST)      += -lrte_pmd_vhost
+
+endif # $(CONFIG_RTE_LIBRTE_VHOST)
 
 endif # ! $(CONFIG_RTE_BUILD_SHARED_LIB)
-
-endif # ! CONFIG_RTE_BUILD_COMBINE_LIBS
 
 _LDLIBS-y += $(EXECENV_LDLIBS)
 _LDLIBS-y += --end-group
 _LDLIBS-y += --no-whole-archive
 
 LDLIBS += $(_LDLIBS-y) $(CPU_LDLIBS) $(EXTRA_LDLIBS)
+
+# Eliminate duplicates without sorting
+LDLIBS := $(shell echo $(LDLIBS) | \
+	awk '{for (i = 1; i <= NF; i++) { if (!seen[$$i]++) print $$i }}')
+
+ifeq ($(RTE_DEVEL_BUILD)$(CONFIG_RTE_BUILD_SHARED_LIB),yy)
+LDFLAGS += -rpath=$(RTE_SDK_BIN)/lib
+endif
 
 .PHONY: all
 all: install

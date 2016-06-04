@@ -511,10 +511,14 @@ test_attach_from_different_pool(void)
 	rte_pktmbuf_detach(clone);
 	if (c_data != rte_pktmbuf_mtod(clone, char *))
 		GOTO_FAIL("clone was not detached properly\n");
+	if (rte_mbuf_refcnt_read(m) != 2)
+		GOTO_FAIL("invalid refcnt in m\n");
 
 	rte_pktmbuf_detach(clone2);
 	if (c_data2 != rte_pktmbuf_mtod(clone2, char *))
 		GOTO_FAIL("clone2 was not detached properly\n");
+	if (rte_mbuf_refcnt_read(m) != 1)
+		GOTO_FAIL("invalid refcnt in m\n");
 
 	/* free the clones and the initial mbuf */
 	rte_pktmbuf_free(clone2);
@@ -748,7 +752,7 @@ test_refcnt_iter(unsigned lcore, unsigned iter)
 			    __func__, lcore, iter, tref);
 			return;
 		}
-		rte_delay_ms(1000);
+		rte_delay_ms(100);
 	}
 
 	rte_panic("(lcore=%u, iter=%u): after %us only "

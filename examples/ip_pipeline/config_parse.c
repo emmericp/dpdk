@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
+ *   Copyright(c) 2010-2016 Intel Corporation. All rights reserved.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -47,6 +47,7 @@
 #include <rte_string_fns.h>
 
 #include "app.h"
+#include "parser.h"
 
 /**
  * Default config values
@@ -55,6 +56,7 @@
 static struct app_params app_params_default = {
 	.config_file = "./config/ip_pipeline.cfg",
 	.log_level = APP_LOG_LEVEL_HIGH,
+	.port_mask = 0,
 
 	.eal_params = {
 		.channels = 4,
@@ -73,7 +75,7 @@ static const struct app_link_params link_params_default = {
 	.parsed = 0,
 	.pmd_id = 0,
 	.arp_q = 0,
-	.tcp_syn_local_q = 0,
+	.tcp_syn_q = 0,
 	.ip_local_q = 0,
 	.tcp_local_q = 0,
 	.udp_local_q = 0,
@@ -82,10 +84,10 @@ static const struct app_link_params link_params_default = {
 	.ip = 0,
 	.depth = 0,
 	.mac_addr = 0,
+	.pci_bdf = {0},
 
 	.conf = {
-		.link_speed = 0,
-		.link_duplex = 0,
+		.link_speeds = 0,
 		.rxmode = {
 			.mq_mode = ETH_MQ_RX_NONE,
 
@@ -178,10 +180,14 @@ struct app_pktq_source_params default_source_params = {
 	.parsed = 0,
 	.mempool_id = 0,
 	.burst = 32,
+	.file_name = NULL,
+	.n_bytes_per_pkt = 0,
 };
 
 struct app_pktq_sink_params default_sink_params = {
 	.parsed = 0,
+	.file_name = NULL,
+	.n_pkts_to_dump = 0,
 };
 
 struct app_msgq_params default_msgq_params = {
@@ -204,12 +210,13 @@ struct app_pipeline_params default_pipeline_params = {
 };
 
 static const char app_usage[] =
-	"Usage: %s [-f CONFIG_FILE] [-s SCRIPT_FILE] -p PORT_MASK "
+	"Usage: %s [-f CONFIG_FILE] [-s SCRIPT_FILE] [-p PORT_MASK] "
 	"[-l LOG_LEVEL] [--preproc PREPROCESSOR] [--preproc-args ARGS]\n"
 	"\n"
 	"Arguments:\n"
 	"\t-f CONFIG_FILE: Default config file is %s\n"
-	"\t-p PORT_MASK: Mask of NIC port IDs in hexadecimal format\n"
+	"\t-p PORT_MASK: Mask of NIC port IDs in hex format (generated from "
+		"config file when not provided)\n"
 	"\t-s SCRIPT_FILE: No CLI script file is run when not specified\n"
 	"\t-l LOG_LEVEL: 0 = NONE, 1 = HIGH PRIO (default), 2 = LOW PRIO\n"
 	"\t--preproc PREPROCESSOR: Configuration file pre-processor\n"
@@ -229,31 +236,19 @@ app_print_usage(char *prgname)
 	_p;					\
 })
 
-#define PARSER_IMPLICIT_PARAM_ADD_CHECK(result, section_name)		\
-do {									\
-	APP_CHECK((result != -EINVAL),					\
-		"CFG: [%s] name too long", section_name);		\
-	APP_CHECK(result != -ENOMEM,					\
-		"CFG: [%s] too much sections", section_name);		\
-	APP_CHECK(result >= 0,						\
-		"CFG: [%s] Unknown error while adding '%s'",		\
-		section_name, section_name);				\
-} while (0)
-
 #define PARSER_PARAM_ADD_CHECK(result, params_array, section_name)	\
 do {									\
 	APP_CHECK((result != -EINVAL),					\
-		"CFG: [%s] name too long", section_name);		\
+		"Parse error: no free memory");				\
 	APP_CHECK((result != -ENOMEM),					\
-		"CFG: [%s] too much sections", section_name);		\
+		"Parse error: too many \"%s\" sections", section_name);	\
 	APP_CHECK(((result >= 0) && (params_array)[result].parsed == 0),\
-		"CFG: [%s] duplicate section", section_name);		\
+		"Parse error: duplicate \"%s\" section", section_name);	\
 	APP_CHECK((result >= 0),					\
-		"CFG: [%s] Unknown error while adding '%s'",		\
-		section_name, section_name);				\
+		"Parse error in section \"%s\"", section_name);		\
 } while (0)
 
-static int
+int
 parser_read_arg_bool(const char *p)
 {
 	p = skip_white_spaces(p);
@@ -294,6 +289,11 @@ parser_read_arg_bool(const char *p)
 #define PARSE_ERROR(exp, section, entry)				\
 APP_CHECK(exp, "Parse error in section \"%s\": entry \"%s\"\n", section, entry)
 
+#define PARSE_ERROR_MESSAGE(exp, section, entry, message)		\
+APP_CHECK(exp, "Parse error in section \"%s\", entry \"%s\": %s\n",	\
+	section, entry, message)
+
+
 #define PARSE_ERROR_MALLOC(exp)						\
 APP_CHECK(exp, "Parse error: no free memory\n")
 
@@ -318,7 +318,7 @@ APP_CHECK(exp, "Parse error in section \"%s\": unrecognized entry \"%s\"\n",\
 APP_CHECK(exp, "Parse error in section \"%s\": duplicate entry \"%s\"\n",\
 	section, entry)
 
-static int
+int
 parser_read_uint64(uint64_t *value, const char *p)
 {
 	char *next;
@@ -336,13 +336,13 @@ parser_read_uint64(uint64_t *value, const char *p)
 	switch (*p) {
 	case 'T':
 		val *= 1024ULL;
-		/* fall trought */
+		/* fall through */
 	case 'G':
 		val *= 1024ULL;
-		/* fall trought */
+		/* fall through */
 	case 'M':
 		val *= 1024ULL;
-		/* fall trought */
+		/* fall through */
 	case 'k':
 	case 'K':
 		val *= 1024ULL;
@@ -358,7 +358,7 @@ parser_read_uint64(uint64_t *value, const char *p)
 	return 0;
 }
 
-static int
+int
 parser_read_uint32(uint32_t *value, const char *p)
 {
 	uint64_t val = 0;
@@ -366,7 +366,8 @@ parser_read_uint32(uint32_t *value, const char *p)
 
 	if (ret < 0)
 		return ret;
-	else if (val > UINT32_MAX)
+
+	if (val > UINT32_MAX)
 		return -ERANGE;
 
 	*value = val;
@@ -667,29 +668,68 @@ parse_eal(struct app_params *app,
 		/* pci_blacklist */
 		if ((strcmp(entry->name, "pci_blacklist") == 0) ||
 			(strcmp(entry->name, "b") == 0)) {
-			PARSE_ERROR_DUPLICATE((p->pci_blacklist == NULL),
-				section_name,
-				entry->name);
-			p->pci_blacklist = strdup(entry->value);
+			uint32_t i;
+
+			for (i = 0; i < APP_MAX_LINKS; i++) {
+				if (p->pci_blacklist[i])
+					continue;
+
+				p->pci_blacklist[i] =
+					strdup(entry->value);
+				PARSE_ERROR_MALLOC(p->pci_blacklist[i]);
+
+				break;
+			}
+
+			PARSE_ERROR_MESSAGE((i < APP_MAX_LINKS),
+				section_name, entry->name,
+				"too many elements");
 			continue;
 		}
 
 		/* pci_whitelist */
 		if ((strcmp(entry->name, "pci_whitelist") == 0) ||
 			(strcmp(entry->name, "w") == 0)) {
-			PARSE_ERROR_DUPLICATE((p->pci_whitelist == NULL),
-				section_name,
-				entry->name);
-			p->pci_whitelist = strdup(entry->value);
+			uint32_t i;
+
+			PARSE_ERROR_MESSAGE((app->port_mask != 0),
+				section_name, entry->name, "entry to be "
+				"generated by the application (port_mask "
+				"not provided)");
+
+			for (i = 0; i < APP_MAX_LINKS; i++) {
+				if (p->pci_whitelist[i])
+					continue;
+
+				p->pci_whitelist[i] = strdup(entry->value);
+				PARSE_ERROR_MALLOC(p->pci_whitelist[i]);
+
+				break;
+			}
+
+			PARSE_ERROR_MESSAGE((i < APP_MAX_LINKS),
+				section_name, entry->name,
+				"too many elements");
 			continue;
 		}
 
 		/* vdev */
 		if (strcmp(entry->name, "vdev") == 0) {
-			PARSE_ERROR_DUPLICATE((p->vdev == NULL),
-				section_name,
-				entry->name);
-			p->vdev = strdup(entry->value);
+			uint32_t i;
+
+			for (i = 0; i < APP_MAX_LINKS; i++) {
+				if (p->vdev[i])
+					continue;
+
+				p->vdev[i] = strdup(entry->value);
+				PARSE_ERROR_MALLOC(p->vdev[i]);
+
+				break;
+			}
+
+			PARSE_ERROR_MESSAGE((i < APP_MAX_LINKS),
+				section_name, entry->name,
+				"too many elements");
 			continue;
 		}
 
@@ -924,6 +964,154 @@ parse_eal(struct app_params *app,
 }
 
 static int
+parse_pipeline_pcap_source(struct app_params *app,
+	struct app_pipeline_params *p,
+	const char *file_name, const char *cp_size)
+{
+	const char *next = NULL;
+	char *end;
+	uint32_t i;
+	int parse_file = 0;
+
+	if (file_name && !cp_size) {
+		next = file_name;
+		parse_file = 1; /* parse file path */
+	} else if (cp_size && !file_name) {
+		next = cp_size;
+		parse_file = 0; /* parse copy size */
+	} else
+		return -EINVAL;
+
+	char name[APP_PARAM_NAME_SIZE];
+	size_t name_len;
+
+	if (p->n_pktq_in == 0)
+		return -EINVAL;
+
+	i = 0;
+	while (*next != '\0') {
+		uint32_t id;
+
+		if (i >= p->n_pktq_in)
+			return -EINVAL;
+
+		id = p->pktq_in[i].id;
+
+		end = strchr(next, ' ');
+		if (!end)
+			name_len = strlen(next);
+		else
+			name_len = end - next;
+
+		if (name_len == 0 || name_len == sizeof(name))
+			return -EINVAL;
+
+		strncpy(name, next, name_len);
+		name[name_len] = '\0';
+		next += name_len;
+		if (*next != '\0')
+			next++;
+
+		if (parse_file) {
+			app->source_params[id].file_name = strdup(name);
+			if (app->source_params[id].file_name == NULL)
+				return -ENOMEM;
+		} else {
+			if (parser_read_uint32(
+				&app->source_params[id].n_bytes_per_pkt,
+				name) != 0) {
+				if (app->source_params[id].
+					file_name != NULL)
+					free(app->source_params[id].
+						file_name);
+				return -EINVAL;
+			}
+		}
+
+		i++;
+
+		if (i == p->n_pktq_in)
+			return 0;
+	}
+
+	return -EINVAL;
+}
+
+static int
+parse_pipeline_pcap_sink(struct app_params *app,
+	struct app_pipeline_params *p,
+	const char *file_name, const char *n_pkts_to_dump)
+{
+	const char *next = NULL;
+	char *end;
+	uint32_t i;
+	int parse_file = 0;
+
+	if (file_name && !n_pkts_to_dump) {
+		next = file_name;
+		parse_file = 1; /* parse file path */
+	} else if (n_pkts_to_dump && !file_name) {
+		next = n_pkts_to_dump;
+		parse_file = 0; /* parse copy size */
+	} else
+		return -EINVAL;
+
+	char name[APP_PARAM_NAME_SIZE];
+	size_t name_len;
+
+	if (p->n_pktq_out == 0)
+		return -EINVAL;
+
+	i = 0;
+	while (*next != '\0') {
+		uint32_t id;
+
+		if (i >= p->n_pktq_out)
+			return -EINVAL;
+
+		id = p->pktq_out[i].id;
+
+		end = strchr(next, ' ');
+		if (!end)
+			name_len = strlen(next);
+		else
+			name_len = end - next;
+
+		if (name_len == 0 || name_len == sizeof(name))
+			return -EINVAL;
+
+		strncpy(name, next, name_len);
+		name[name_len] = '\0';
+		next += name_len;
+		if (*next != '\0')
+			next++;
+
+		if (parse_file) {
+			app->sink_params[id].file_name = strdup(name);
+			if (app->sink_params[id].file_name == NULL)
+				return -ENOMEM;
+		} else {
+			if (parser_read_uint32(
+				&app->sink_params[id].n_pkts_to_dump,
+				name) != 0) {
+				if (app->sink_params[id].file_name !=
+					NULL)
+					free(app->sink_params[id].
+						file_name);
+				return -EINVAL;
+			}
+		}
+
+		i++;
+
+		if (i == p->n_pktq_out)
+			return 0;
+	}
+
+	return -EINVAL;
+}
+
+static int
 parse_pipeline_pktq_in(struct app_params *app,
 	struct app_pipeline_params *p,
 	const char *value)
@@ -936,8 +1124,25 @@ parse_pipeline_pktq_in(struct app_params *app,
 	while (*next != '\0') {
 		enum app_pktq_in_type type;
 		int id;
+		char *end_space;
+		char *end_tab;
 
-		end = strchr(next, ' ');
+		next = skip_white_spaces(next);
+		if (!next)
+			break;
+
+		end_space = strchr(next, ' ');
+		end_tab = strchr(next, '	');
+
+		if (end_space && (!end_tab))
+			end = end_space;
+		else if ((!end_space) && end_tab)
+			end = end_tab;
+		else if (end_space && end_tab)
+			end = RTE_MIN(end_space, end_tab);
+		else
+			end = NULL;
+
 		if (!end)
 			name_len = strlen(next);
 		else
@@ -991,8 +1196,25 @@ parse_pipeline_pktq_out(struct app_params *app,
 	while (*next != '\0') {
 		enum app_pktq_out_type type;
 		int id;
+		char *end_space;
+		char *end_tab;
 
-		end = strchr(next, ' ');
+		next = skip_white_spaces(next);
+		if (!next)
+			break;
+
+		end_space = strchr(next, ' ');
+		end_tab = strchr(next, '	');
+
+		if (end_space && (!end_tab))
+			end = end_space;
+		else if ((!end_space) && end_tab)
+			end = end_tab;
+		else if (end_space && end_tab)
+			end = RTE_MIN(end_space, end_tab);
+		else
+			end = NULL;
+
 		if (!end)
 			name_len = strlen(next);
 		else
@@ -1006,7 +1228,6 @@ parse_pipeline_pktq_out(struct app_params *app,
 		next += name_len;
 		if (*next != '\0')
 			next++;
-
 		if (validate_name(name, "TXQ", 2) == 0) {
 			type = APP_PKTQ_OUT_HWQ;
 			id = APP_PARAM_ADD(app->hwq_out_params, name);
@@ -1045,7 +1266,25 @@ parse_pipeline_msgq_in(struct app_params *app,
 	ssize_t idx;
 
 	while (*next != '\0') {
-		end = strchr(next, ' ');
+		char *end_space;
+		char *end_tab;
+
+		next = skip_white_spaces(next);
+		if (!next)
+			break;
+
+		end_space = strchr(next, ' ');
+		end_tab = strchr(next, '	');
+
+		if (end_space && (!end_tab))
+			end = end_space;
+		else if ((!end_space) && end_tab)
+			end = end_tab;
+		else if (end_space && end_tab)
+			end = RTE_MIN(end_space, end_tab);
+		else
+			end = NULL;
+
 		if (!end)
 			name_len = strlen(next);
 		else
@@ -1086,7 +1325,25 @@ parse_pipeline_msgq_out(struct app_params *app,
 	ssize_t idx;
 
 	while (*next != '\0') {
-		end = strchr(next, ' ');
+		char *end_space;
+		char *end_tab;
+
+		next = skip_white_spaces(next);
+		if (!next)
+			break;
+
+		end_space = strchr(next, ' ');
+		end_tab = strchr(next, '	');
+
+		if (end_space && (!end_tab))
+			end = end_space;
+		else if ((!end_space) && end_tab)
+			end = end_tab;
+		else if (end_space && end_tab)
+			end = RTE_MIN(end_space, end_tab);
+		else
+			end = NULL;
+
 		if (!end)
 			name_len = strlen(next);
 		else
@@ -1115,7 +1372,6 @@ parse_pipeline_msgq_out(struct app_params *app,
 	return 0;
 }
 
-
 static void
 parse_pipeline(struct app_params *app,
 	const char *section_name,
@@ -1125,7 +1381,7 @@ parse_pipeline(struct app_params *app,
 	struct app_pipeline_params *param;
 	struct rte_cfgfile_entry *entries;
 	ssize_t param_idx;
-	int n_entries, ret, i;
+	int n_entries, i;
 
 	n_entries = rte_cfgfile_section_num_entries(cfg, section_name);
 	PARSE_ERROR_SECTION_NO_ENTRIES((n_entries > 0), section_name);
@@ -1139,69 +1395,163 @@ parse_pipeline(struct app_params *app,
 	PARSER_PARAM_ADD_CHECK(param_idx, app->pipeline_params, section_name);
 
 	param = &app->pipeline_params[param_idx];
-	param->parsed = 1;
 
 	for (i = 0; i < n_entries; i++) {
 		struct rte_cfgfile_entry *ent = &entries[i];
 
 		if (strcmp(ent->name, "type") == 0) {
-			ret = snprintf(param->type,
-				RTE_DIM(param->type),
-				"%s",
-				ent->value);
-			if ((ret > 0) && (ret < (int)RTE_DIM(param->type)))
-				ret = 0;
-			else
-				ret = -EINVAL;
-		} else if (strcmp(ent->name, "core") == 0)
-			ret = parse_pipeline_core(&param->socket_id,
-				&param->core_id,
-				&param->hyper_th_id,
-				ent->value);
-		else if (strcmp(ent->name, "pktq_in") == 0)
-			ret = parse_pipeline_pktq_in(app, param, ent->value);
-		else if (strcmp(ent->name, "pktq_out") == 0)
-			ret = parse_pipeline_pktq_out(app, param, ent->value);
-		else if (strcmp(ent->name, "msgq_in") == 0)
-			ret = parse_pipeline_msgq_in(app, param, ent->value);
-		else if (strcmp(ent->name, "msgq_out") == 0)
-			ret = parse_pipeline_msgq_out(app, param, ent->value);
-		else if (strcmp(ent->name, "timer_period") == 0)
-			ret = parser_read_uint32(&param->timer_period,
-				ent->value);
-		else {
-			APP_CHECK((param->n_args < APP_MAX_PIPELINE_ARGS),
-				"CFG: [%s] out of memory",
-				section_name);
+			int w_size = snprintf(param->type, RTE_DIM(param->type),
+					"%s", ent->value);
 
-			param->args_name[param->n_args] = strdup(ent->name);
-			param->args_value[param->n_args] = strdup(ent->value);
-
-			APP_CHECK((param->args_name[param->n_args] != NULL) &&
-				(param->args_value[param->n_args] != NULL),
-				"CFG: [%s] out of memory",
-				section_name);
-
-			param->n_args++;
-			ret = 0;
+			PARSE_ERROR(((w_size > 0) &&
+				(w_size < (int)RTE_DIM(param->type))),
+				section_name,
+				ent->name);
+			continue;
 		}
 
-		APP_CHECK(ret == 0,
-			"CFG: [%s] entry '%s': Invalid value '%s'\n",
-			section_name,
-			ent->name,
-			ent->value);
+		if (strcmp(ent->name, "core") == 0) {
+			int status = parse_pipeline_core(
+				&param->socket_id, &param->core_id,
+				&param->hyper_th_id, ent->value);
+
+			PARSE_ERROR((status == 0), section_name,
+				ent->name);
+			continue;
+		}
+
+		if (strcmp(ent->name, "pktq_in") == 0) {
+			int status = parse_pipeline_pktq_in(app, param,
+				ent->value);
+
+			PARSE_ERROR((status == 0), section_name,
+				ent->name);
+			continue;
+		}
+
+		if (strcmp(ent->name, "pktq_out") == 0) {
+			int status = parse_pipeline_pktq_out(app, param,
+				ent->value);
+
+			PARSE_ERROR((status == 0), section_name,
+				ent->name);
+			continue;
+		}
+
+		if (strcmp(ent->name, "msgq_in") == 0) {
+			int status = parse_pipeline_msgq_in(app, param,
+				ent->value);
+
+			PARSE_ERROR((status == 0), section_name,
+				ent->name);
+			continue;
+		}
+
+		if (strcmp(ent->name, "msgq_out") == 0) {
+			int status = parse_pipeline_msgq_out(app, param,
+				ent->value);
+
+			PARSE_ERROR((status == 0), section_name,
+				ent->name);
+			continue;
+		}
+
+		if (strcmp(ent->name, "timer_period") == 0) {
+			int status = parser_read_uint32(
+				&param->timer_period,
+				ent->value);
+
+			PARSE_ERROR((status == 0), section_name,
+				ent->name);
+			continue;
+		}
+
+		if (strcmp(ent->name, "pcap_file_rd") == 0) {
+			int status;
+
+#ifndef RTE_PORT_PCAP
+			PARSE_ERROR_INVALID(0, section_name, ent->name);
+#endif
+
+			status = parse_pipeline_pcap_source(app,
+				param, ent->value, NULL);
+
+			PARSE_ERROR((status == 0), section_name,
+				ent->name);
+			continue;
+		}
+
+		if (strcmp(ent->name, "pcap_bytes_rd_per_pkt") == 0) {
+			int status;
+
+#ifndef RTE_PORT_PCAP
+			PARSE_ERROR_INVALID(0, section_name, ent->name);
+#endif
+
+			status = parse_pipeline_pcap_source(app,
+				param, NULL, ent->value);
+
+			PARSE_ERROR((status == 0), section_name,
+				ent->name);
+			continue;
+		}
+
+		if (strcmp(ent->name, "pcap_file_wr") == 0) {
+			int status;
+
+#ifndef RTE_PORT_PCAP
+			PARSE_ERROR_INVALID(0, section_name, ent->name);
+#endif
+
+			status = parse_pipeline_pcap_sink(app, param,
+				ent->value, NULL);
+
+			PARSE_ERROR((status == 0), section_name,
+				ent->name);
+			continue;
+		}
+
+		if (strcmp(ent->name, "pcap_n_pkt_wr") == 0) {
+			int status;
+
+#ifndef RTE_PORT_PCAP
+			PARSE_ERROR_INVALID(0, section_name, ent->name);
+#endif
+
+			status = parse_pipeline_pcap_sink(app, param,
+				NULL, ent->value);
+
+			PARSE_ERROR((status == 0), section_name,
+				ent->name);
+			continue;
+		}
+
+		/* pipeline type specific items */
+		APP_CHECK((param->n_args < APP_MAX_PIPELINE_ARGS),
+			"Parse error in section \"%s\": too many "
+			"pipeline specified parameters", section_name);
+
+		param->args_name[param->n_args] = strdup(ent->name);
+		param->args_value[param->n_args] = strdup(ent->value);
+
+		APP_CHECK((param->args_name[param->n_args] != NULL) &&
+			(param->args_value[param->n_args] != NULL),
+			"Parse error: no free memory");
+
+		param->n_args++;
 	}
+
+	param->parsed = 1;
 
 	snprintf(name, sizeof(name), "MSGQ-REQ-%s", section_name);
 	param_idx = APP_PARAM_ADD(app->msgq_params, name);
-	PARSER_IMPLICIT_PARAM_ADD_CHECK(param_idx, name);
+	PARSER_PARAM_ADD_CHECK(param_idx, app->msgq_params, name);
 	app->msgq_params[param_idx].cpu_socket_id = param->socket_id;
 	param->msgq_in[param->n_msgq_in++] = param_idx;
 
 	snprintf(name, sizeof(name), "MSGQ-RSP-%s", section_name);
 	param_idx = APP_PARAM_ADD(app->msgq_params, name);
-	PARSER_IMPLICIT_PARAM_ADD_CHECK(param_idx, name);
+	PARSER_PARAM_ADD_CHECK(param_idx, app->msgq_params, name);
 	app->msgq_params[param_idx].cpu_socket_id = param->socket_id;
 	param->msgq_out[param->n_msgq_out++] = param_idx;
 
@@ -1210,7 +1560,7 @@ parse_pipeline(struct app_params *app,
 		param->core_id,
 		(param->hyper_th_id) ? "h" : "");
 	param_idx = APP_PARAM_ADD(app->msgq_params, name);
-	PARSER_IMPLICIT_PARAM_ADD_CHECK(param_idx, name);
+	PARSER_PARAM_ADD_CHECK(param_idx, app->msgq_params, name);
 	app->msgq_params[param_idx].cpu_socket_id = param->socket_id;
 
 	snprintf(name, sizeof(name), "MSGQ-RSP-CORE-s%" PRIu32 "c%" PRIu32 "%s",
@@ -1218,7 +1568,7 @@ parse_pipeline(struct app_params *app,
 		param->core_id,
 		(param->hyper_th_id) ? "h" : "");
 	param_idx = APP_PARAM_ADD(app->msgq_params, name);
-	PARSER_IMPLICIT_PARAM_ADD_CHECK(param_idx, name);
+	PARSER_PARAM_ADD_CHECK(param_idx, app->msgq_params, name);
 	app->msgq_params[param_idx].cpu_socket_id = param->socket_id;
 
 	free(entries);
@@ -1232,7 +1582,7 @@ parse_mempool(struct app_params *app,
 	struct app_mempool_params *param;
 	struct rte_cfgfile_entry *entries;
 	ssize_t param_idx;
-	int n_entries, ret, i;
+	int n_entries, i;
 
 	n_entries = rte_cfgfile_section_num_entries(cfg, section_name);
 	PARSE_ERROR_SECTION_NO_ENTRIES((n_entries > 0), section_name);
@@ -1246,35 +1596,51 @@ parse_mempool(struct app_params *app,
 	PARSER_PARAM_ADD_CHECK(param_idx, app->mempool_params, section_name);
 
 	param = &app->mempool_params[param_idx];
-	param->parsed = 1;
 
 	for (i = 0; i < n_entries; i++) {
 		struct rte_cfgfile_entry *ent = &entries[i];
 
-		ret = -ESRCH;
-		if (strcmp(ent->name, "buffer_size") == 0)
-			ret = parser_read_uint32(&param->buffer_size,
-				ent->value);
-		else if (strcmp(ent->name, "pool_size") == 0)
-			ret = parser_read_uint32(&param->pool_size,
-				ent->value);
-		else if (strcmp(ent->name, "cache_size") == 0)
-			ret = parser_read_uint32(&param->cache_size,
-				ent->value);
-		else if (strcmp(ent->name, "cpu") == 0)
-			ret = parser_read_uint32(&param->cpu_socket_id,
-				ent->value);
+		if (strcmp(ent->name, "buffer_size") == 0) {
+			int status = parser_read_uint32(
+				&param->buffer_size, ent->value);
 
-		APP_CHECK(ret != -ESRCH,
-			"CFG: [%s] entry '%s': unknown entry\n",
-			section_name,
-			ent->name);
-		APP_CHECK(ret == 0,
-			"CFG: [%s] entry '%s': Invalid value '%s'\n",
-			section_name,
-			ent->name,
-			ent->value);
+			PARSE_ERROR((status == 0), section_name,
+				ent->name);
+			continue;
+		}
+
+		if (strcmp(ent->name, "pool_size") == 0) {
+			int status = parser_read_uint32(
+				&param->pool_size, ent->value);
+
+			PARSE_ERROR((status == 0), section_name,
+				ent->name);
+			continue;
+		}
+
+		if (strcmp(ent->name, "cache_size") == 0) {
+			int status = parser_read_uint32(
+				&param->cache_size, ent->value);
+
+			PARSE_ERROR((status == 0), section_name,
+				ent->name);
+			continue;
+		}
+
+		if (strcmp(ent->name, "cpu") == 0) {
+			int status = parser_read_uint32(
+				&param->cpu_socket_id, ent->value);
+
+			PARSE_ERROR((status == 0), section_name,
+				ent->name);
+			continue;
+		}
+
+		/* unrecognized */
+		PARSE_ERROR_INVALID(0, section_name, ent->name);
 	}
+
+	param->parsed = 1;
 
 	free(entries);
 }
@@ -1286,7 +1652,8 @@ parse_link(struct app_params *app,
 {
 	struct app_link_params *param;
 	struct rte_cfgfile_entry *entries;
-	int n_entries, ret, i;
+	int n_entries, i;
+	int pci_bdf_present = 0;
 	ssize_t param_idx;
 
 	n_entries = rte_cfgfile_section_num_entries(cfg, section_name);
@@ -1301,47 +1668,99 @@ parse_link(struct app_params *app,
 	PARSER_PARAM_ADD_CHECK(param_idx, app->link_params, section_name);
 
 	param = &app->link_params[param_idx];
-	param->parsed = 1;
 
 	for (i = 0; i < n_entries; i++) {
 		struct rte_cfgfile_entry *ent = &entries[i];
 
-		ret = -ESRCH;
 		if (strcmp(ent->name, "promisc") == 0) {
-			ret = parser_read_arg_bool(ent->value);
-			if (ret >= 0) {
-				param->promisc = ret;
-				ret = 0;
-			}
-		} else if (strcmp(ent->name, "arp_q") == 0)
-			ret = parser_read_uint32(&param->arp_q,
-				ent->value);
-		else if (strcmp(ent->name, "tcp_syn_q") == 0)
-			ret = parser_read_uint32(&param->tcp_syn_local_q,
-				ent->value);
-		else if (strcmp(ent->name, "ip_local_q") == 0)
-			ret = parser_read_uint32(&param->ip_local_q,
-				ent->value);
-		else if (strcmp(ent->name, "tcp_local_q") == 0)
-			ret = parser_read_uint32(&param->tcp_local_q,
-				ent->value);
-		else if (strcmp(ent->name, "udp_local_q") == 0)
-			ret = parser_read_uint32(&param->udp_local_q,
-				ent->value);
-		else if (strcmp(ent->name, "sctp_local_q") == 0)
-			ret = parser_read_uint32(&param->sctp_local_q,
+			int status = parser_read_arg_bool(ent->value);
+
+			PARSE_ERROR((status != -EINVAL), section_name,
+				ent->name);
+			param->promisc = status;
+			continue;
+		}
+
+		if (strcmp(ent->name, "arp_q") == 0) {
+			int status = parser_read_uint32(&param->arp_q,
 				ent->value);
 
-		APP_CHECK(ret != -ESRCH,
-			"CFG: [%s] entry '%s': unknown entry\n",
-			section_name,
-			ent->name);
-		APP_CHECK(ret == 0,
-			"CFG: [%s] entry '%s': Invalid value '%s'\n",
-			section_name,
-			ent->name,
-			ent->value);
+			PARSE_ERROR((status == 0), section_name,
+				ent->name);
+			continue;
+		}
+
+		if (strcmp(ent->name, "tcp_syn_q") == 0) {
+			int status = parser_read_uint32(
+				&param->tcp_syn_q, ent->value);
+
+			PARSE_ERROR((status == 0), section_name, ent->name);
+			continue;
+		}
+
+		if (strcmp(ent->name, "ip_local_q") == 0) {
+			int status = parser_read_uint32(
+				&param->ip_local_q, ent->value);
+
+			PARSE_ERROR((status == 0), section_name,
+				ent->name);
+			continue;
+		}
+
+
+		if (strcmp(ent->name, "tcp_local_q") == 0) {
+			int status = parser_read_uint32(
+				&param->tcp_local_q, ent->value);
+
+			PARSE_ERROR((status == 0), section_name,
+				ent->name);
+			continue;
+		}
+
+		if (strcmp(ent->name, "udp_local_q") == 0) {
+			int status = parser_read_uint32(
+				&param->udp_local_q, ent->value);
+
+			PARSE_ERROR((status == 0), section_name,
+				ent->name);
+			continue;
+		}
+
+		if (strcmp(ent->name, "sctp_local_q") == 0) {
+			int status = parser_read_uint32(
+				&param->sctp_local_q, ent->value);
+
+			PARSE_ERROR((status == 0), section_name,
+				ent->name);
+			continue;
+		}
+
+		if (strcmp(ent->name, "pci_bdf") == 0) {
+			PARSE_ERROR_DUPLICATE((pci_bdf_present == 0),
+				section_name, ent->name);
+
+			snprintf(param->pci_bdf, APP_LINK_PCI_BDF_SIZE,
+				"%s", ent->value);
+			pci_bdf_present = 1;
+			continue;
+		}
+
+		/* unrecognized */
+		PARSE_ERROR_INVALID(0, section_name, ent->name);
 	}
+
+	/* Check for mandatory fields */
+	if (app->port_mask)
+		PARSE_ERROR_MESSAGE((pci_bdf_present == 0),
+			section_name, "pci_bdf",
+			"entry not allowed (port_mask is provided)");
+	else
+		PARSE_ERROR_MESSAGE((pci_bdf_present),
+			section_name, "pci_bdf",
+			"this entry is mandatory (port_mask is not "
+			"provided)");
+
+	param->parsed = 1;
 
 	free(entries);
 }
@@ -1353,7 +1772,7 @@ parse_rxq(struct app_params *app,
 {
 	struct app_pktq_hwq_in_params *param;
 	struct rte_cfgfile_entry *entries;
-	int n_entries, ret, i;
+	int n_entries, i;
 	ssize_t param_idx;
 
 	n_entries = rte_cfgfile_section_num_entries(cfg, section_name);
@@ -1368,42 +1787,48 @@ parse_rxq(struct app_params *app,
 	PARSER_PARAM_ADD_CHECK(param_idx, app->hwq_in_params, section_name);
 
 	param = &app->hwq_in_params[param_idx];
-	param->parsed = 1;
 
 	for (i = 0; i < n_entries; i++) {
 		struct rte_cfgfile_entry *ent = &entries[i];
 
-		ret = -ESRCH;
 		if (strcmp(ent->name, "mempool") == 0) {
-			int status = validate_name(ent->value, "MEMPOOL", 1);
+			int status = validate_name(ent->value,
+				"MEMPOOL", 1);
 			ssize_t idx;
 
-			APP_CHECK((status == 0),
-				"CFG: [%s] entry '%s': invalid mempool\n",
-				section_name,
+			PARSE_ERROR((status == 0), section_name,
 				ent->name);
-
-			idx = APP_PARAM_ADD(app->mempool_params, ent->value);
-			PARSER_IMPLICIT_PARAM_ADD_CHECK(idx, section_name);
+			idx = APP_PARAM_ADD(app->mempool_params,
+				ent->value);
+			PARSER_PARAM_ADD_CHECK(idx, app->mempool_params,
+				section_name);
 			param->mempool_id = idx;
-			ret = 0;
-		} else if (strcmp(ent->name, "size") == 0)
-			ret = parser_read_uint32(&param->size,
-				ent->value);
-		else if (strcmp(ent->name, "burst") == 0)
-			ret = parser_read_uint32(&param->burst,
+			continue;
+		}
+
+		if (strcmp(ent->name, "size") == 0) {
+			int status = parser_read_uint32(&param->size,
 				ent->value);
 
-		APP_CHECK(ret != -ESRCH,
-			"CFG: [%s] entry '%s': unknown entry\n",
-			section_name,
-			ent->name);
-		APP_CHECK(ret == 0,
-			"CFG: [%s] entry '%s': Invalid value '%s'\n",
-			section_name,
-			ent->name,
-			ent->value);
+			PARSE_ERROR((status == 0), section_name,
+				ent->name);
+			continue;
+		}
+
+		if (strcmp(ent->name, "burst") == 0) {
+			int status = parser_read_uint32(&param->burst,
+				ent->value);
+
+			PARSE_ERROR((status == 0), section_name,
+				ent->name);
+			continue;
+		}
+
+		/* unrecognized */
+		PARSE_ERROR_INVALID(0, section_name, ent->name);
 	}
+
+	param->parsed = 1;
 
 	free(entries);
 }
@@ -1415,7 +1840,7 @@ parse_txq(struct app_params *app,
 {
 	struct app_pktq_hwq_out_params *param;
 	struct rte_cfgfile_entry *entries;
-	int n_entries, ret, i;
+	int n_entries, i;
 	ssize_t param_idx;
 
 	n_entries = rte_cfgfile_section_num_entries(cfg, section_name);
@@ -1430,34 +1855,43 @@ parse_txq(struct app_params *app,
 	PARSER_PARAM_ADD_CHECK(param_idx, app->hwq_out_params, section_name);
 
 	param = &app->hwq_out_params[param_idx];
-	param->parsed = 1;
 
 	for (i = 0; i < n_entries; i++) {
 		struct rte_cfgfile_entry *ent = &entries[i];
 
-		ret = -ESRCH;
-		if (strcmp(ent->name, "size") == 0)
-			ret = parser_read_uint32(&param->size, ent->value);
-		else if (strcmp(ent->name, "burst") == 0)
-			ret = parser_read_uint32(&param->burst, ent->value);
-		else if (strcmp(ent->name, "dropless") == 0) {
-			ret = parser_read_arg_bool(ent->value);
-			if (ret >= 0) {
-				param->dropless = ret;
-				ret = 0;
-			}
+		if (strcmp(ent->name, "size") == 0) {
+			int status = parser_read_uint32(&param->size,
+				ent->value);
+
+			PARSE_ERROR((status == 0), section_name,
+				ent->name);
+			continue;
 		}
 
-		APP_CHECK(ret != -ESRCH,
-			"CFG: [%s] entry '%s': unknown entry\n",
-			section_name,
-			ent->name);
-		APP_CHECK(ret == 0,
-			"CFG: [%s] entry '%s': Invalid value '%s'\n",
-			section_name,
-			ent->name,
-			ent->value);
+		if (strcmp(ent->name, "burst") == 0) {
+			int status = parser_read_uint32(&param->burst,
+				ent->value);
+
+			PARSE_ERROR((status == 0), section_name,
+				ent->name);
+			continue;
+		}
+
+		if (strcmp(ent->name, "dropless") == 0) {
+			int status = parser_read_arg_bool(ent->value);
+
+
+			PARSE_ERROR((status != -EINVAL), section_name,
+				ent->name);
+			param->dropless = status;
+			continue;
+		}
+
+		/* unrecognized */
+		PARSE_ERROR_INVALID(0, section_name, ent->name);
 	}
+
+	param->parsed = 1;
 
 	free(entries);
 }
@@ -1469,8 +1903,12 @@ parse_swq(struct app_params *app,
 {
 	struct app_pktq_swq_params *param;
 	struct rte_cfgfile_entry *entries;
-	int n_entries, ret, i;
-	unsigned frag_entries = 0;
+	int n_entries, i;
+	uint32_t mtu_present = 0;
+	uint32_t metadata_size_present = 0;
+	uint32_t mempool_direct_present = 0;
+	uint32_t mempool_indirect_present = 0;
+
 	ssize_t param_idx;
 
 	n_entries = rte_cfgfile_section_num_entries(cfg, section_name);
@@ -1485,116 +1923,187 @@ parse_swq(struct app_params *app,
 	PARSER_PARAM_ADD_CHECK(param_idx, app->swq_params, section_name);
 
 	param = &app->swq_params[param_idx];
-	param->parsed = 1;
 
 	for (i = 0; i < n_entries; i++) {
 		struct rte_cfgfile_entry *ent = &entries[i];
 
-		ret = -ESRCH;
-		if (strcmp(ent->name, "size") == 0)
-			ret = parser_read_uint32(&param->size,
+		if (strcmp(ent->name, "size") == 0) {
+			int status = parser_read_uint32(&param->size,
 				ent->value);
-		else if (strcmp(ent->name, "burst_read") == 0)
-			ret = parser_read_uint32(&param->burst_read,
-				ent->value);
-		else if (strcmp(ent->name, "burst_write") == 0)
-			ret = parser_read_uint32(&param->burst_write,
-				ent->value);
-		else if (strcmp(ent->name, "dropless") == 0) {
-			ret = parser_read_arg_bool(ent->value);
-			if (ret >= 0) {
-				param->dropless = ret;
-				ret = 0;
-			}
-		} else if (strcmp(ent->name, "n_retries") == 0)
-			ret = parser_read_uint64(&param->n_retries,
-				ent->value);
-		else if (strcmp(ent->name, "cpu") == 0)
-			ret = parser_read_uint32(&param->cpu_socket_id,
-				ent->value);
-		else if (strcmp(ent->name, "ipv4_frag") == 0) {
-			ret = parser_read_arg_bool(ent->value);
-			if (ret >= 0) {
-				param->ipv4_frag = ret;
-				if (param->mtu == 0)
-					param->mtu = 1500;
-				ret = 0;
-			}
-		} else if (strcmp(ent->name, "ipv6_frag") == 0) {
-			ret = parser_read_arg_bool(ent->value);
-			if (ret >= 0) {
-				param->ipv6_frag = ret;
-				if (param->mtu == 0)
-					param->mtu = 1320;
-				ret = 0;
-			}
-		} else if (strcmp(ent->name, "ipv4_ras") == 0) {
-			ret = parser_read_arg_bool(ent->value);
-			if (ret >= 0) {
-				param->ipv4_ras = ret;
-				ret = 0;
-			}
-		} else if (strcmp(ent->name, "ipv6_ras") == 0) {
-			ret = parser_read_arg_bool(ent->value);
-			if (ret >= 0) {
-				param->ipv6_ras = ret;
-				ret = 0;
-			}
-		} else if (strcmp(ent->name, "mtu") == 0) {
-			frag_entries = 1;
-			ret = parser_read_uint32(&param->mtu,
-				ent->value);
-		} else if (strcmp(ent->name, "metadata_size") == 0) {
-			frag_entries = 1;
-			ret = parser_read_uint32(&param->metadata_size,
-				ent->value);
-		} else if (strcmp(ent->name, "mempool_direct") == 0) {
-			int status = validate_name(ent->value, "MEMPOOL", 1);
-			ssize_t idx;
 
-			APP_CHECK((status == 0),
-				"CFG: [%s] entry '%s': invalid mempool\n",
-				section_name,
+			PARSE_ERROR((status == 0), section_name,
 				ent->name);
-
-			idx = APP_PARAM_ADD(app->mempool_params, ent->value);
-			PARSER_IMPLICIT_PARAM_ADD_CHECK(idx, section_name);
-			param->mempool_direct_id = idx;
-			frag_entries = 1;
-			ret = 0;
-		} else if (strcmp(ent->name, "mempool_indirect") == 0) {
-			int status = validate_name(ent->value, "MEMPOOL", 1);
-			ssize_t idx;
-
-			APP_CHECK((status == 0),
-				"CFG: [%s] entry '%s': invalid mempool\n",
-				section_name,
-				ent->name);
-
-			idx = APP_PARAM_ADD(app->mempool_params, ent->value);
-			PARSER_IMPLICIT_PARAM_ADD_CHECK(idx, section_name);
-			param->mempool_indirect_id = idx;
-			frag_entries = 1;
-			ret = 0;
+			continue;
 		}
 
-		APP_CHECK(ret != -ESRCH,
-			"CFG: [%s] entry '%s': unknown entry\n",
-			section_name,
-			ent->name);
-		APP_CHECK(ret == 0,
-			"CFG: [%s] entry '%s': Invalid value '%s'\n",
-			section_name,
-			ent->name,
-			ent->value);
+		if (strcmp(ent->name, "burst_read") == 0) {
+			int status = parser_read_uint32(&
+				param->burst_read, ent->value);
+
+			PARSE_ERROR((status == 0), section_name,
+				ent->name);
+			continue;
+		}
+
+		if (strcmp(ent->name, "burst_write") == 0) {
+			int status = parser_read_uint32(
+				&param->burst_write, ent->value);
+
+			PARSE_ERROR((status == 0), section_name,
+				ent->name);
+			continue;
+		}
+
+		if (strcmp(ent->name, "dropless") == 0) {
+			int status = parser_read_arg_bool(ent->value);
+
+			PARSE_ERROR((status != -EINVAL), section_name,
+				ent->name);
+			param->dropless = status;
+			continue;
+		}
+
+		if (strcmp(ent->name, "n_retries") == 0) {
+			int status = parser_read_uint64(&param->n_retries,
+				ent->value);
+
+			PARSE_ERROR((status == 0), section_name,
+				ent->name);
+			continue;
+		}
+
+		if (strcmp(ent->name, "cpu") == 0) {
+			int status = parser_read_uint32(
+				&param->cpu_socket_id, ent->value);
+
+			PARSE_ERROR((status == 0), section_name, ent->name);
+			continue;
+		}
+
+		if (strcmp(ent->name, "ipv4_frag") == 0) {
+			int status = parser_read_arg_bool(ent->value);
+
+			PARSE_ERROR((status != -EINVAL), section_name,
+				ent->name);
+
+			param->ipv4_frag = status;
+			if (param->mtu == 0)
+				param->mtu = 1500;
+
+			continue;
+		}
+
+		if (strcmp(ent->name, "ipv6_frag") == 0) {
+			int status = parser_read_arg_bool(ent->value);
+
+			PARSE_ERROR((status != -EINVAL), section_name,
+				ent->name);
+			param->ipv6_frag = status;
+			if (param->mtu == 0)
+				param->mtu = 1320;
+			continue;
+		}
+
+		if (strcmp(ent->name, "ipv4_ras") == 0) {
+			int status = parser_read_arg_bool(ent->value);
+
+			PARSE_ERROR((status != -EINVAL), section_name,
+				ent->name);
+			param->ipv4_ras = status;
+			continue;
+		}
+
+		if (strcmp(ent->name, "ipv6_ras") == 0) {
+			int status = parser_read_arg_bool(ent->value);
+
+			PARSE_ERROR((status != -EINVAL), section_name,
+				ent->name);
+			param->ipv6_ras = status;
+			continue;
+		}
+
+		if (strcmp(ent->name, "mtu") == 0) {
+			int status = parser_read_uint32(&param->mtu,
+					ent->value);
+
+			PARSE_ERROR((status == 0), section_name,
+				ent->name);
+			mtu_present = 1;
+			continue;
+		}
+
+		if (strcmp(ent->name, "metadata_size") == 0) {
+			int status = parser_read_uint32(
+				&param->metadata_size, ent->value);
+
+			PARSE_ERROR((status == 0), section_name,
+				ent->name);
+			metadata_size_present = 1;
+			continue;
+		}
+
+		if (strcmp(ent->name, "mempool_direct") == 0) {
+			int status = validate_name(ent->value,
+				"MEMPOOL", 1);
+			ssize_t idx;
+
+			PARSE_ERROR((status == 0), section_name,
+				ent->name);
+
+			idx = APP_PARAM_ADD(app->mempool_params,
+				ent->value);
+			PARSER_PARAM_ADD_CHECK(idx, app->mempool_params,
+				section_name);
+			param->mempool_direct_id = idx;
+			mempool_direct_present = 1;
+			continue;
+		}
+
+		if (strcmp(ent->name, "mempool_indirect") == 0) {
+			int status = validate_name(ent->value,
+				"MEMPOOL", 1);
+			ssize_t idx;
+
+			PARSE_ERROR((status == 0), section_name,
+				ent->name);
+			idx = APP_PARAM_ADD(app->mempool_params,
+				ent->value);
+			PARSER_PARAM_ADD_CHECK(idx, app->mempool_params,
+				section_name);
+			param->mempool_indirect_id = idx;
+			mempool_indirect_present = 1;
+			continue;
+		}
+
+		/* unrecognized */
+		PARSE_ERROR_INVALID(0, section_name, ent->name);
 	}
 
-	if (frag_entries == 1) {
-		APP_CHECK(((param->ipv4_frag == 1) || (param->ipv6_frag == 1)),
-			"CFG: [%s] ipv4/ipv6 frag is off : unsupported entries on this"
-			" configuration\n",
-			section_name);
-	}
+	APP_CHECK(((mtu_present) &&
+		((param->ipv4_frag == 1) || (param->ipv6_frag == 1))),
+		"Parse error in section \"%s\": IPv4/IPv6 fragmentation "
+		"is off, therefore entry \"mtu\" is not allowed",
+		section_name);
+
+	APP_CHECK(((metadata_size_present) &&
+		((param->ipv4_frag == 1) || (param->ipv6_frag == 1))),
+		"Parse error in section \"%s\": IPv4/IPv6 fragmentation "
+		"is off, therefore entry \"metadata_size\" is "
+		"not allowed", section_name);
+
+	APP_CHECK(((mempool_direct_present) &&
+		((param->ipv4_frag == 1) || (param->ipv6_frag == 1))),
+		"Parse error in section \"%s\": IPv4/IPv6 fragmentation "
+		"is off, therefore entry \"mempool_direct\" is "
+		"not allowed", section_name);
+
+	APP_CHECK(((mempool_indirect_present) &&
+		((param->ipv4_frag == 1) || (param->ipv6_frag == 1))),
+		"Parse error in section \"%s\": IPv4/IPv6 fragmentation "
+		"is off, therefore entry \"mempool_indirect\" is "
+		"not allowed", section_name);
+
+	param->parsed = 1;
 
 	free(entries);
 }
@@ -1606,7 +2115,7 @@ parse_tm(struct app_params *app,
 {
 	struct app_pktq_tm_params *param;
 	struct rte_cfgfile_entry *entries;
-	int n_entries, ret, i;
+	int n_entries, i;
 	ssize_t param_idx;
 
 	n_entries = rte_cfgfile_section_num_entries(cfg, section_name);
@@ -1621,40 +2130,39 @@ parse_tm(struct app_params *app,
 	PARSER_PARAM_ADD_CHECK(param_idx, app->tm_params, section_name);
 
 	param = &app->tm_params[param_idx];
-	param->parsed = 1;
 
 	for (i = 0; i < n_entries; i++) {
 		struct rte_cfgfile_entry *ent = &entries[i];
 
-		ret = -ESRCH;
 		if (strcmp(ent->name, "cfg") == 0) {
 			param->file_name = strdup(ent->value);
-			if (param->file_name == NULL)
-				ret = -EINVAL;
-			else
-				ret = 0;
-		} else if (strcmp(ent->name, "burst_read") == 0)
-			ret = parser_read_uint32(&param->burst_read,
-				ent->value);
-		else if (strcmp(ent->name, "burst_write") == 0)
-			ret = parser_read_uint32(&param->burst_write,
-				ent->value);
+			PARSE_ERROR_MALLOC(param->file_name != NULL);
+			continue;
+		}
 
-		APP_CHECK(ret != -ESRCH,
-			"CFG: [%s] entry '%s': unknown entry\n",
-			section_name,
-			ent->name);
-		APP_CHECK(ret != -EBADF,
-			"CFG: [%s] entry '%s': TM cfg parse error '%s'\n",
-			section_name,
-			ent->name,
-			ent->value);
-		APP_CHECK(ret == 0,
-			"CFG: [%s] entry '%s': Invalid value '%s'\n",
-			section_name,
-			ent->name,
-			ent->value);
+		if (strcmp(ent->name, "burst_read") == 0) {
+			int status = parser_read_uint32(
+				&param->burst_read, ent->value);
+
+			PARSE_ERROR((status == 0), section_name,
+				ent->name);
+			continue;
+		}
+
+		if (strcmp(ent->name, "burst_write") == 0) {
+			int status = parser_read_uint32(
+				&param->burst_write, ent->value);
+
+			PARSE_ERROR((status == 0), section_name,
+				ent->name);
+			continue;
+		}
+
+		/* unrecognized */
+		PARSE_ERROR_INVALID(0, section_name, ent->name);
 	}
+
+	param->parsed = 1;
 
 	free(entries);
 }
@@ -1666,8 +2174,10 @@ parse_source(struct app_params *app,
 {
 	struct app_pktq_source_params *param;
 	struct rte_cfgfile_entry *entries;
-	int n_entries, ret, i;
+	int n_entries, i;
 	ssize_t param_idx;
+	uint32_t pcap_file_present = 0;
+	uint32_t pcap_size_present = 0;
 
 	n_entries = rte_cfgfile_section_num_entries(cfg, section_name);
 	PARSE_ERROR_SECTION_NO_ENTRIES((n_entries > 0), section_name);
@@ -1681,38 +2191,130 @@ parse_source(struct app_params *app,
 	PARSER_PARAM_ADD_CHECK(param_idx, app->source_params, section_name);
 
 	param = &app->source_params[param_idx];
-	param->parsed = 1;
 
 	for (i = 0; i < n_entries; i++) {
 		struct rte_cfgfile_entry *ent = &entries[i];
 
-		ret = -ESRCH;
 		if (strcmp(ent->name, "mempool") == 0) {
-			int status = validate_name(ent->value, "MEMPOOL", 1);
+			int status = validate_name(ent->value,
+				"MEMPOOL", 1);
 			ssize_t idx;
 
-			APP_CHECK((status == 0),
-				"CFG: [%s] entry '%s': invalid mempool\n",
-					section_name,
-					ent->name);
-
-			idx = APP_PARAM_ADD(app->mempool_params, ent->value);
-			PARSER_IMPLICIT_PARAM_ADD_CHECK(idx, section_name);
+			PARSE_ERROR((status == 0), section_name,
+				ent->name);
+			idx = APP_PARAM_ADD(app->mempool_params,
+				ent->value);
+			PARSER_PARAM_ADD_CHECK(idx, app->mempool_params,
+				section_name);
 			param->mempool_id = idx;
-			ret = 0;
-		} else if (strcmp(ent->name, "burst") == 0)
-			ret = parser_read_uint32(&param->burst, ent->value);
+			continue;
+		}
 
-		APP_CHECK(ret != -ESRCH,
-			"CFG: [%s] entry '%s': unknown entry\n",
-			section_name,
-			ent->name);
-		APP_CHECK(ret == 0,
-			"CFG: [%s] entry '%s': Invalid value '%s'\n",
-			section_name,
-			ent->name,
-			ent->value);
+		if (strcmp(ent->name, "burst") == 0) {
+			int status = parser_read_uint32(&param->burst,
+				ent->value);
+
+			PARSE_ERROR((status == 0), section_name,
+				ent->name);
+			continue;
+		}
+
+		if (strcmp(ent->name, "pcap_file_rd")) {
+			PARSE_ERROR_DUPLICATE((pcap_file_present == 0),
+				section_name, ent->name);
+
+			param->file_name = strdup(ent->value);
+
+			PARSE_ERROR_MALLOC(param->file_name != NULL);
+			pcap_file_present = 1;
+
+			continue;
+		}
+
+		if (strcmp(ent->name, "pcap_bytes_rd_per_pkt") == 0) {
+			int status;
+
+			PARSE_ERROR_DUPLICATE((pcap_size_present == 0),
+				section_name, ent->name);
+
+			status = parser_read_uint32(
+				&param->n_bytes_per_pkt, ent->value);
+
+			PARSE_ERROR((status == 0), section_name,
+				ent->name);
+			pcap_size_present = 1;
+
+			continue;
+		}
+
+		/* unrecognized */
+		PARSE_ERROR_INVALID(0, section_name, ent->name);
 	}
+
+	param->parsed = 1;
+
+	free(entries);
+}
+
+static void
+parse_sink(struct app_params *app,
+	const char *section_name,
+	struct rte_cfgfile *cfg)
+{
+	struct app_pktq_sink_params *param;
+	struct rte_cfgfile_entry *entries;
+	int n_entries, i;
+	ssize_t param_idx;
+	uint32_t pcap_file_present = 0;
+	uint32_t pcap_n_pkt_present = 0;
+
+	n_entries = rte_cfgfile_section_num_entries(cfg, section_name);
+	PARSE_ERROR_SECTION_NO_ENTRIES((n_entries > 0), section_name);
+
+	entries = malloc(n_entries * sizeof(struct rte_cfgfile_entry));
+	PARSE_ERROR_MALLOC(entries != NULL);
+
+	rte_cfgfile_section_entries(cfg, section_name, entries, n_entries);
+
+	param_idx = APP_PARAM_ADD(app->sink_params, section_name);
+	PARSER_PARAM_ADD_CHECK(param_idx, app->sink_params, section_name);
+
+	param = &app->sink_params[param_idx];
+
+	for (i = 0; i < n_entries; i++) {
+		struct rte_cfgfile_entry *ent = &entries[i];
+
+		if (strcmp(ent->name, "pcap_file_wr")) {
+			PARSE_ERROR_DUPLICATE((pcap_file_present == 0),
+				section_name, ent->name);
+
+			param->file_name = strdup(ent->value);
+
+			PARSE_ERROR_MALLOC((param->file_name != NULL));
+
+			continue;
+		}
+
+		if (strcmp(ent->name, "pcap_n_pkt_wr")) {
+			int status;
+
+			PARSE_ERROR_DUPLICATE((pcap_n_pkt_present == 0),
+				section_name, ent->name);
+
+			status = parser_read_uint32(
+				&param->n_pkts_to_dump, ent->value);
+
+			PARSE_ERROR((status == 0), section_name,
+				ent->name);
+
+			continue;
+		}
+
+		/* unrecognized */
+		PARSE_ERROR_INVALID(0, section_name, ent->name);
+	}
+
+	param->parsed = 1;
 
 	free(entries);
 }
@@ -1724,7 +2326,7 @@ parse_msgq_req_pipeline(struct app_params *app,
 {
 	struct app_msgq_params *param;
 	struct rte_cfgfile_entry *entries;
-	int n_entries, ret, i;
+	int n_entries, i;
 	ssize_t param_idx;
 
 	n_entries = rte_cfgfile_section_num_entries(cfg, section_name);
@@ -1739,26 +2341,24 @@ parse_msgq_req_pipeline(struct app_params *app,
 	PARSER_PARAM_ADD_CHECK(param_idx, app->msgq_params, section_name);
 
 	param = &app->msgq_params[param_idx];
-	param->parsed = 1;
 
 	for (i = 0; i < n_entries; i++) {
 		struct rte_cfgfile_entry *ent = &entries[i];
 
-		ret = -ESRCH;
-		if (strcmp(ent->name, "size") == 0)
-			ret = parser_read_uint32(&param->size, ent->value);
+		if (strcmp(ent->name, "size") == 0) {
+			int status = parser_read_uint32(&param->size,
+				ent->value);
 
-		APP_CHECK(ret != -ESRCH,
-			"CFG: [%s] entry '%s': unknown entry\n",
-			section_name,
-			ent->name);
-		APP_CHECK(ret == 0,
-			"CFG: [%s] entry '%s': Invalid value '%s'\n",
-			section_name,
-			ent->name,
-			ent->value);
+			PARSE_ERROR((status == 0), section_name,
+				ent->name);
+			continue;
+		}
+
+		/* unrecognized */
+		PARSE_ERROR_INVALID(0, section_name, ent->name);
 	}
 
+	param->parsed = 1;
 	free(entries);
 }
 
@@ -1769,7 +2369,7 @@ parse_msgq_rsp_pipeline(struct app_params *app,
 {
 	struct app_msgq_params *param;
 	struct rte_cfgfile_entry *entries;
-	int n_entries, ret, i;
+	int n_entries, i;
 	ssize_t param_idx;
 
 	n_entries = rte_cfgfile_section_num_entries(cfg, section_name);
@@ -1784,25 +2384,24 @@ parse_msgq_rsp_pipeline(struct app_params *app,
 	PARSER_PARAM_ADD_CHECK(param_idx, app->msgq_params, section_name);
 
 	param = &app->msgq_params[param_idx];
-	param->parsed = 1;
 
 	for (i = 0; i < n_entries; i++) {
 		struct rte_cfgfile_entry *ent = &entries[i];
 
-		ret = -ESRCH;
-		if (strcmp(ent->name, "size") == 0)
-			ret = parser_read_uint32(&param->size, ent->value);
+		if (strcmp(ent->name, "size") == 0) {
+			int status = parser_read_uint32(&param->size,
+				ent->value);
 
-		APP_CHECK(ret != -ESRCH,
-			"CFG: [%s] entry '%s': unknown entry\n",
-			section_name,
-			ent->name);
-		APP_CHECK(ret == 0,
-			"CFG: [%s] entry '%s': Invalid value '%s'\n",
-			section_name,
-			ent->name,
-			ent->value);
+			PARSE_ERROR((status == 0), section_name,
+				ent->name);
+			continue;
+		}
+
+		/* unrecognized */
+		PARSE_ERROR_INVALID(0, section_name, ent->name);
 	}
+
+	param->parsed = 1;
 
 	free(entries);
 }
@@ -1814,7 +2413,7 @@ parse_msgq(struct app_params *app,
 {
 	struct app_msgq_params *param;
 	struct rte_cfgfile_entry *entries;
-	int n_entries, ret, i;
+	int n_entries, i;
 	ssize_t param_idx;
 
 	n_entries = rte_cfgfile_section_num_entries(cfg, section_name);
@@ -1829,29 +2428,33 @@ parse_msgq(struct app_params *app,
 	PARSER_PARAM_ADD_CHECK(param_idx, app->msgq_params, section_name);
 
 	param = &app->msgq_params[param_idx];
-	param->parsed = 1;
 
 	for (i = 0; i < n_entries; i++) {
 		struct rte_cfgfile_entry *ent = &entries[i];
 
-		ret = -ESRCH;
-		if (strcmp(ent->name, "size") == 0)
-			ret = parser_read_uint32(&param->size,
-				ent->value);
-		else if (strcmp(ent->name, "cpu") == 0)
-			ret = parser_read_uint32(&param->cpu_socket_id,
+		if (strcmp(ent->name, "size") == 0) {
+			int status = parser_read_uint32(&param->size,
 				ent->value);
 
-		APP_CHECK(ret != -ESRCH,
-			"CFG: [%s] entry '%s': unknown entry\n",
-			section_name,
-			ent->name);
-		APP_CHECK(ret == 0,
-			"CFG: [%s] entry '%s': Invalid value '%s'\n",
-			section_name,
-			ent->name,
-			ent->value);
+			PARSE_ERROR((status == 0), section_name,
+				ent->name);
+			continue;
+		}
+
+		if (strcmp(ent->name, "cpu") == 0) {
+			int status = parser_read_uint32(
+				&param->cpu_socket_id, ent->value);
+
+			PARSE_ERROR((status == 0), section_name,
+				ent->name);
+			continue;
+		}
+
+		/* unrecognized */
+		PARSE_ERROR_INVALID(0, section_name, ent->name);
 	}
+
+	param->parsed = 1;
 
 	free(entries);
 }
@@ -1876,6 +2479,7 @@ static const struct config_section cfg_file_scheme[] = {
 	{"SWQ", 1, parse_swq},
 	{"TM", 1, parse_tm},
 	{"SOURCE", 1, parse_source},
+	{"SINK", 1, parse_sink},
 	{"MSGQ-REQ-PIPELINE", 1, parse_msgq_req_pipeline},
 	{"MSGQ-RSP-PIPELINE", 1, parse_msgq_rsp_pipeline},
 	{"MSGQ", 1, parse_msgq},
@@ -1887,11 +2491,12 @@ create_implicit_mempools(struct app_params *app)
 	ssize_t idx;
 
 	idx = APP_PARAM_ADD(app->mempool_params, "MEMPOOL0");
-	PARSER_IMPLICIT_PARAM_ADD_CHECK(idx, "start-up");
+	PARSER_PARAM_ADD_CHECK(idx, app->mempool_params, "start-up");
 }
 
 static void
-parse_port_mask(struct app_params *app, uint64_t port_mask)
+create_implicit_links_from_port_mask(struct app_params *app,
+	uint64_t port_mask)
 {
 	uint32_t pmd_id, link_id;
 
@@ -1905,10 +2510,22 @@ parse_port_mask(struct app_params *app, uint64_t port_mask)
 
 		snprintf(name, sizeof(name), "LINK%" PRIu32, link_id);
 		idx = APP_PARAM_ADD(app->link_params, name);
-		PARSER_IMPLICIT_PARAM_ADD_CHECK(idx, name);
+		PARSER_PARAM_ADD_CHECK(idx, app->link_params, name);
 
 		app->link_params[idx].pmd_id = pmd_id;
 		link_id++;
+	}
+}
+
+static void
+assign_link_pmd_id_from_pci_bdf(struct app_params *app)
+{
+	uint32_t i;
+
+	for (i = 0; i < app->n_links; i++) {
+		struct app_link_params *link = &app->link_params[i];
+
+		link->pmd_id = i;
 	}
 }
 
@@ -1923,17 +2540,21 @@ app_config_parse(struct app_params *app, const char *file_name)
 	create_implicit_mempools(app);
 
 	/* Port mask */
-	parse_port_mask(app, app->port_mask);
+	if (app->port_mask)
+		create_implicit_links_from_port_mask(app, app->port_mask);
 
 	/* Load application configuration file */
 	cfg = rte_cfgfile_load(file_name, 0);
-	APP_CHECK(cfg != NULL, "Unable to load config file %s", file_name);
+	APP_CHECK((cfg != NULL), "Parse error: Unable to load config "
+		"file %s", file_name);
 
 	sect_count = rte_cfgfile_num_sections(cfg, NULL, 0);
-	APP_CHECK(sect_count > 0, "Number of sections return %d", sect_count);
+	APP_CHECK((sect_count > 0), "Parse error: number of sections "
+		"in file \"%s\" return %d", file_name,
+		sect_count);
 
 	section_names = malloc(sect_count * sizeof(char *));
-	APP_CHECK(section_names != NULL, "Failed to allocate memory");
+	PARSE_ERROR_MALLOC(section_names != NULL);
 
 	for (i = 0; i < sect_count; i++)
 		section_names[i] = malloc(CFG_NAME_LEN);
@@ -1969,13 +2590,13 @@ app_config_parse(struct app_params *app, const char *file_name)
 		}
 
 		APP_CHECK(j < (int)RTE_DIM(cfg_file_scheme),
-			"Unknown section %s",
+			"Parse error: unknown section %s",
 			section_names[i]);
 
 		APP_CHECK(validate_name(section_names[i],
 			sch_s->prefix,
 			sch_s->numbers) == 0,
-			"Invalid section name '%s'",
+			"Parse error: invalid section name \"%s\"",
 			section_names[i]);
 
 		sch_s->load(app, section_names[i], cfg);
@@ -1999,6 +2620,26 @@ app_config_parse(struct app_params *app, const char *file_name)
 	APP_PARAM_COUNT(app->msgq_params, app->n_msgq);
 	APP_PARAM_COUNT(app->pipeline_params, app->n_pipelines);
 
+#ifdef RTE_PORT_PCAP
+	for (i = 0; i < (int)app->n_pktq_source; i++) {
+		struct app_pktq_source_params *p = &app->source_params[i];
+
+		APP_CHECK((p->file_name), "Parse error: missing "
+			"mandatory field \"pcap_file_rd\" for \"%s\"",
+			p->name);
+	}
+#else
+	for (i = 0; i < (int)app->n_pktq_source; i++) {
+		struct app_pktq_source_params *p = &app->source_params[i];
+
+		APP_CHECK((!p->file_name), "Parse error: invalid field "
+			"\"pcap_file_rd\" for \"%s\"", p->name);
+	}
+#endif
+
+	if (app->port_mask == 0)
+		assign_link_pmd_id_from_pci_bdf(app);
+
 	/* Save configuration to output file */
 	app_config_save(app, app->output_file);
 
@@ -2012,6 +2653,7 @@ static void
 save_eal_params(struct app_params *app, FILE *f)
 {
 	struct app_eal_params *p = &app->eal_params;
+	uint32_t i;
 
 	fprintf(f, "[EAL]\n");
 
@@ -2030,14 +2672,29 @@ save_eal_params(struct app_params *app, FILE *f)
 	if (p->ranks_present)
 		fprintf(f, "%s = %" PRIu32 "\n", "r", p->ranks);
 
-	if (p->pci_blacklist)
-		fprintf(f, "%s = %s\n", "pci_blacklist", p->pci_blacklist);
+	for (i = 0; i < APP_MAX_LINKS; i++) {
+		if (p->pci_blacklist[i] == NULL)
+			break;
 
-	if (p->pci_whitelist)
-		fprintf(f, "%s = %s\n", "pci_whitelist", p->pci_whitelist);
+		fprintf(f, "%s = %s\n", "pci_blacklist",
+			p->pci_blacklist[i]);
+	}
 
-	if (p->vdev)
-		fprintf(f, "%s = %s\n", "vdev", p->vdev);
+	for (i = 0; i < APP_MAX_LINKS; i++) {
+		if (p->pci_whitelist[i] == NULL)
+			break;
+
+		fprintf(f, "%s = %s\n", "pci_whitelist",
+			p->pci_whitelist[i]);
+	}
+
+	for (i = 0; i < APP_MAX_LINKS; i++) {
+		if (p->vdev[i] == NULL)
+			break;
+
+		fprintf(f, "%s = %s\n", "vdev",
+			p->vdev[i]);
+	}
 
 	if (p->vmware_tsc_map_present)
 		fprintf(f, "%s = %s\n", "vmware_tsc_map",
@@ -2138,13 +2795,16 @@ save_links_params(struct app_params *app, FILE *f)
 		fprintf(f, "; %s = %" PRIu32 "\n", "pmd_id", p->pmd_id);
 		fprintf(f, "%s = %s\n", "promisc", p->promisc ? "yes" : "no");
 		fprintf(f, "%s = %" PRIu32 "\n", "arp_q", p->arp_q);
-		fprintf(f, "%s = %" PRIu32 "\n", "tcp_syn_local_q",
-			p->tcp_syn_local_q);
+		fprintf(f, "%s = %" PRIu32 "\n", "tcp_syn_q",
+			p->tcp_syn_q);
 		fprintf(f, "%s = %" PRIu32 "\n", "ip_local_q", p->ip_local_q);
 		fprintf(f, "%s = %" PRIu32 "\n", "tcp_local_q", p->tcp_local_q);
 		fprintf(f, "%s = %" PRIu32 "\n", "udp_local_q", p->udp_local_q);
 		fprintf(f, "%s = %" PRIu32 "\n", "sctp_local_q",
 			p->sctp_local_q);
+
+		if (strlen(p->pci_bdf))
+			fprintf(f, "%s = %s\n", "pci_bdf", p->pci_bdf);
 
 		fputc('\n', f);
 	}
@@ -2272,6 +2932,29 @@ save_source_params(struct app_params *app, FILE *f)
 			"mempool",
 			app->mempool_params[p->mempool_id].name);
 		fprintf(f, "%s = %" PRIu32 "\n", "burst", p->burst);
+		fprintf(f, "%s = %s\n", "pcap_file_rd", p->file_name);
+		fprintf(f, "%s = %" PRIu32 "\n", "pcap_bytes_rd_per_pkt",
+			p->n_bytes_per_pkt);
+		fputc('\n', f);
+	}
+}
+
+static void
+save_sink_params(struct app_params *app, FILE *f)
+{
+	struct app_pktq_sink_params *p;
+	size_t i, count;
+
+	count = RTE_DIM(app->sink_params);
+	for (i = 0; i < count; i++) {
+		p = &app->sink_params[i];
+		if (!APP_PARAM_VALID(p))
+			continue;
+
+		fprintf(f, "[%s]\n", p->name);
+		fprintf(f, "%s = %s\n", "pcap_file_wr", p->file_name);
+		fprintf(f, "%s = %" PRIu32 "\n",
+				"pcap_n_pkt_wr", p->n_pkts_to_dump);
 		fputc('\n', f);
 	}
 }
@@ -2343,7 +3026,9 @@ save_pipeline_params(struct app_params *app, FILE *f)
 					name = app->source_params[pp->id].name;
 					break;
 				default:
-					APP_CHECK(0, "Error\n");
+					APP_CHECK(0, "System error "
+						"occurred while saving "
+						"parameter to file");
 				}
 
 				fprintf(f, " %s", name);
@@ -2375,7 +3060,9 @@ save_pipeline_params(struct app_params *app, FILE *f)
 					name = app->sink_params[pp->id].name;
 					break;
 				default:
-					APP_CHECK(0, "Error\n");
+					APP_CHECK(0, "System error "
+						"occurred while saving "
+						"parameter to file");
 				}
 
 				fprintf(f, " %s", name);
@@ -2438,12 +3125,13 @@ app_config_save(struct app_params *app, const char *file_name)
 	dir_name = dirname(name);
 	status = access(dir_name, W_OK);
 	APP_CHECK((status == 0),
-		"Need write access to directory \"%s\" to save configuration\n",
-		dir_name);
+		"Error: need write access privilege to directory "
+		"\"%s\" to save configuration\n", dir_name);
 
 	file = fopen(file_name, "w");
 	APP_CHECK((file != NULL),
-		"Failed to save configuration to file \"%s\"", file_name);
+		"Error: failed to save configuration to file \"%s\"",
+		file_name);
 
 	save_eal_params(app, file);
 	save_pipeline_params(app, file);
@@ -2454,6 +3142,7 @@ app_config_save(struct app_params *app, const char *file_name)
 	save_swq_params(app, file);
 	save_tm_params(app, file);
 	save_source_params(app, file);
+	save_sink_params(app, file);
 	save_msgq_params(app, file);
 
 	fclose(file);
@@ -2653,10 +3342,6 @@ app_config_args(struct app_params *app, int argc, char **argv)
 
 	optind = 0; /* reset getopt lib */
 
-	/* Check that mandatory args have been provided */
-	if (!p_present)
-		rte_panic("Error: PORT_MASK is not provided\n");
-
 	/* Check dependencies between args */
 	if (preproc_params_present && (preproc_present == 0))
 		rte_panic("Error: Preprocessor args specified while "
@@ -2680,7 +3365,8 @@ app_config_preproc(struct app_params *app)
 		return 0;
 
 	status = access(app->config_file, F_OK | R_OK);
-	APP_CHECK((status == 0), "Unable to open file %s", app->config_file);
+	APP_CHECK((status == 0), "Error: Unable to open file %s",
+		app->config_file);
 
 	snprintf(buffer, sizeof(buffer), "%s %s %s > %s",
 		app->preproc,
@@ -2690,7 +3376,8 @@ app_config_preproc(struct app_params *app)
 
 	status = system(buffer);
 	APP_CHECK((WIFEXITED(status) && (WEXITSTATUS(status) == 0)),
-		"Error while preprocessing file \"%s\"\n", app->config_file);
+		"Error occurred while pre-processing file \"%s\"\n",
+		app->config_file);
 
 	return status;
 }

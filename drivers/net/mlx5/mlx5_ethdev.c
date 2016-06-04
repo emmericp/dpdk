@@ -59,6 +59,7 @@
 #include <rte_common.h>
 #include <rte_interrupts.h>
 #include <rte_alarm.h>
+#include <rte_malloc.h>
 #ifdef PEDANTIC
 #pragma GCC diagnostic error "-pedantic"
 #endif
@@ -66,6 +67,38 @@
 #include "mlx5.h"
 #include "mlx5_rxtx.h"
 #include "mlx5_utils.h"
+
+/**
+ * Return private structure associated with an Ethernet device.
+ *
+ * @param dev
+ *   Pointer to Ethernet device structure.
+ *
+ * @return
+ *   Pointer to private structure.
+ */
+struct priv *
+mlx5_get_priv(struct rte_eth_dev *dev)
+{
+	struct mlx5_secondary_data *sd;
+
+	if (!mlx5_is_secondary())
+		return dev->data->dev_private;
+	sd = &mlx5_secondary_data[dev->data->port_id];
+	return sd->data.dev_private;
+}
+
+/**
+ * Check if running as a secondary process.
+ *
+ * @return
+ *   Nonzero if running as a secondary process.
+ */
+inline int
+mlx5_is_secondary(void)
+{
+	return rte_eal_process_type() != RTE_PROC_PRIMARY;
+}
 
 /**
  * Get interface name from private structure.
@@ -414,6 +447,7 @@ dev_configure(struct rte_eth_dev *dev)
 	unsigned int j;
 	unsigned int reta_idx_n;
 
+	priv->rss_hf = dev->data->dev_conf.rx_adv_conf.rss_conf.rss_hf;
 	priv->rxqs = (void *)dev->data->rx_queues;
 	priv->txqs = (void *)dev->data->tx_queues;
 	if (txqs_n != priv->txqs_n) {
@@ -464,6 +498,9 @@ mlx5_dev_configure(struct rte_eth_dev *dev)
 	struct priv *priv = dev->data->dev_private;
 	int ret;
 
+	if (mlx5_is_secondary())
+		return -E_RTE_SECONDARY;
+
 	priv_lock(priv);
 	ret = dev_configure(dev);
 	assert(ret >= 0);
@@ -482,7 +519,7 @@ mlx5_dev_configure(struct rte_eth_dev *dev)
 void
 mlx5_dev_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *info)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct priv *priv = mlx5_get_priv(dev);
 	unsigned int max;
 	char ifname[IF_NAMESIZE];
 
@@ -501,20 +538,19 @@ mlx5_dev_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *info)
 		max = 65535;
 	info->max_rx_queues = max;
 	info->max_tx_queues = max;
-	/* Last array entry is reserved for broadcast. */
-	info->max_mac_addrs = (RTE_DIM(priv->mac) - 1);
+	info->max_mac_addrs = RTE_DIM(priv->mac);
 	info->rx_offload_capa =
 		(priv->hw_csum ?
 		 (DEV_RX_OFFLOAD_IPV4_CKSUM |
 		  DEV_RX_OFFLOAD_UDP_CKSUM |
 		  DEV_RX_OFFLOAD_TCP_CKSUM) :
 		 0);
-	info->tx_offload_capa =
-		(priv->hw_csum ?
-		 (DEV_TX_OFFLOAD_IPV4_CKSUM |
-		  DEV_TX_OFFLOAD_UDP_CKSUM |
-		  DEV_TX_OFFLOAD_TCP_CKSUM) :
-		 0);
+	info->tx_offload_capa = DEV_TX_OFFLOAD_VLAN_INSERT;
+	if (priv->hw_csum)
+		info->tx_offload_capa |=
+			(DEV_TX_OFFLOAD_IPV4_CKSUM |
+			 DEV_TX_OFFLOAD_UDP_CKSUM |
+			 DEV_TX_OFFLOAD_TCP_CKSUM);
 	if (priv_get_ifname(priv, &ifname) == 0)
 		info->if_index = if_nametoindex(ifname);
 	/* FIXME: RETA update/query API expects the callee to know the size of
@@ -523,7 +559,35 @@ mlx5_dev_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *info)
 	 * size if it is not fixed.
 	 * The API should be updated to solve this problem. */
 	info->reta_size = priv->ind_table_max_size;
+	info->speed_capa =
+			ETH_LINK_SPEED_1G |
+			ETH_LINK_SPEED_10G |
+			ETH_LINK_SPEED_20G |
+			ETH_LINK_SPEED_25G |
+			ETH_LINK_SPEED_40G |
+			ETH_LINK_SPEED_50G |
+			ETH_LINK_SPEED_56G |
+			ETH_LINK_SPEED_100G;
 	priv_unlock(priv);
+}
+
+const uint32_t *
+mlx5_dev_supported_ptypes_get(struct rte_eth_dev *dev)
+{
+	static const uint32_t ptypes[] = {
+		/* refers to rxq_cq_to_pkt_type() */
+		RTE_PTYPE_L3_IPV4,
+		RTE_PTYPE_L3_IPV6,
+		RTE_PTYPE_INNER_L3_IPV4,
+		RTE_PTYPE_INNER_L3_IPV6,
+		RTE_PTYPE_UNKNOWN
+
+	};
+
+	if (dev->rx_pkt_burst == mlx5_rx_burst ||
+	    dev->rx_pkt_burst == mlx5_rx_burst_sp)
+		return ptypes;
+	return NULL;
 }
 
 /**
@@ -537,7 +601,7 @@ mlx5_dev_infos_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *info)
 static int
 mlx5_link_update_unlocked(struct rte_eth_dev *dev, int wait_to_complete)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct priv *priv = mlx5_get_priv(dev);
 	struct ethtool_cmd edata = {
 		.cmd = ETHTOOL_GSET
 	};
@@ -566,6 +630,8 @@ mlx5_link_update_unlocked(struct rte_eth_dev *dev, int wait_to_complete)
 		dev_link.link_speed = link_speed;
 	dev_link.link_duplex = ((edata.duplex == DUPLEX_HALF) ?
 				ETH_LINK_HALF_DUPLEX : ETH_LINK_FULL_DUPLEX);
+	dev_link.link_autoneg = !(dev->data->dev_conf.link_speeds &
+			ETH_LINK_SPEED_FIXED);
 	if (memcmp(&dev_link, &dev->data->dev_link, sizeof(dev_link))) {
 		/* Link status changed. */
 		dev->data->dev_link = dev_link;
@@ -586,7 +652,7 @@ mlx5_link_update_unlocked(struct rte_eth_dev *dev, int wait_to_complete)
 int
 mlx5_link_update(struct rte_eth_dev *dev, int wait_to_complete)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct priv *priv = mlx5_get_priv(dev);
 	int ret;
 
 	priv_lock(priv);
@@ -620,6 +686,9 @@ mlx5_dev_set_mtu(struct rte_eth_dev *dev, uint16_t mtu)
 	unsigned int i;
 	uint16_t (*rx_func)(void *, struct rte_mbuf **, uint16_t) =
 		mlx5_rx_burst;
+
+	if (mlx5_is_secondary())
+		return -E_RTE_SECONDARY;
 
 	priv_lock(priv);
 	/* Set kernel interface MTU first. */
@@ -695,6 +764,9 @@ mlx5_dev_get_flow_ctrl(struct rte_eth_dev *dev, struct rte_eth_fc_conf *fc_conf)
 	};
 	int ret;
 
+	if (mlx5_is_secondary())
+		return -E_RTE_SECONDARY;
+
 	ifr.ifr_data = &ethpause;
 	priv_lock(priv);
 	if (priv_ifreq(priv, SIOCETHTOOL, &ifr)) {
@@ -742,6 +814,9 @@ mlx5_dev_set_flow_ctrl(struct rte_eth_dev *dev, struct rte_eth_fc_conf *fc_conf)
 		.cmd = ETHTOOL_SPAUSEPARAM
 	};
 	int ret;
+
+	if (mlx5_is_secondary())
+		return -E_RTE_SECONDARY;
 
 	ifr.ifr_data = &ethpause;
 	ethpause.autoneg = fc_conf->autoneg;
@@ -968,4 +1043,240 @@ priv_dev_interrupt_handler_install(struct priv *priv, struct rte_eth_dev *dev)
 					   mlx5_dev_interrupt_handler,
 					   dev);
 	}
+}
+
+/**
+ * Change the link state (UP / DOWN).
+ *
+ * @param dev
+ *   Pointer to Ethernet device structure.
+ * @param up
+ *   Nonzero for link up, otherwise link down.
+ *
+ * @return
+ *   0 on success, errno value on failure.
+ */
+static int
+priv_set_link(struct priv *priv, int up)
+{
+	struct rte_eth_dev *dev = priv->dev;
+	int err;
+	unsigned int i;
+
+	if (up) {
+		err = priv_set_flags(priv, ~IFF_UP, IFF_UP);
+		if (err)
+			return err;
+		for (i = 0; i < priv->rxqs_n; i++)
+			if ((*priv->rxqs)[i]->sp)
+				break;
+		/* Check if an sp queue exists.
+		 * Note: Some old frames might be received.
+		 */
+		if (i == priv->rxqs_n)
+			dev->rx_pkt_burst = mlx5_rx_burst;
+		else
+			dev->rx_pkt_burst = mlx5_rx_burst_sp;
+		dev->tx_pkt_burst = mlx5_tx_burst;
+	} else {
+		err = priv_set_flags(priv, ~IFF_UP, ~IFF_UP);
+		if (err)
+			return err;
+		dev->rx_pkt_burst = removed_rx_burst;
+		dev->tx_pkt_burst = removed_tx_burst;
+	}
+	return 0;
+}
+
+/**
+ * DPDK callback to bring the link DOWN.
+ *
+ * @param dev
+ *   Pointer to Ethernet device structure.
+ *
+ * @return
+ *   0 on success, errno value on failure.
+ */
+int
+mlx5_set_link_down(struct rte_eth_dev *dev)
+{
+	struct priv *priv = dev->data->dev_private;
+	int err;
+
+	priv_lock(priv);
+	err = priv_set_link(priv, 0);
+	priv_unlock(priv);
+	return err;
+}
+
+/**
+ * DPDK callback to bring the link UP.
+ *
+ * @param dev
+ *   Pointer to Ethernet device structure.
+ *
+ * @return
+ *   0 on success, errno value on failure.
+ */
+int
+mlx5_set_link_up(struct rte_eth_dev *dev)
+{
+	struct priv *priv = dev->data->dev_private;
+	int err;
+
+	priv_lock(priv);
+	err = priv_set_link(priv, 1);
+	priv_unlock(priv);
+	return err;
+}
+
+/**
+ * Configure secondary process queues from a private data pointer (primary
+ * or secondary) and update burst callbacks. Can take place only once.
+ *
+ * All queues must have been previously created by the primary process to
+ * avoid undefined behavior.
+ *
+ * @param priv
+ *   Private data pointer from either primary or secondary process.
+ *
+ * @return
+ *   Private data pointer from secondary process, NULL in case of error.
+ */
+struct priv *
+mlx5_secondary_data_setup(struct priv *priv)
+{
+	unsigned int port_id = 0;
+	struct mlx5_secondary_data *sd;
+	void **tx_queues;
+	void **rx_queues;
+	unsigned int nb_tx_queues;
+	unsigned int nb_rx_queues;
+	unsigned int i;
+
+	/* priv must be valid at this point. */
+	assert(priv != NULL);
+	/* priv->dev must also be valid but may point to local memory from
+	 * another process, possibly with the same address and must not
+	 * be dereferenced yet. */
+	assert(priv->dev != NULL);
+	/* Determine port ID by finding out where priv comes from. */
+	while (1) {
+		sd = &mlx5_secondary_data[port_id];
+		rte_spinlock_lock(&sd->lock);
+		/* Primary process? */
+		if (sd->primary_priv == priv)
+			break;
+		/* Secondary process? */
+		if (sd->data.dev_private == priv)
+			break;
+		rte_spinlock_unlock(&sd->lock);
+		if (++port_id == RTE_DIM(mlx5_secondary_data))
+			port_id = 0;
+	}
+	/* Switch to secondary private structure. If private data has already
+	 * been updated by another thread, there is nothing else to do. */
+	priv = sd->data.dev_private;
+	if (priv->dev->data == &sd->data)
+		goto end;
+	/* Sanity checks. Secondary private structure is supposed to point
+	 * to local eth_dev, itself still pointing to the shared device data
+	 * structure allocated by the primary process. */
+	assert(sd->shared_dev_data != &sd->data);
+	assert(sd->data.nb_tx_queues == 0);
+	assert(sd->data.tx_queues == NULL);
+	assert(sd->data.nb_rx_queues == 0);
+	assert(sd->data.rx_queues == NULL);
+	assert(priv != sd->primary_priv);
+	assert(priv->dev->data == sd->shared_dev_data);
+	assert(priv->txqs_n == 0);
+	assert(priv->txqs == NULL);
+	assert(priv->rxqs_n == 0);
+	assert(priv->rxqs == NULL);
+	nb_tx_queues = sd->shared_dev_data->nb_tx_queues;
+	nb_rx_queues = sd->shared_dev_data->nb_rx_queues;
+	/* Allocate local storage for queues. */
+	tx_queues = rte_zmalloc("secondary ethdev->tx_queues",
+				sizeof(sd->data.tx_queues[0]) * nb_tx_queues,
+				RTE_CACHE_LINE_SIZE);
+	rx_queues = rte_zmalloc("secondary ethdev->rx_queues",
+				sizeof(sd->data.rx_queues[0]) * nb_rx_queues,
+				RTE_CACHE_LINE_SIZE);
+	if (tx_queues == NULL || rx_queues == NULL)
+		goto error;
+	/* Lock to prevent control operations during setup. */
+	priv_lock(priv);
+	/* TX queues. */
+	for (i = 0; i != nb_tx_queues; ++i) {
+		struct txq *primary_txq = (*sd->primary_priv->txqs)[i];
+		struct txq *txq;
+
+		if (primary_txq == NULL)
+			continue;
+		txq = rte_calloc_socket("TXQ", 1, sizeof(*txq), 0,
+					primary_txq->socket);
+		if (txq != NULL) {
+			if (txq_setup(priv->dev,
+				      txq,
+				      primary_txq->elts_n * MLX5_PMD_SGE_WR_N,
+				      primary_txq->socket,
+				      NULL) == 0) {
+				txq->stats.idx = primary_txq->stats.idx;
+				tx_queues[i] = txq;
+				continue;
+			}
+			rte_free(txq);
+		}
+		while (i) {
+			txq = tx_queues[--i];
+			txq_cleanup(txq);
+			rte_free(txq);
+		}
+		goto error;
+	}
+	/* RX queues. */
+	for (i = 0; i != nb_rx_queues; ++i) {
+		struct rxq *primary_rxq = (*sd->primary_priv->rxqs)[i];
+
+		if (primary_rxq == NULL)
+			continue;
+		/* Not supported yet. */
+		rx_queues[i] = NULL;
+	}
+	/* Update everything. */
+	priv->txqs = (void *)tx_queues;
+	priv->txqs_n = nb_tx_queues;
+	priv->rxqs = (void *)rx_queues;
+	priv->rxqs_n = nb_rx_queues;
+	sd->data.rx_queues = rx_queues;
+	sd->data.tx_queues = tx_queues;
+	sd->data.nb_rx_queues = nb_rx_queues;
+	sd->data.nb_tx_queues = nb_tx_queues;
+	sd->data.dev_link = sd->shared_dev_data->dev_link;
+	sd->data.mtu = sd->shared_dev_data->mtu;
+	memcpy(sd->data.rx_queue_state, sd->shared_dev_data->rx_queue_state,
+	       sizeof(sd->data.rx_queue_state));
+	memcpy(sd->data.tx_queue_state, sd->shared_dev_data->tx_queue_state,
+	       sizeof(sd->data.tx_queue_state));
+	sd->data.dev_flags = sd->shared_dev_data->dev_flags;
+	/* Use local data from now on. */
+	rte_mb();
+	priv->dev->data = &sd->data;
+	rte_mb();
+	priv->dev->tx_pkt_burst = mlx5_tx_burst;
+	priv->dev->rx_pkt_burst = removed_rx_burst;
+	priv_unlock(priv);
+end:
+	/* More sanity checks. */
+	assert(priv->dev->tx_pkt_burst == mlx5_tx_burst);
+	assert(priv->dev->rx_pkt_burst == removed_rx_burst);
+	assert(priv->dev->data == &sd->data);
+	rte_spinlock_unlock(&sd->lock);
+	return priv;
+error:
+	priv_unlock(priv);
+	rte_free(tx_queues);
+	rte_free(rx_queues);
+	rte_spinlock_unlock(&sd->lock);
+	return NULL;
 }

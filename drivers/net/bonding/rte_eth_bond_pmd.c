@@ -171,6 +171,7 @@ bond_ethdev_rx_burst_8023ad(void *queue, struct rte_mbuf **bufs,
 			 * mode and packet address does not match. */
 			if (unlikely(hdr->ether_type == ether_type_slow_be ||
 				!collecting || (!promisc &&
+					!is_multicast_ether_addr(&hdr->d_addr) &&
 					!is_same_ether_addr(&bond_mac, &hdr->d_addr)))) {
 
 				if (hdr->ether_type == ether_type_slow_be) {
@@ -1304,6 +1305,8 @@ slave_configure(struct rte_eth_dev *bonded_eth_dev,
 	struct bond_rx_queue *bd_rx_q;
 	struct bond_tx_queue *bd_tx_q;
 
+	uint16_t old_nb_tx_queues = slave_eth_dev->data->nb_tx_queues;
+	uint16_t old_nb_rx_queues = slave_eth_dev->data->nb_rx_queues;
 	int errval;
 	uint16_t q_id;
 
@@ -1344,7 +1347,9 @@ slave_configure(struct rte_eth_dev *bonded_eth_dev,
 	}
 
 	/* Setup Rx Queues */
-	for (q_id = 0; q_id < bonded_eth_dev->data->nb_rx_queues; q_id++) {
+	/* Use existing queues, if any */
+	for (q_id = old_nb_rx_queues;
+	     q_id < bonded_eth_dev->data->nb_rx_queues; q_id++) {
 		bd_rx_q = (struct bond_rx_queue *)bonded_eth_dev->data->rx_queues[q_id];
 
 		errval = rte_eth_rx_queue_setup(slave_eth_dev->data->port_id, q_id,
@@ -1360,7 +1365,9 @@ slave_configure(struct rte_eth_dev *bonded_eth_dev,
 	}
 
 	/* Setup Tx Queues */
-	for (q_id = 0; q_id < bonded_eth_dev->data->nb_tx_queues; q_id++) {
+	/* Use existing queues, if any */
+	for (q_id = old_nb_tx_queues;
+	     q_id < bonded_eth_dev->data->nb_tx_queues; q_id++) {
 		bd_tx_q = (struct bond_tx_queue *)bonded_eth_dev->data->tx_queues[q_id];
 
 		errval = rte_eth_tx_queue_setup(slave_eth_dev->data->port_id, q_id,
@@ -1447,18 +1454,11 @@ slave_add(struct bond_dev_private *internals,
 	slave_details->port_id = slave_eth_dev->data->port_id;
 	slave_details->last_link_status = 0;
 
-	/* If slave device doesn't support interrupts then we need to enabled
-	 * polling to monitor link status */
+	/* Mark slave devices that don't support interrupts so we can
+	 * compensate when we start the bond
+	 */
 	if (!(slave_eth_dev->data->dev_flags & RTE_ETH_DEV_INTR_LSC)) {
 		slave_details->link_status_poll_enabled = 1;
-
-		if (!internals->link_status_polling_enabled) {
-			internals->link_status_polling_enabled = 1;
-
-			rte_eal_alarm_set(internals->link_status_polling_interval_ms * 1000,
-					bond_ethdev_slave_link_status_change_monitor,
-					(void *)&rte_eth_devices[internals->port_id]);
-		}
 	}
 
 	slave_details->link_status_wait_to_complete = 0;
@@ -1499,7 +1499,7 @@ bond_ethdev_start(struct rte_eth_dev *eth_dev)
 		return -1;
 	}
 
-	eth_dev->data->dev_link.link_status = 0;
+	eth_dev->data->dev_link.link_status = ETH_LINK_DOWN;
 	eth_dev->data->dev_started = 1;
 
 	internals = eth_dev->data->dev_private;
@@ -1543,6 +1543,18 @@ bond_ethdev_start(struct rte_eth_dev *eth_dev)
 					eth_dev->data->port_id, internals->slaves[i].port_id);
 			return -1;
 		}
+		/* We will need to poll for link status if any slave doesn't
+		 * support interrupts
+		 */
+		if (internals->slaves[i].link_status_poll_enabled)
+			internals->link_status_polling_enabled = 1;
+	}
+	/* start polling if needed */
+	if (internals->link_status_polling_enabled) {
+		rte_eal_alarm_set(
+			internals->link_status_polling_interval_ms * 1000,
+			bond_ethdev_slave_link_status_change_monitor,
+			(void *)&rte_eth_devices[internals->port_id]);
 	}
 
 	if (internals->user_defined_primary_port)
@@ -1596,11 +1608,11 @@ bond_ethdev_stop(struct rte_eth_dev *eth_dev)
 		for (i = 0; i < internals->active_slave_count; i++) {
 			port = &mode_8023ad_ports[internals->active_slaves[i]];
 
-			RTE_VERIFY(port->rx_ring != NULL);
+			RTE_ASSERT(port->rx_ring != NULL);
 			while (rte_ring_dequeue(port->rx_ring, &pkt) != -ENOENT)
 				rte_pktmbuf_free(pkt);
 
-			RTE_VERIFY(port->tx_ring != NULL);
+			RTE_ASSERT(port->tx_ring != NULL);
 			while (rte_ring_dequeue(port->tx_ring, &pkt) != -ENOENT)
 				rte_pktmbuf_free(pkt);
 		}
@@ -1615,8 +1627,10 @@ bond_ethdev_stop(struct rte_eth_dev *eth_dev)
 
 	internals->active_slave_count = 0;
 	internals->link_status_polling_enabled = 0;
+	for (i = 0; i < internals->slave_count; i++)
+		internals->slaves[i].last_link_status = 0;
 
-	eth_dev->data->dev_link.link_status = 0;
+	eth_dev->data->dev_link.link_status = ETH_LINK_DOWN;
 	eth_dev->data->dev_started = 0;
 }
 
@@ -1782,7 +1796,7 @@ bond_ethdev_link_update(struct rte_eth_dev *bonded_eth_dev,
 
 	if (!bonded_eth_dev->data->dev_started ||
 		internals->active_slave_count == 0) {
-		bonded_eth_dev->data->dev_link.link_status = 0;
+		bonded_eth_dev->data->dev_link.link_status = ETH_LINK_DOWN;
 		return 0;
 	} else {
 		struct rte_eth_dev *slave_eth_dev;
@@ -1793,7 +1807,7 @@ bond_ethdev_link_update(struct rte_eth_dev *bonded_eth_dev,
 
 			(*slave_eth_dev->dev_ops->link_update)(slave_eth_dev,
 					wait_to_complete);
-			if (slave_eth_dev->data->dev_link.link_status == 1) {
+			if (slave_eth_dev->data->dev_link.link_status == ETH_LINK_UP) {
 				link_up = 1;
 				break;
 			}
@@ -1822,7 +1836,6 @@ bond_ethdev_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 		stats->imissed += slave_stats.imissed;
 		stats->ierrors += slave_stats.ierrors;
 		stats->oerrors += slave_stats.oerrors;
-		stats->imcasts += slave_stats.imcasts;
 		stats->rx_nombuf += slave_stats.rx_nombuf;
 
 		for (j = 0; j < RTE_ETHDEV_QUEUE_STAT_CNTRS; j++) {
@@ -1962,7 +1975,7 @@ bond_ethdev_lsc_event_callback(uint8_t port_id, enum rte_eth_event_type type,
 		/* if no active slave ports then set this port to be primary port */
 		if (internals->active_slave_count < 1) {
 			/* If first active slave, then change link status */
-			bonded_eth_dev->data->dev_link.link_status = 1;
+			bonded_eth_dev->data->dev_link.link_status = ETH_LINK_UP;
 			internals->current_primary_port = port_id;
 			lsc_flag = 1;
 
@@ -1990,7 +2003,7 @@ bond_ethdev_lsc_event_callback(uint8_t port_id, enum rte_eth_event_type type,
 		 * link properties */
 		if (internals->active_slave_count < 1) {
 			lsc_flag = 1;
-			bonded_eth_dev->data->dev_link.link_status = 0;
+			bonded_eth_dev->data->dev_link.link_status = ETH_LINK_DOWN;
 
 			link_properties_reset(bonded_eth_dev);
 		}
@@ -2141,25 +2154,25 @@ bond_ethdev_rss_hash_conf_get(struct rte_eth_dev *dev,
 	return 0;
 }
 
-struct eth_dev_ops default_dev_ops = {
-		.dev_start            = bond_ethdev_start,
-		.dev_stop             = bond_ethdev_stop,
-		.dev_close            = bond_ethdev_close,
-		.dev_configure        = bond_ethdev_configure,
-		.dev_infos_get        = bond_ethdev_info,
-		.rx_queue_setup       = bond_ethdev_rx_queue_setup,
-		.tx_queue_setup       = bond_ethdev_tx_queue_setup,
-		.rx_queue_release     = bond_ethdev_rx_queue_release,
-		.tx_queue_release     = bond_ethdev_tx_queue_release,
-		.link_update          = bond_ethdev_link_update,
-		.stats_get            = bond_ethdev_stats_get,
-		.stats_reset          = bond_ethdev_stats_reset,
-		.promiscuous_enable   = bond_ethdev_promiscuous_enable,
-		.promiscuous_disable  = bond_ethdev_promiscuous_disable,
-		.reta_update          = bond_ethdev_rss_reta_update,
-		.reta_query           = bond_ethdev_rss_reta_query,
-		.rss_hash_update      = bond_ethdev_rss_hash_update,
-		.rss_hash_conf_get    = bond_ethdev_rss_hash_conf_get
+const struct eth_dev_ops default_dev_ops = {
+	.dev_start            = bond_ethdev_start,
+	.dev_stop             = bond_ethdev_stop,
+	.dev_close            = bond_ethdev_close,
+	.dev_configure        = bond_ethdev_configure,
+	.dev_infos_get        = bond_ethdev_info,
+	.rx_queue_setup       = bond_ethdev_rx_queue_setup,
+	.tx_queue_setup       = bond_ethdev_tx_queue_setup,
+	.rx_queue_release     = bond_ethdev_rx_queue_release,
+	.tx_queue_release     = bond_ethdev_tx_queue_release,
+	.link_update          = bond_ethdev_link_update,
+	.stats_get            = bond_ethdev_stats_get,
+	.stats_reset          = bond_ethdev_stats_reset,
+	.promiscuous_enable   = bond_ethdev_promiscuous_enable,
+	.promiscuous_disable  = bond_ethdev_promiscuous_disable,
+	.reta_update          = bond_ethdev_rss_reta_update,
+	.reta_query           = bond_ethdev_rss_reta_query,
+	.rss_hash_update      = bond_ethdev_rss_hash_update,
+	.rss_hash_conf_get    = bond_ethdev_rss_hash_conf_get
 };
 
 static int

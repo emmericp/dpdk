@@ -209,11 +209,13 @@ mlx5_mac_addr_remove(struct rte_eth_dev *dev, uint32_t index)
 {
 	struct priv *priv = dev->data->dev_private;
 
+	if (mlx5_is_secondary())
+		return;
+
 	priv_lock(priv);
 	DEBUG("%p: removing MAC address from index %" PRIu32,
 	      (void *)dev, index);
-	/* Last array entry is reserved for broadcast. */
-	if (index >= (RTE_DIM(priv->mac) - 1))
+	if (index >= RTE_DIM(priv->mac))
 		goto end;
 	priv_mac_addr_del(priv, index);
 end:
@@ -242,7 +244,7 @@ hash_rxq_add_mac_flow(struct hash_rxq *hash_rxq, unsigned int mac_index,
 	const uint8_t (*mac)[ETHER_ADDR_LEN] =
 			(const uint8_t (*)[ETHER_ADDR_LEN])
 			priv->mac[mac_index].addr_bytes;
-	FLOW_ATTR_SPEC_ETH(data, hash_rxq_flow_attr(hash_rxq, NULL, 0));
+	FLOW_ATTR_SPEC_ETH(data, priv_flow_attr(priv, NULL, 0, hash_rxq->type));
 	struct ibv_exp_flow_attr *attr = &data->attr;
 	struct ibv_exp_flow_spec_eth *spec = &data->spec;
 	unsigned int vlan_enabled = !!priv->vlan_filter_n;
@@ -257,7 +259,7 @@ hash_rxq_add_mac_flow(struct hash_rxq *hash_rxq, unsigned int mac_index,
 	 * This layout is expected by libibverbs.
 	 */
 	assert(((uint8_t *)attr + sizeof(*attr)) == (uint8_t *)spec);
-	hash_rxq_flow_attr(hash_rxq, attr, sizeof(data));
+	priv_flow_attr(priv, attr, sizeof(data), hash_rxq->type);
 	/* The first specification must be Ethernet. */
 	assert(spec->type == IBV_EXP_FLOW_SPEC_ETH);
 	assert(spec->size == sizeof(*spec));
@@ -475,16 +477,34 @@ mlx5_mac_addr_add(struct rte_eth_dev *dev, struct ether_addr *mac_addr,
 {
 	struct priv *priv = dev->data->dev_private;
 
+	if (mlx5_is_secondary())
+		return;
+
 	(void)vmdq;
 	priv_lock(priv);
 	DEBUG("%p: adding MAC address at index %" PRIu32,
 	      (void *)dev, index);
-	/* Last array entry is reserved for broadcast. */
-	if (index >= (RTE_DIM(priv->mac) - 1))
+	if (index >= RTE_DIM(priv->mac))
 		goto end;
 	priv_mac_addr_add(priv, index,
 			  (const uint8_t (*)[ETHER_ADDR_LEN])
 			  mac_addr->addr_bytes);
 end:
 	priv_unlock(priv);
+}
+
+/**
+ * DPDK callback to set primary MAC address.
+ *
+ * @param dev
+ *   Pointer to Ethernet device structure.
+ * @param mac_addr
+ *   MAC address to register.
+ */
+void
+mlx5_mac_addr_set(struct rte_eth_dev *dev, struct ether_addr *mac_addr)
+{
+	DEBUG("%p: setting primary MAC address", (void *)dev);
+	mlx5_mac_addr_remove(dev, 0);
+	mlx5_mac_addr_add(dev, mac_addr, 0, 0);
 }

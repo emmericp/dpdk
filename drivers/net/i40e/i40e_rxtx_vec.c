@@ -184,41 +184,7 @@ desc_to_olflags_v(__m128i descs[4], struct rte_mbuf **rx_pkts)
 #define desc_to_olflags_v(desc, rx_pkts) do {} while (0)
 #endif
 
-#define PKTLEN_SHIFT     (6)
-#define PKTLEN_MASK      (0x3FFF)
-/* Handling the pkt len field is not aligned with 1byte, so shift is
- * needed to let it align
- */
-static inline void
-desc_pktlen_align(__m128i descs[4])
-{
-	__m128i pktlen0, pktlen1, zero;
-	union {
-		uint16_t e[4];
-		uint64_t dword;
-	} vol;
-
-	/* mask everything except pktlen field*/
-	const __m128i pktlen_msk = _mm_set_epi32(PKTLEN_MASK, PKTLEN_MASK,
-						PKTLEN_MASK, PKTLEN_MASK);
-
-	pktlen0 = _mm_unpackhi_epi32(descs[0], descs[2]);
-	pktlen1 = _mm_unpackhi_epi32(descs[1], descs[3]);
-	pktlen0 = _mm_unpackhi_epi32(pktlen0, pktlen1);
-
-	zero = _mm_xor_si128(pktlen0, pktlen0);
-
-	pktlen0 = _mm_srli_epi32(pktlen0, PKTLEN_SHIFT);
-	pktlen0 = _mm_and_si128(pktlen0, pktlen_msk);
-
-	pktlen0 = _mm_packs_epi32(pktlen0, zero);
-	vol.dword = _mm_cvtsi128_si64(pktlen0);
-	/* let the descriptor byte 15-14 store the pkt len */
-	*((uint16_t *)&descs[0]+7) = vol.e[0];
-	*((uint16_t *)&descs[1]+7) = vol.e[1];
-	*((uint16_t *)&descs[2]+7) = vol.e[2];
-	*((uint16_t *)&descs[3]+7) = vol.e[3];
-}
+#define PKTLEN_SHIFT     10
 
  /*
  * Notice:
@@ -331,17 +297,22 @@ _recv_raw_pkts_vec(struct i40e_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 		_mm_storeu_si128((__m128i *)&rx_pkts[pos+2], mbp2);
 
 		if (split_packet) {
-			rte_prefetch0(&rx_pkts[pos]->cacheline1);
-			rte_prefetch0(&rx_pkts[pos + 1]->cacheline1);
-			rte_prefetch0(&rx_pkts[pos + 2]->cacheline1);
-			rte_prefetch0(&rx_pkts[pos + 3]->cacheline1);
+			rte_mbuf_prefetch_part2(rx_pkts[pos]);
+			rte_mbuf_prefetch_part2(rx_pkts[pos + 1]);
+			rte_mbuf_prefetch_part2(rx_pkts[pos + 2]);
+			rte_mbuf_prefetch_part2(rx_pkts[pos + 3]);
 		}
-
-		/*shift the pktlen field*/
-		desc_pktlen_align(descs);
 
 		/* avoid compiler reorder optimization */
 		rte_compiler_barrier();
+
+		/* pkt 3,4 shift the pktlen field to be 16-bit aligned*/
+		const __m128i len3 = _mm_slli_epi32(descs[3], PKTLEN_SHIFT);
+		const __m128i len2 = _mm_slli_epi32(descs[2], PKTLEN_SHIFT);
+
+		/* merge the now-aligned packet length fields back in */
+		descs[3] = _mm_blend_epi16(descs[3], len3, 0x80);
+		descs[2] = _mm_blend_epi16(descs[2], len2, 0x80);
 
 		/* D.1 pkt 3,4 convert format from desc to pktmbuf */
 		pkt_mb4 = _mm_shuffle_epi8(descs[3], shuf_msk);
@@ -357,6 +328,14 @@ _recv_raw_pkts_vec(struct i40e_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 		/* D.2 pkt 3,4 set in_port/nb_seg and remove crc */
 		pkt_mb4 = _mm_add_epi16(pkt_mb4, crc_adjust);
 		pkt_mb3 = _mm_add_epi16(pkt_mb3, crc_adjust);
+
+		/* pkt 1,2 shift the pktlen field to be 16-bit aligned*/
+		const __m128i len1 = _mm_slli_epi32(descs[1], PKTLEN_SHIFT);
+		const __m128i len0 = _mm_slli_epi32(descs[0], PKTLEN_SHIFT);
+
+		/* merge the now-aligned packet length fields back in */
+		descs[1] = _mm_blend_epi16(descs[1], len1, 0x80);
+		descs[0] = _mm_blend_epi16(descs[0], len0, 0x80);
 
 		/* D.1 pkt 1,2 convert format from desc to pktmbuf */
 		pkt_mb2 = _mm_shuffle_epi8(descs[1], shuf_msk);
@@ -750,6 +729,10 @@ i40e_rx_vec_dev_conf_condition_check(struct rte_eth_dev *dev)
 #ifndef RTE_LIBRTE_IEEE1588
 	struct rte_eth_rxmode *rxmode = &dev->data->dev_conf.rxmode;
 	struct rte_fdir_conf *fconf = &dev->data->dev_conf.fdir_conf;
+
+	/* need SSE4.1 support */
+	if (!rte_cpu_get_flag_enabled(RTE_CPUFLAG_SSE4_1))
+		return -1;
 
 #ifndef RTE_LIBRTE_I40E_RX_OLFLAGS_ENABLE
 	/* whithout rx ol_flags, no VP flag report */

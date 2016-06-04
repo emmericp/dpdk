@@ -58,19 +58,13 @@
 
 #define RTE_PMD_IXGBE_TX_MAX_BURST 32
 #define RTE_PMD_IXGBE_RX_MAX_BURST 32
+#define RTE_IXGBE_TX_MAX_FREE_BUF_SZ 64
 
 #define RTE_IXGBE_DESCS_PER_LOOP    4
-
-#define RTE_MBUF_DATA_DMA_ADDR(mb) \
-	(uint64_t) ((mb)->buf_physaddr + (mb)->data_off)
-
-#define RTE_MBUF_DATA_DMA_ADDR_DEFAULT(mb) \
-	(uint64_t) ((mb)->buf_physaddr + RTE_PKTMBUF_HEADROOM)
 
 #ifdef RTE_IXGBE_INC_VECTOR
 #define RTE_IXGBE_RXQ_REARM_THRESH      32
 #define RTE_IXGBE_MAX_RX_BURST          RTE_IXGBE_RXQ_REARM_THRESH
-#define RTE_IXGBE_TX_MAX_FREE_BUF_SZ    64
 #endif
 
 #define RX_RING_SZ ((IXGBE_MAX_RING_DESC + RTE_IXGBE_DESCS_PER_LOOP - 1) * \
@@ -85,6 +79,11 @@
 #define RTE_IXGBE_REGISTER_POLL_WAIT_10_MS  10
 #define RTE_IXGBE_WAIT_100_US               100
 #define RTE_IXGBE_VMTXSW_REGISTER_COUNT     2
+
+#define IXGBE_PACKET_TYPE_MASK_82599        0X7F
+#define IXGBE_PACKET_TYPE_MASK_X550         0X10FF
+#define IXGBE_PACKET_TYPE_MASK_TUNNEL       0XFF
+#define IXGBE_PACKET_TYPE_TUNNEL_BIT        0X1000
 
 /**
  * Structure associated with each descriptor of the RX ring of a RX queue.
@@ -142,6 +141,7 @@ struct ixgbe_rx_queue {
 	uint16_t            rx_free_thresh; /**< max free RX desc to hold. */
 	uint16_t            queue_id; /**< RX queue index. */
 	uint16_t            reg_idx;  /**< RX queue register index. */
+	uint16_t            pkt_type_mask;  /**< Packet type mask for different NICs. */
 	uint8_t             port_id;  /**< Device port identifier. */
 	uint8_t             crc_len;  /**< 0 if CRC stripped, 4 otherwise. */
 	uint8_t             drop_en;  /**< If not 0, set SRRCTL.Drop_En. */
@@ -163,7 +163,7 @@ enum ixgbe_advctx_num {
 
 /** Offload features */
 union ixgbe_tx_offload {
-	uint64_t data;
+	uint64_t data[2];
 	struct {
 		uint64_t l2_len:7; /**< L2 (MAC) Header Length. */
 		uint64_t l3_len:9; /**< L3 (IP) Header Length. */
@@ -171,6 +171,10 @@ union ixgbe_tx_offload {
 		uint64_t tso_segsz:16; /**< TCP TSO segment size */
 		uint64_t vlan_tci:16;
 		/**< VLAN Tag Control Identifier (CPU order). */
+
+		/* fields for TX offloading of tunnels */
+		uint64_t outer_l3_len:8; /**< Outer L3 (IP) Hdr Length. */
+		uint64_t outer_l2_len:8; /**< Outer L2 (MAC) Hdr Length. */
 	};
 };
 

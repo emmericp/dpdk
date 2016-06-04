@@ -66,8 +66,6 @@ endif
 
 RTE_TARGET ?= $(RTE_ARCH)-$(RTE_MACHINE)-$(RTE_EXEC_ENV)-$(RTE_TOOLCHAIN)
 
-RTE_LIBNAME := dpdk
-
 ifeq ($(BUILDING_RTE_SDK),)
 # if we are building an external app/lib, include internal/rte.extvars.mk that will
 # define RTE_OUTPUT, RTE_SRCDIR, RTE_EXTMK, RTE_SDK_BIN, (etc ...)
@@ -103,6 +101,11 @@ export RTE_ARCH
 export RTE_MACHINE
 export RTE_EXEC_ENV
 export RTE_TOOLCHAIN
+
+# developer build automatically enabled in a git tree
+ifneq ($(wildcard $(RTE_SDK)/.git),)
+RTE_DEVEL_BUILD := y
+endif
 
 # SRCDIR is the current source directory
 ifdef S

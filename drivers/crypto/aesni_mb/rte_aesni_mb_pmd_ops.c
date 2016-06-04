@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2015 Intel Corporation. All rights reserved.
+ *   Copyright(c) 2015-2016 Intel Corporation. All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -37,6 +37,179 @@
 #include <rte_cryptodev_pmd.h>
 
 #include "rte_aesni_mb_pmd_private.h"
+
+
+static const struct rte_cryptodev_capabilities aesni_mb_pmd_capabilities[] = {
+	{	/* MD5 HMAC */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AUTH,
+			{.auth = {
+				.algo = RTE_CRYPTO_AUTH_MD5_HMAC,
+				.block_size = 64,
+				.key_size = {
+					.min = 64,
+					.max = 64,
+					.increment = 0
+				},
+				.digest_size = {
+					.min = 12,
+					.max = 12,
+					.increment = 0
+				},
+				.aad_size = { 0 }
+			}, }
+		}, }
+	},
+	{	/* SHA1 HMAC */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AUTH,
+			{.auth = {
+				.algo = RTE_CRYPTO_AUTH_SHA1_HMAC,
+				.block_size = 64,
+				.key_size = {
+					.min = 64,
+					.max = 64,
+					.increment = 0
+				},
+				.digest_size = {
+					.min = 12,
+					.max = 12,
+					.increment = 0
+				},
+				.aad_size = { 0 }
+			}, }
+		}, }
+	},
+	{	/* SHA224 HMAC */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AUTH,
+			{.auth = {
+				.algo = RTE_CRYPTO_AUTH_SHA224_HMAC,
+				.block_size = 64,
+				.key_size = {
+					.min = 64,
+					.max = 64,
+					.increment = 0
+				},
+				.digest_size = {
+					.min = 14,
+					.max = 14,
+					.increment = 0
+				},
+				.aad_size = { 0 }
+			}, }
+		}, }
+	},
+	{	/* SHA256 HMAC */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AUTH,
+			{.auth = {
+				.algo = RTE_CRYPTO_AUTH_SHA256_HMAC,
+				.block_size = 64,
+				.key_size = {
+					.min = 64,
+					.max = 64,
+					.increment = 0
+				},
+				.digest_size = {
+					.min = 16,
+					.max = 16,
+					.increment = 0
+				},
+				.aad_size = { 0 }
+			}, }
+		}, }
+	},
+	{	/* SHA384 HMAC */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AUTH,
+			{.auth = {
+				.algo = RTE_CRYPTO_AUTH_SHA384_HMAC,
+				.block_size = 128,
+				.key_size = {
+					.min = 128,
+					.max = 128,
+					.increment = 0
+				},
+				.digest_size = {
+					.min = 24,
+					.max = 24,
+					.increment = 0
+				},
+				.aad_size = { 0 }
+			}, }
+		}, }
+	},
+	{	/* SHA512 HMAC */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AUTH,
+			{.auth = {
+				.algo = RTE_CRYPTO_AUTH_SHA512_HMAC,
+				.block_size = 128,
+				.key_size = {
+					.min = 128,
+					.max = 128,
+					.increment = 0
+				},
+				.digest_size = {
+					.min = 32,
+					.max = 32,
+					.increment = 0
+				},
+				.aad_size = { 0 }
+			}, }
+		}, }
+	},
+	{	/* AES XCBC HMAC */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_AUTH,
+			{.auth = {
+				.algo = RTE_CRYPTO_AUTH_AES_XCBC_MAC,
+				.block_size = 16,
+				.key_size = {
+					.min = 16,
+					.max = 16,
+					.increment = 0
+				},
+				.digest_size = {
+					.min = 12,
+					.max = 12,
+					.increment = 0
+				},
+				.aad_size = { 0 }
+			}, }
+		}, }
+	},
+	{	/* AES CBC */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_CIPHER,
+			{.cipher = {
+				.algo = RTE_CRYPTO_CIPHER_AES_CBC,
+				.block_size = 16,
+				.key_size = {
+					.min = 16,
+					.max = 32,
+					.increment = 8
+				},
+				.iv_size = {
+					.min = 16,
+					.max = 16,
+					.increment = 0
+				}
+			}, }
+		}, }
+	},
+	RTE_CRYPTODEV_END_OF_CAPABILITIES_LIST()
+};
+
 
 /** Configure device */
 static int
@@ -76,11 +249,11 @@ aesni_mb_pmd_stats_get(struct rte_cryptodev *dev,
 	for (qp_id = 0; qp_id < dev->data->nb_queue_pairs; qp_id++) {
 		struct aesni_mb_qp *qp = dev->data->queue_pairs[qp_id];
 
-		stats->enqueued_count += qp->qp_stats.enqueued_count;
-		stats->dequeued_count += qp->qp_stats.dequeued_count;
+		stats->enqueued_count += qp->stats.enqueued_count;
+		stats->dequeued_count += qp->stats.dequeued_count;
 
-		stats->enqueue_err_count += qp->qp_stats.enqueue_err_count;
-		stats->dequeue_err_count += qp->qp_stats.dequeue_err_count;
+		stats->enqueue_err_count += qp->stats.enqueue_err_count;
+		stats->dequeue_err_count += qp->stats.dequeue_err_count;
 	}
 }
 
@@ -93,7 +266,7 @@ aesni_mb_pmd_stats_reset(struct rte_cryptodev *dev)
 	for (qp_id = 0; qp_id < dev->data->nb_queue_pairs; qp_id++) {
 		struct aesni_mb_qp *qp = dev->data->queue_pairs[qp_id];
 
-		memset(&qp->qp_stats, 0, sizeof(qp->qp_stats));
+		memset(&qp->stats, 0, sizeof(qp->stats));
 	}
 }
 
@@ -107,8 +280,10 @@ aesni_mb_pmd_info_get(struct rte_cryptodev *dev,
 
 	if (dev_info != NULL) {
 		dev_info->dev_type = dev->dev_type;
+		dev_info->feature_flags = dev->feature_flags;
+		dev_info->capabilities = aesni_mb_pmd_capabilities;
 		dev_info->max_nb_queue_pairs = internals->max_nb_queue_pairs;
-		dev_info->max_nb_sessions = internals->max_nb_sessions;
+		dev_info->sym.max_nb_sessions = internals->max_nb_sessions;
 	}
 }
 
@@ -138,9 +313,9 @@ aesni_mb_pmd_qp_set_unique_name(struct rte_cryptodev *dev,
 	return 0;
 }
 
-/** Create a ring to place process packets on */
+/** Create a ring to place processed operations on */
 static struct rte_ring *
-aesni_mb_pmd_qp_create_processed_pkts_ring(struct aesni_mb_qp *qp,
+aesni_mb_pmd_qp_create_processed_ops_ring(struct aesni_mb_qp *qp,
 		unsigned ring_size, int socket_id)
 {
 	struct rte_ring *r;
@@ -148,12 +323,12 @@ aesni_mb_pmd_qp_create_processed_pkts_ring(struct aesni_mb_qp *qp,
 	r = rte_ring_lookup(qp->name);
 	if (r) {
 		if (r->prod.size >= ring_size) {
-			MB_LOG_INFO("Reusing existing ring %s for processed packets",
+			MB_LOG_INFO("Reusing existing ring %s for processed ops",
 					 qp->name);
 			return r;
 		}
 
-		MB_LOG_ERR("Unable to reuse existing ring %s for processed packets",
+		MB_LOG_ERR("Unable to reuse existing ring %s for processed ops",
 				 qp->name);
 		return NULL;
 	}
@@ -189,14 +364,14 @@ aesni_mb_pmd_qp_setup(struct rte_cryptodev *dev, uint16_t qp_id,
 
 	qp->ops = &job_ops[internals->vector_mode];
 
-	qp->processed_pkts = aesni_mb_pmd_qp_create_processed_pkts_ring(qp,
+	qp->processed_ops = aesni_mb_pmd_qp_create_processed_ops_ring(qp,
 			qp_conf->nb_descriptors, socket_id);
-	if (qp->processed_pkts == NULL)
+	if (qp->processed_ops == NULL)
 		goto qp_setup_cleanup;
 
 	qp->sess_mp = dev->data->session_pool;
 
-	memset(&qp->qp_stats, 0, sizeof(qp->qp_stats));
+	memset(&qp->stats, 0, sizeof(qp->stats));
 
 	/* Initialise multi-buffer manager */
 	(*qp->ops->job.init_mgr)(&qp->mb_mgr);
@@ -243,7 +418,7 @@ aesni_mb_pmd_session_get_size(struct rte_cryptodev *dev __rte_unused)
 /** Configure a aesni multi-buffer session from a crypto xform chain */
 static void *
 aesni_mb_pmd_session_configure(struct rte_cryptodev *dev,
-		struct rte_crypto_xform *xform,	void *sess)
+		struct rte_crypto_sym_xform *xform,	void *sess)
 {
 	struct aesni_mb_private *internals = dev->data->dev_private;
 

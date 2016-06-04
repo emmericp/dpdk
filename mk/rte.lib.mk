@@ -86,8 +86,8 @@ O_TO_A_DO = @set -e; \
 	$(O_TO_A) && \
 	echo $(O_TO_A_CMD) > $(call exe2cmd,$(@))
 
-O_TO_S = $(LD) $(_CPU_LDFLAGS) $(EXTRA_LDFLAGS) -shared $(OBJS-y) $(LDLIBS) \
-	 -Wl,-soname,$(LIB) -o $(LIB)
+O_TO_S = $(LD) -L$(RTE_OUTPUT)/lib $(_CPU_LDFLAGS) $(EXTRA_LDFLAGS) \
+	  -shared $(OBJS-y) $(LDLIBS) -Wl,-soname,$(LIB) -o $(LIB)
 O_TO_S_STR = $(subst ','\'',$(O_TO_S)) #'# fix syntax highlight
 O_TO_S_DISP = $(if $(V),"$(O_TO_S_STR)","  LD $(@)")
 O_TO_S_DO = @set -e; \
@@ -138,14 +138,6 @@ endif
 		$(depfile_newer)),\
 		$(O_TO_S_DO))
 
-ifeq ($(CONFIG_RTE_BUILD_COMBINE_LIBS)$(EXTLIB_BUILD),yn)
-	$(if $(or \
-        $(file_missing),\
-        $(call cmdline_changed,$(O_TO_C_STR)),\
-        $(depfile_missing),\
-        $(depfile_newer)),\
-        $(O_TO_C_DO))
-endif
 else
 $(LIB): $(OBJS-y) $(DEP_$(LIB)) FORCE
 	@[ -d $(dir $@) ] || mkdir -p $(dir $@)
@@ -161,14 +153,6 @@ $(LIB): $(OBJS-y) $(DEP_$(LIB)) FORCE
 	    $(depfile_missing),\
 	    $(depfile_newer)),\
 	    $(O_TO_A_DO))
-ifeq ($(CONFIG_RTE_BUILD_COMBINE_LIBS)$(EXTLIB_BUILD),yn)
-	$(if $(or \
-        $(file_missing),\
-        $(call cmdline_changed,$(O_TO_C_STR)),\
-        $(depfile_missing),\
-        $(depfile_newer)),\
-        $(O_TO_C_DO))
-endif
 endif
 
 #

@@ -89,7 +89,9 @@ SRCS-$(CONFIG_RTE_LIBRTE_HASH) += test_hash_functions.c
 SRCS-$(CONFIG_RTE_LIBRTE_HASH) += test_hash_scaling.c
 
 SRCS-$(CONFIG_RTE_LIBRTE_LPM) += test_lpm.c
+SRCS-$(CONFIG_RTE_LIBRTE_LPM) += test_lpm_perf.c
 SRCS-$(CONFIG_RTE_LIBRTE_LPM) += test_lpm6.c
+SRCS-$(CONFIG_RTE_LIBRTE_LPM) += test_lpm6_perf.c
 
 SRCS-y += test_debug.c
 SRCS-y += test_errno.c
@@ -114,6 +116,7 @@ SRCS-$(CONFIG_RTE_LIBRTE_CMDLINE) += test_cmdline_string.c
 SRCS-$(CONFIG_RTE_LIBRTE_CMDLINE) += test_cmdline_lib.c
 
 ifeq ($(CONFIG_RTE_LIBRTE_SCHED),y)
+LDLIBS += -lrt
 SRCS-y += test_red.c
 SRCS-y += test_sched.c
 endif
@@ -159,6 +162,8 @@ CFLAGS += -O3
 CFLAGS += $(WERROR_FLAGS)
 
 CFLAGS += -D_GNU_SOURCE
+
+LDLIBS += -lm
 
 # Disable VTA for memcpy test
 ifeq ($(CC), gcc)

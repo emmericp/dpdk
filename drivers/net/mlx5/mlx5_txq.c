@@ -144,14 +144,20 @@ error:
 static void
 txq_free_elts(struct txq *txq)
 {
-	unsigned int i;
 	unsigned int elts_n = txq->elts_n;
+	unsigned int elts_head = txq->elts_head;
+	unsigned int elts_tail = txq->elts_tail;
 	struct txq_elt (*elts)[elts_n] = txq->elts;
 	linear_t (*elts_linear)[elts_n] = txq->elts_linear;
 	struct ibv_mr *mr_linear = txq->mr_linear;
 
 	DEBUG("%p: freeing WRs", (void *)txq);
 	txq->elts_n = 0;
+	txq->elts_head = 0;
+	txq->elts_tail = 0;
+	txq->elts_comp = 0;
+	txq->elts_comp_cd = 0;
+	txq->elts_comp_cd_init = 0;
 	txq->elts = NULL;
 	txq->elts_linear = NULL;
 	txq->mr_linear = NULL;
@@ -161,12 +167,17 @@ txq_free_elts(struct txq *txq)
 	rte_free(elts_linear);
 	if (elts == NULL)
 		return;
-	for (i = 0; (i != RTE_DIM(*elts)); ++i) {
-		struct txq_elt *elt = &(*elts)[i];
+	while (elts_tail != elts_head) {
+		struct txq_elt *elt = &(*elts)[elts_tail];
 
-		if (elt->buf == NULL)
-			continue;
+		assert(elt->buf != NULL);
 		rte_pktmbuf_free(elt->buf);
+#ifndef NDEBUG
+		/* Poisoning. */
+		memset(elt, 0x77, sizeof(*elt));
+#endif
+		if (++elts_tail == elts_n)
+			elts_tail = 0;
 	}
 	rte_free(elts);
 }
@@ -187,6 +198,11 @@ txq_cleanup(struct txq *txq)
 
 	DEBUG("cleaning up %p", (void *)txq);
 	txq_free_elts(txq);
+	txq->poll_cnt = NULL;
+#if MLX5_PMD_MAX_INLINE > 0
+	txq->send_pending_inline = NULL;
+#endif
+	txq->send_flush = NULL;
 	if (txq->if_qp != NULL) {
 		assert(txq->priv != NULL);
 		assert(txq->priv->ctx != NULL);
@@ -250,11 +266,11 @@ txq_cleanup(struct txq *txq)
  * @return
  *   0 on success, errno value on failure.
  */
-static int
+int
 txq_setup(struct rte_eth_dev *dev, struct txq *txq, uint16_t desc,
 	  unsigned int socket, const struct rte_eth_txconf *conf)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct priv *priv = mlx5_get_priv(dev);
 	struct txq tmpl = {
 		.priv = priv,
 		.socket = socket
@@ -395,10 +411,13 @@ txq_setup(struct rte_eth_dev *dev, struct txq *txq, uint16_t desc,
 		.intf_scope = IBV_EXP_INTF_GLOBAL,
 		.intf = IBV_EXP_INTF_QP_BURST,
 		.obj = tmpl.qp,
+#ifdef HAVE_VERBS_VLAN_INSERTION
+		.intf_version = 1,
+#endif
 #ifdef HAVE_EXP_QP_BURST_CREATE_ENABLE_MULTI_PACKET_SEND_WR
-		/* Multi packet send WR can only be used outside of VF. */
+		/* Enable multi-packet send if supported. */
 		.family_flags =
-			(!priv->vf ?
+			(priv->mps ?
 			 IBV_EXP_QP_BURST_CREATE_ENABLE_MULTI_PACKET_SEND_WR :
 			 0),
 #endif
@@ -414,6 +433,24 @@ txq_setup(struct rte_eth_dev *dev, struct txq *txq, uint16_t desc,
 	DEBUG("%p: cleaning-up old txq just in case", (void *)txq);
 	txq_cleanup(txq);
 	*txq = tmpl;
+	txq->poll_cnt = txq->if_cq->poll_cnt;
+#if MLX5_PMD_MAX_INLINE > 0
+	txq->send_pending_inline = txq->if_qp->send_pending_inline;
+#ifdef HAVE_VERBS_VLAN_INSERTION
+	txq->send_pending_inline_vlan = txq->if_qp->send_pending_inline_vlan;
+#endif
+#endif
+#if MLX5_PMD_SGE_WR_N > 1
+	txq->send_pending_sg_list = txq->if_qp->send_pending_sg_list;
+#ifdef HAVE_VERBS_VLAN_INSERTION
+	txq->send_pending_sg_list_vlan = txq->if_qp->send_pending_sg_list_vlan;
+#endif
+#endif
+	txq->send_pending = txq->if_qp->send_pending;
+#ifdef HAVE_VERBS_VLAN_INSERTION
+	txq->send_pending_vlan = txq->if_qp->send_pending_vlan;
+#endif
+	txq->send_flush = txq->if_qp->send_flush;
 	DEBUG("%p: txq updated with %p", (void *)txq, (void *)&tmpl);
 	/* Pre-register known mempools. */
 	rte_mempool_walk(txq_mp2mr_iter, txq);
@@ -449,6 +486,9 @@ mlx5_tx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 	struct priv *priv = dev->data->dev_private;
 	struct txq *txq = (*priv->txqs)[idx];
 	int ret;
+
+	if (mlx5_is_secondary())
+		return -E_RTE_SECONDARY;
 
 	priv_lock(priv);
 	DEBUG("%p: configuring queue %u for %u descriptors",
@@ -505,6 +545,9 @@ mlx5_tx_queue_release(void *dpdk_txq)
 	struct priv *priv;
 	unsigned int i;
 
+	if (mlx5_is_secondary())
+		return;
+
 	if (txq == NULL)
 		return;
 	priv = txq->priv;
@@ -519,4 +562,44 @@ mlx5_tx_queue_release(void *dpdk_txq)
 	txq_cleanup(txq);
 	rte_free(txq);
 	priv_unlock(priv);
+}
+
+/**
+ * DPDK callback for TX in secondary processes.
+ *
+ * This function configures all queues from primary process information
+ * if necessary before reverting to the normal TX burst callback.
+ *
+ * @param dpdk_txq
+ *   Generic pointer to TX queue structure.
+ * @param[in] pkts
+ *   Packets to transmit.
+ * @param pkts_n
+ *   Number of packets in array.
+ *
+ * @return
+ *   Number of packets successfully transmitted (<= pkts_n).
+ */
+uint16_t
+mlx5_tx_burst_secondary_setup(void *dpdk_txq, struct rte_mbuf **pkts,
+			      uint16_t pkts_n)
+{
+	struct txq *txq = dpdk_txq;
+	struct priv *priv = mlx5_secondary_data_setup(txq->priv);
+	struct priv *primary_priv;
+	unsigned int index;
+
+	if (priv == NULL)
+		return 0;
+	primary_priv =
+		mlx5_secondary_data[priv->dev->data->port_id].primary_priv;
+	/* Look for queue index in both private structures. */
+	for (index = 0; index != priv->txqs_n; ++index)
+		if (((*primary_priv->txqs)[index] == txq) ||
+		    ((*priv->txqs)[index] == txq))
+			break;
+	if (index == priv->txqs_n)
+		return 0;
+	txq = (*priv->txqs)[index];
+	return priv->dev->tx_pkt_burst(txq, pkts, pkts_n);
 }

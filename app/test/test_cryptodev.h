@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2015 Intel Corporation. All rights reserved.
+ *   Copyright(c) 2015-2016 Intel Corporation. All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
  *   modification, are permitted provided that the following conditions
@@ -47,8 +47,9 @@
 #define DEFAULT_NUM_XFORMS              (2)
 #define NUM_MBUFS                       (8191)
 #define MBUF_CACHE_SIZE                 (250)
-#define MBUF_SIZE   (2048 + DIGEST_BYTE_LENGTH_SHA512 + \
-				sizeof(struct rte_mbuf) + RTE_PKTMBUF_HEADROOM)
+#define MBUF_DATAPAYLOAD_SIZE		(2048 + DIGEST_BYTE_LENGTH_SHA512)
+#define MBUF_SIZE			(sizeof(struct rte_mbuf) + \
+		RTE_PKTMBUF_HEADROOM + MBUF_DATAPAYLOAD_SIZE)
 
 #define BYTE_LENGTH(x)				(x/8)
 /* HASH DIGEST LENGTHS */
@@ -59,6 +60,7 @@
 #define DIGEST_BYTE_LENGTH_SHA384		(BYTE_LENGTH(384))
 #define DIGEST_BYTE_LENGTH_SHA512		(BYTE_LENGTH(512))
 #define DIGEST_BYTE_LENGTH_AES_XCBC		(BYTE_LENGTH(96))
+#define DIGEST_BYTE_LENGTH_SNOW3G_UIA2		(BYTE_LENGTH(32))
 #define AES_XCBC_MAC_KEY_SZ			(16)
 
 #define TRUNCATED_DIGEST_BYTE_LENGTH_SHA1		(12)

@@ -68,6 +68,25 @@
 #include "mlx5_defs.h"
 
 /**
+ * Retrieve integer value from environment variable.
+ *
+ * @param[in] name
+ *   Environment variable name.
+ *
+ * @return
+ *   Integer value, 0 if the variable is not set.
+ */
+int
+mlx5_getenv_int(const char *name)
+{
+	const char *val = getenv(name);
+
+	if (val == NULL)
+		return 0;
+	return atoi(val);
+}
+
+/**
  * DPDK callback to close the device.
  *
  * Destroy all queues and objects, free memory.
@@ -78,7 +97,7 @@
 static void
 mlx5_dev_close(struct rte_eth_dev *dev)
 {
-	struct priv *priv = dev->data->dev_private;
+	struct priv *priv = mlx5_get_priv(dev);
 	void *tmp;
 	unsigned int i;
 
@@ -88,10 +107,14 @@ mlx5_dev_close(struct rte_eth_dev *dev)
 	      ((priv->ctx != NULL) ? priv->ctx->device->name : ""));
 	/* In case mlx5_dev_stop() has not been called. */
 	priv_dev_interrupt_handler_uninstall(priv, dev);
-	priv_allmulticast_disable(priv);
-	priv_promiscuous_disable(priv);
+	priv_special_flow_disable_all(priv);
 	priv_mac_addrs_disable(priv);
 	priv_destroy_hash_rxqs(priv);
+
+	/* Remove flow director elements. */
+	priv_fdir_disable(priv);
+	priv_fdir_delete_filters_list(priv);
+
 	/* Prevent crashes when queues are still in use. */
 	dev->rx_pkt_burst = removed_rx_burst;
 	dev->tx_pkt_burst = removed_tx_burst;
@@ -144,6 +167,8 @@ static const struct eth_dev_ops mlx5_dev_ops = {
 	.dev_configure = mlx5_dev_configure,
 	.dev_start = mlx5_dev_start,
 	.dev_stop = mlx5_dev_stop,
+	.dev_set_link_down = mlx5_set_link_down,
+	.dev_set_link_up = mlx5_set_link_up,
 	.dev_close = mlx5_dev_close,
 	.promiscuous_enable = mlx5_promiscuous_enable,
 	.promiscuous_disable = mlx5_promiscuous_disable,
@@ -153,6 +178,7 @@ static const struct eth_dev_ops mlx5_dev_ops = {
 	.stats_get = mlx5_stats_get,
 	.stats_reset = mlx5_stats_reset,
 	.dev_infos_get = mlx5_dev_infos_get,
+	.dev_supported_ptypes_get = mlx5_dev_supported_ptypes_get,
 	.vlan_filter_set = mlx5_vlan_filter_set,
 	.rx_queue_setup = mlx5_rx_queue_setup,
 	.tx_queue_setup = mlx5_tx_queue_setup,
@@ -162,11 +188,19 @@ static const struct eth_dev_ops mlx5_dev_ops = {
 	.flow_ctrl_set = mlx5_dev_set_flow_ctrl,
 	.mac_addr_remove = mlx5_mac_addr_remove,
 	.mac_addr_add = mlx5_mac_addr_add,
+	.mac_addr_set = mlx5_mac_addr_set,
 	.mtu_set = mlx5_dev_set_mtu,
+#ifdef HAVE_EXP_DEVICE_ATTR_VLAN_OFFLOADS
+	.vlan_strip_queue_set = mlx5_vlan_strip_queue_set,
+	.vlan_offload_set = mlx5_vlan_offload_set,
+#endif /* HAVE_EXP_DEVICE_ATTR_VLAN_OFFLOADS */
 	.reta_update = mlx5_dev_rss_reta_update,
 	.reta_query = mlx5_dev_rss_reta_query,
 	.rss_hash_update = mlx5_rss_hash_update,
 	.rss_hash_conf_get = mlx5_rss_hash_conf_get,
+#ifdef MLX5_FDIR_SUPPORT
+	.filter_ctrl = mlx5_dev_filter_ctrl,
+#endif /* MLX5_FDIR_SUPPORT */
 };
 
 static struct {
@@ -227,6 +261,7 @@ mlx5_pci_devinit(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 	struct ibv_context *attr_ctx = NULL;
 	struct ibv_device_attr device_attr;
 	unsigned int vf;
+	unsigned int mps;
 	int idx;
 	int i;
 
@@ -272,8 +307,14 @@ mlx5_pci_devinit(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 		       PCI_DEVICE_ID_MELLANOX_CONNECTX4VF) ||
 		      (pci_dev->id.device_id ==
 		       PCI_DEVICE_ID_MELLANOX_CONNECTX4LXVF));
-		INFO("PCI information matches, using device \"%s\" (VF: %s)",
-		     list[i]->name, (vf ? "true" : "false"));
+		/* Multi-packet send is only supported by ConnectX-4 Lx PF. */
+		mps = (pci_dev->id.device_id ==
+		       PCI_DEVICE_ID_MELLANOX_CONNECTX4LX);
+		INFO("PCI information matches, using device \"%s\" (VF: %s,"
+		     " MPS: %s)",
+		     list[i]->name,
+		     vf ? "true" : "false",
+		     mps ? "true" : "false");
 		attr_ctx = ibv_open_device(list[i]);
 		err = errno;
 		break;
@@ -314,7 +355,14 @@ mlx5_pci_devinit(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 #ifdef HAVE_EXP_QUERY_DEVICE
 		exp_device_attr.comp_mask =
 			IBV_EXP_DEVICE_ATTR_EXP_CAP_FLAGS |
-			IBV_EXP_DEVICE_ATTR_RX_HASH;
+			IBV_EXP_DEVICE_ATTR_RX_HASH |
+#ifdef HAVE_EXP_DEVICE_ATTR_VLAN_OFFLOADS
+			IBV_EXP_DEVICE_ATTR_VLAN_OFFLOADS |
+#endif /* HAVE_EXP_DEVICE_ATTR_VLAN_OFFLOADS */
+#ifdef HAVE_VERBS_RX_END_PADDING
+			IBV_EXP_DEVICE_ATTR_RX_PAD_END_ALIGN |
+#endif /* HAVE_VERBS_RX_END_PADDING */
+			0;
 #endif /* HAVE_EXP_QUERY_DEVICE */
 
 		DEBUG("using port %u (%08" PRIx32 ")", port, test);
@@ -329,6 +377,13 @@ mlx5_pci_devinit(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 			ERROR("port query failed: %s", strerror(err));
 			goto port_error;
 		}
+
+		if (port_attr.link_layer != IBV_LINK_LAYER_ETHERNET) {
+			ERROR("port %d is not configured in Ethernet mode",
+			      port);
+			goto port_error;
+		}
+
 		if (port_attr.state != IBV_PORT_ACTIVE)
 			DEBUG("port %d is not active: \"%s\" (%d)",
 			      port, ibv_port_state_str(port_attr.state),
@@ -385,12 +440,32 @@ mlx5_pci_devinit(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 			priv->ind_table_max_size = RSS_INDIRECTION_TABLE_SIZE;
 		DEBUG("maximum RX indirection table size is %u",
 		      priv->ind_table_max_size);
+#ifdef HAVE_EXP_DEVICE_ATTR_VLAN_OFFLOADS
+		priv->hw_vlan_strip = !!(exp_device_attr.wq_vlan_offloads_cap &
+					 IBV_EXP_RECEIVE_WQ_CVLAN_STRIP);
+#endif /* HAVE_EXP_DEVICE_ATTR_VLAN_OFFLOADS */
+		DEBUG("VLAN stripping is %ssupported",
+		      (priv->hw_vlan_strip ? "" : "not "));
+
+#ifdef HAVE_VERBS_FCS
+		priv->hw_fcs_strip = !!(exp_device_attr.exp_device_cap_flags &
+					IBV_EXP_DEVICE_SCATTER_FCS);
+#endif /* HAVE_VERBS_FCS */
+		DEBUG("FCS stripping configuration is %ssupported",
+		      (priv->hw_fcs_strip ? "" : "not "));
+
+#ifdef HAVE_VERBS_RX_END_PADDING
+		priv->hw_padding = !!exp_device_attr.rx_pad_end_addr_align;
+#endif /* HAVE_VERBS_RX_END_PADDING */
+		DEBUG("hardware RX end alignment padding is %ssupported",
+		      (priv->hw_padding ? "" : "not "));
 
 #else /* HAVE_EXP_QUERY_DEVICE */
 		priv->ind_table_max_size = RSS_INDIRECTION_TABLE_SIZE;
 #endif /* HAVE_EXP_QUERY_DEVICE */
 
 		priv->vf = vf;
+		priv->mps = mps;
 		/* Allocate and register default RSS hash keys. */
 		priv->rss_conf = rte_calloc(__func__, hash_rxq_init_n,
 					    sizeof((*priv->rss_conf)[0]), 0);
@@ -415,13 +490,14 @@ mlx5_pci_devinit(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 		     mac.addr_bytes[0], mac.addr_bytes[1],
 		     mac.addr_bytes[2], mac.addr_bytes[3],
 		     mac.addr_bytes[4], mac.addr_bytes[5]);
-		/* Register MAC and broadcast addresses. */
+		/* Register MAC address. */
 		claim_zero(priv_mac_addr_add(priv, 0,
 					     (const uint8_t (*)[ETHER_ADDR_LEN])
 					     mac.addr_bytes));
-		claim_zero(priv_mac_addr_add(priv, (RTE_DIM(priv->mac) - 1),
-					     &(const uint8_t [ETHER_ADDR_LEN])
-					     { "\xff\xff\xff\xff\xff\xff" }));
+		/* Initialize FD filters list. */
+		err = fdir_init_filters_list(priv);
+		if (err)
+			goto port_error;
 #ifndef NDEBUG
 		{
 			char ifname[IF_NAMESIZE];
@@ -451,18 +527,44 @@ mlx5_pci_devinit(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 			goto port_error;
 		}
 
-		eth_dev->data->dev_private = priv;
+		/* Secondary processes have to use local storage for their
+		 * private data as well as a copy of eth_dev->data, but this
+		 * pointer must not be modified before burst functions are
+		 * actually called. */
+		if (mlx5_is_secondary()) {
+			struct mlx5_secondary_data *sd =
+				&mlx5_secondary_data[eth_dev->data->port_id];
+			sd->primary_priv = eth_dev->data->dev_private;
+			if (sd->primary_priv == NULL) {
+				ERROR("no private data for port %u",
+						eth_dev->data->port_id);
+				err = EINVAL;
+				goto port_error;
+			}
+			sd->shared_dev_data = eth_dev->data;
+			rte_spinlock_init(&sd->lock);
+			memcpy(sd->data.name, sd->shared_dev_data->name,
+				   sizeof(sd->data.name));
+			sd->data.dev_private = priv;
+			sd->data.rx_mbuf_alloc_failed = 0;
+			sd->data.mtu = ETHER_MTU;
+			sd->data.port_id = sd->shared_dev_data->port_id;
+			sd->data.mac_addrs = priv->mac;
+			eth_dev->tx_pkt_burst = mlx5_tx_burst_secondary_setup;
+			eth_dev->rx_pkt_burst = mlx5_rx_burst_secondary_setup;
+		} else {
+			eth_dev->data->dev_private = priv;
+			eth_dev->data->rx_mbuf_alloc_failed = 0;
+			eth_dev->data->mtu = ETHER_MTU;
+			eth_dev->data->mac_addrs = priv->mac;
+		}
+
 		eth_dev->pci_dev = pci_dev;
-
 		rte_eth_copy_pci_info(eth_dev, pci_dev);
-
 		eth_dev->driver = &mlx5_driver;
-		eth_dev->data->rx_mbuf_alloc_failed = 0;
-		eth_dev->data->mtu = ETHER_MTU;
-
 		priv->dev = eth_dev;
 		eth_dev->dev_ops = &mlx5_dev_ops;
-		eth_dev->data->mac_addrs = priv->mac;
+
 		TAILQ_INIT(&eth_dev->link_intr_cbs);
 
 		/* Bring Ethernet device up. */
@@ -471,8 +573,10 @@ mlx5_pci_devinit(struct rte_pci_driver *pci_drv, struct rte_pci_device *pci_dev)
 		continue;
 
 port_error:
-		rte_free(priv->rss_conf);
-		rte_free(priv);
+		if (priv) {
+			rte_free(priv->rss_conf);
+			rte_free(priv);
+		}
 		if (pd)
 			claim_zero(ibv_dealloc_pd(pd));
 		if (ctx)

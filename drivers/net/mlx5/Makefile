@@ -31,12 +31,6 @@
 
 include $(RTE_SDK)/mk/rte.vars.mk
 
-ifeq ($(CONFIG_RTE_BUILD_COMBINE_LIBS)$(CONFIG_RTE_BUILD_SHARED_LIB),yy)
-all:
-	@echo 'MLX5: Not supported in a combined shared library'
-	@false
-endif
-
 # Library name.
 LIB = librte_pmd_mlx5.a
 
@@ -52,6 +46,7 @@ SRCS-$(CONFIG_RTE_LIBRTE_MLX5_PMD) += mlx5_rxmode.c
 SRCS-$(CONFIG_RTE_LIBRTE_MLX5_PMD) += mlx5_vlan.c
 SRCS-$(CONFIG_RTE_LIBRTE_MLX5_PMD) += mlx5_stats.c
 SRCS-$(CONFIG_RTE_LIBRTE_MLX5_PMD) += mlx5_rss.c
+SRCS-$(CONFIG_RTE_LIBRTE_MLX5_PMD) += mlx5_fdir.c
 
 # Dependencies.
 DEPDIRS-$(CONFIG_RTE_LIBRTE_MLX5_PMD) += lib/librte_ether
@@ -66,6 +61,7 @@ CFLAGS += -g
 CFLAGS += -I.
 CFLAGS += -D_XOPEN_SOURCE=600
 CFLAGS += $(WERROR_FLAGS)
+CFLAGS += -Wno-strict-prototypes
 LDLIBS += -libverbs
 
 # A few warnings cannot be avoided in external headers.
@@ -125,8 +121,33 @@ mlx5_autoconf.h: $(RTE_SDK)/scripts/auto-config-h.sh
 		infiniband/verbs.h \
 		enum IBV_EXP_QP_BURST_CREATE_ENABLE_MULTI_PACKET_SEND_WR \
 		$(AUTOCONF_OUTPUT)
+	$Q sh -- '$<' '$@' \
+		HAVE_EXP_DEVICE_ATTR_VLAN_OFFLOADS \
+		infiniband/verbs.h \
+		enum IBV_EXP_DEVICE_ATTR_VLAN_OFFLOADS \
+		$(AUTOCONF_OUTPUT)
+	$Q sh -- '$<' '$@' \
+		HAVE_EXP_CQ_RX_TCP_PACKET \
+		infiniband/verbs.h \
+		enum IBV_EXP_CQ_RX_TCP_PACKET \
+		$(AUTOCONF_OUTPUT)
+	$Q sh -- '$<' '$@' \
+		HAVE_VERBS_FCS \
+		infiniband/verbs.h \
+		enum IBV_EXP_CREATE_WQ_FLAG_SCATTER_FCS \
+		$(AUTOCONF_OUTPUT)
+	$Q sh -- '$<' '$@' \
+		HAVE_VERBS_RX_END_PADDING \
+		infiniband/verbs.h \
+		enum IBV_EXP_CREATE_WQ_FLAG_RX_END_PADDING \
+		$(AUTOCONF_OUTPUT)
+	$Q sh -- '$<' '$@' \
+		HAVE_VERBS_VLAN_INSERTION \
+		infiniband/verbs.h \
+		enum IBV_EXP_RECEIVE_WQ_CVLAN_INSERTION \
+		$(AUTOCONF_OUTPUT)
 
-mlx5.o: mlx5_autoconf.h
+$(SRCS-$(CONFIG_RTE_LIBRTE_MLX5_PMD):.c=.o): mlx5_autoconf.h
 
 clean_mlx5: FORCE
 	$Q rm -f -- mlx5_autoconf.h
