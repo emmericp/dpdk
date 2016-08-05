@@ -54,7 +54,6 @@
 #include "rte_virtio_net.h"
 #include "vhost-net.h"
 #include "virtio-net-cdev.h"
-#include "virtio-net.h"
 #include "eventfd_copy.h"
 
 /* Line size for reading maps file. */
@@ -263,7 +262,7 @@ host_memory_map(pid_t pid, uint64_t addr,
 }
 
 int
-cuse_set_mem_table(struct vhost_device_ctx ctx,
+cuse_set_mem_table(struct vhost_cuse_device_ctx ctx,
 	const struct vhost_memory *mem_regions_addr, uint32_t nregions)
 {
 	uint64_t size = offsetof(struct vhost_memory, regions);
@@ -274,7 +273,7 @@ cuse_set_mem_table(struct vhost_device_ctx ctx,
 	uint64_t base_address = 0, mapped_address, mapped_size;
 	struct virtio_net *dev;
 
-	dev = get_device(ctx);
+	dev = get_device(ctx.vid);
 	if (dev == NULL)
 		return -1;
 
@@ -289,8 +288,8 @@ cuse_set_mem_table(struct vhost_device_ctx ctx,
 		sizeof(struct virtio_memory_regions) * nregions);
 	if (dev->mem == NULL) {
 		RTE_LOG(ERR, VHOST_CONFIG,
-			"(%"PRIu64") Failed to allocate memory for dev->mem\n",
-			dev->device_fh);
+			"(%d) failed to allocate memory for dev->mem\n",
+			dev->vid);
 		return -1;
 	}
 
@@ -379,7 +378,7 @@ cuse_set_mem_table(struct vhost_device_ctx ctx,
  * save it in the device structure.
  */
 static int
-get_ifname(struct vhost_device_ctx ctx, struct virtio_net *dev, int tap_fd, int pid)
+get_ifname(int vid, int tap_fd, int pid)
 {
 	int fd_tap;
 	struct ifreq ifr;
@@ -393,33 +392,32 @@ get_ifname(struct vhost_device_ctx ctx, struct virtio_net *dev, int tap_fd, int 
 	ret = ioctl(fd_tap, TUNGETIFF, &ifr);
 
 	if (close(fd_tap) < 0)
-		RTE_LOG(ERR, VHOST_CONFIG,
-			"(%"PRIu64") fd close failed\n",
-			dev->device_fh);
+		RTE_LOG(ERR, VHOST_CONFIG, "(%d) fd close failed\n", vid);
 
 	if (ret >= 0) {
 		ifr_size = strnlen(ifr.ifr_name, sizeof(ifr.ifr_name));
-		vhost_set_ifname(ctx, ifr.ifr_name, ifr_size);
+		vhost_set_ifname(vid, ifr.ifr_name, ifr_size);
 	} else
 		RTE_LOG(ERR, VHOST_CONFIG,
-			"(%"PRIu64") TUNGETIFF ioctl failed\n",
-			dev->device_fh);
+			"(%d) TUNGETIFF ioctl failed\n", vid);
 
 	return 0;
 }
 
-int cuse_set_backend(struct vhost_device_ctx ctx, struct vhost_vring_file *file)
+int
+cuse_set_backend(struct vhost_cuse_device_ctx ctx,
+		 struct vhost_vring_file *file)
 {
 	struct virtio_net *dev;
 
-	dev = get_device(ctx);
+	dev = get_device(ctx.vid);
 	if (dev == NULL)
 		return -1;
 
 	if (!(dev->flags & VIRTIO_DEV_RUNNING) && file->fd != VIRTIO_DEV_STOPPED)
-		get_ifname(ctx, dev, file->fd, ctx.pid);
+		get_ifname(ctx.vid, file->fd, ctx.pid);
 
-	return vhost_set_backend(ctx, file);
+	return vhost_set_backend(ctx.vid, file);
 }
 
 void

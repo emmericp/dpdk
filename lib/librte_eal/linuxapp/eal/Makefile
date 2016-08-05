@@ -37,16 +37,19 @@ ARCH_DIR ?= $(RTE_ARCH)
 EXPORT_MAP := rte_eal_version.map
 VPATH += $(RTE_SDK)/lib/librte_eal/common/arch/$(ARCH_DIR)
 
-LIBABIVER := 2
+LIBABIVER := 3
 
 VPATH += $(RTE_SDK)/lib/librte_eal/common
 
 CFLAGS += -I$(SRCDIR)/include
 CFLAGS += -I$(RTE_SDK)/lib/librte_eal/common
 CFLAGS += -I$(RTE_SDK)/lib/librte_eal/common/include
+ifeq ($(CONFIG_RTE_LIBRTE_IVSHMEM),y)
+# workaround for circular dependency eal -> ivshmem -> ring/mempool -> eal
 CFLAGS += -I$(RTE_SDK)/lib/librte_ring
 CFLAGS += -I$(RTE_SDK)/lib/librte_mempool
 CFLAGS += -I$(RTE_SDK)/lib/librte_ivshmem
+endif
 CFLAGS += $(WERROR_FLAGS) -O3
 
 LDLIBS += -ldl
@@ -63,10 +66,11 @@ SRCS-$(CONFIG_RTE_EXEC_ENV_LINUXAPP) += eal_xen_memory.c
 endif
 SRCS-$(CONFIG_RTE_EXEC_ENV_LINUXAPP) += eal_thread.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_LINUXAPP) += eal_log.c
+SRCS-$(CONFIG_RTE_EXEC_ENV_LINUXAPP) += eal_vfio.c
+SRCS-$(CONFIG_RTE_EXEC_ENV_LINUXAPP) += eal_vfio_mp_sync.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_LINUXAPP) += eal_pci.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_LINUXAPP) += eal_pci_uio.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_LINUXAPP) += eal_pci_vfio.c
-SRCS-$(CONFIG_RTE_EXEC_ENV_LINUXAPP) += eal_pci_vfio_mp_sync.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_LINUXAPP) += eal_debug.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_LINUXAPP) += eal_lcore.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_LINUXAPP) += eal_timer.c
@@ -102,12 +106,13 @@ SRCS-$(CONFIG_RTE_EXEC_ENV_LINUXAPP) += rte_keepalive.c
 
 # from arch dir
 SRCS-$(CONFIG_RTE_EXEC_ENV_LINUXAPP) += rte_cpuflags.c
+SRCS-$(CONFIG_RTE_ARCH_X86) += rte_spinlock.c
 
 CFLAGS_eal_common_cpuflags.o := $(CPUFLAGS_LIST)
 
 CFLAGS_eal.o := -D_GNU_SOURCE
 CFLAGS_eal_interrupts.o := -D_GNU_SOURCE
-CFLAGS_eal_pci_vfio_mp_sync.o := -D_GNU_SOURCE
+CFLAGS_eal_vfio_mp_sync.o := -D_GNU_SOURCE
 CFLAGS_eal_timer.o := -D_GNU_SOURCE
 CFLAGS_eal_lcore.o := -D_GNU_SOURCE
 CFLAGS_eal_thread.o := -D_GNU_SOURCE

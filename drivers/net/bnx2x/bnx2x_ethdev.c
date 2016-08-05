@@ -16,16 +16,65 @@
 /*
  * The set of PCI devices this driver supports
  */
+#define BROADCOM_PCI_VENDOR_ID 0x14E4
 static struct rte_pci_id pci_id_bnx2x_map[] = {
-#define RTE_PCI_DEV_ID_DECL_BNX2X(vend, dev) {RTE_PCI_DEVICE(vend, dev)},
-#include "rte_pci_dev_ids.h"
+	{ RTE_PCI_DEVICE(BROADCOM_PCI_VENDOR_ID, CHIP_NUM_57800) },
+	{ RTE_PCI_DEVICE(BROADCOM_PCI_VENDOR_ID, CHIP_NUM_57711) },
+	{ RTE_PCI_DEVICE(BROADCOM_PCI_VENDOR_ID, CHIP_NUM_57810) },
+	{ RTE_PCI_DEVICE(BROADCOM_PCI_VENDOR_ID, CHIP_NUM_57811) },
+	{ RTE_PCI_DEVICE(BROADCOM_PCI_VENDOR_ID, CHIP_NUM_57840_OBS) },
+	{ RTE_PCI_DEVICE(BROADCOM_PCI_VENDOR_ID, CHIP_NUM_57840_4_10) },
+	{ RTE_PCI_DEVICE(BROADCOM_PCI_VENDOR_ID, CHIP_NUM_57840_2_20) },
+#ifdef RTE_LIBRTE_BNX2X_MF_SUPPORT
+	{ RTE_PCI_DEVICE(BROADCOM_PCI_VENDOR_ID, CHIP_NUM_57810_MF) },
+	{ RTE_PCI_DEVICE(BROADCOM_PCI_VENDOR_ID, CHIP_NUM_57811_MF) },
+	{ RTE_PCI_DEVICE(BROADCOM_PCI_VENDOR_ID, CHIP_NUM_57840_MF) },
+#endif
 	{ .vendor_id = 0, }
 };
 
 static struct rte_pci_id pci_id_bnx2xvf_map[] = {
-#define RTE_PCI_DEV_ID_DECL_BNX2XVF(vend, dev) {RTE_PCI_DEVICE(vend, dev)},
-#include "rte_pci_dev_ids.h"
+	{ RTE_PCI_DEVICE(BROADCOM_PCI_VENDOR_ID, CHIP_NUM_57800_VF) },
+	{ RTE_PCI_DEVICE(BROADCOM_PCI_VENDOR_ID, CHIP_NUM_57810_VF) },
+	{ RTE_PCI_DEVICE(BROADCOM_PCI_VENDOR_ID, CHIP_NUM_57811_VF) },
+	{ RTE_PCI_DEVICE(BROADCOM_PCI_VENDOR_ID, CHIP_NUM_57840_VF) },
 	{ .vendor_id = 0, }
+};
+
+struct rte_bnx2x_xstats_name_off {
+	char name[RTE_ETH_XSTATS_NAME_SIZE];
+	uint32_t offset_hi;
+	uint32_t offset_lo;
+};
+
+static const struct rte_bnx2x_xstats_name_off bnx2x_xstats_strings[] = {
+	{"rx_buffer_drops",
+		offsetof(struct bnx2x_eth_stats, brb_drop_hi),
+		offsetof(struct bnx2x_eth_stats, brb_drop_lo)},
+	{"rx_buffer_truncates",
+		offsetof(struct bnx2x_eth_stats, brb_truncate_hi),
+		offsetof(struct bnx2x_eth_stats, brb_truncate_lo)},
+	{"rx_buffer_truncate_discard",
+		offsetof(struct bnx2x_eth_stats, brb_truncate_discard),
+		offsetof(struct bnx2x_eth_stats, brb_truncate_discard)},
+	{"mac_filter_discard",
+		offsetof(struct bnx2x_eth_stats, mac_filter_discard),
+		offsetof(struct bnx2x_eth_stats, mac_filter_discard)},
+	{"no_match_vlan_tag_discard",
+		offsetof(struct bnx2x_eth_stats, mf_tag_discard),
+		offsetof(struct bnx2x_eth_stats, mf_tag_discard)},
+	{"tx_pause",
+		offsetof(struct bnx2x_eth_stats, pause_frames_sent_hi),
+		offsetof(struct bnx2x_eth_stats, pause_frames_sent_lo)},
+	{"rx_pause",
+		offsetof(struct bnx2x_eth_stats, pause_frames_received_hi),
+		offsetof(struct bnx2x_eth_stats, pause_frames_received_lo)},
+	{"tx_priority_flow_control",
+		offsetof(struct bnx2x_eth_stats, pfc_frames_sent_hi),
+		offsetof(struct bnx2x_eth_stats, pfc_frames_sent_lo)},
+	{"rx_priority_flow_control",
+		offsetof(struct bnx2x_eth_stats, pfc_frames_received_hi),
+		offsetof(struct bnx2x_eth_stats, pfc_frames_received_lo)}
 };
 
 static void
@@ -58,8 +107,8 @@ bnx2x_interrupt_action(struct rte_eth_dev *dev)
 
 	PMD_DEBUG_PERIODIC_LOG(INFO, "Interrupt handled");
 
-	if (bnx2x_intr_legacy(sc, 0))
-		DELAY_MS(250);
+	bnx2x_intr_legacy(sc, 0);
+
 	if (sc->periodic_flags & PERIODIC_GO)
 		bnx2x_periodic_callout(sc);
 	link_status = REG_RD(sc, sc->link_params.shmem_base +
@@ -276,6 +325,9 @@ static void
 bnx2x_dev_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 {
 	struct bnx2x_softc *sc = dev->data->dev_private;
+	uint32_t brb_truncate_discard;
+	uint64_t brb_drops;
+	uint64_t brb_truncates;
 
 	PMD_INIT_FUNC_TRACE();
 
@@ -316,6 +368,65 @@ bnx2x_dev_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 	stats->rx_nombuf =
 		HILO_U64(sc->eth_stats.no_buff_discard_hi,
 				sc->eth_stats.no_buff_discard_lo);
+
+	brb_drops =
+		HILO_U64(sc->eth_stats.brb_drop_hi,
+			 sc->eth_stats.brb_drop_lo);
+
+	brb_truncates =
+		HILO_U64(sc->eth_stats.brb_truncate_hi,
+			 sc->eth_stats.brb_truncate_lo);
+
+	brb_truncate_discard = sc->eth_stats.brb_truncate_discard;
+
+	stats->imissed = brb_drops + brb_truncates +
+			 brb_truncate_discard + stats->rx_nombuf;
+}
+
+static int
+bnx2x_get_xstats_names(__rte_unused struct rte_eth_dev *dev,
+		       struct rte_eth_xstat_name *xstats_names,
+		       __rte_unused unsigned limit)
+{
+	unsigned int i, stat_cnt = RTE_DIM(bnx2x_xstats_strings);
+
+	if (xstats_names != NULL)
+		for (i = 0; i < stat_cnt; i++)
+			snprintf(xstats_names[i].name,
+				sizeof(xstats_names[i].name),
+				"%s",
+				bnx2x_xstats_strings[i].name);
+
+	return stat_cnt;
+}
+
+static int
+bnx2x_dev_xstats_get(struct rte_eth_dev *dev, struct rte_eth_xstat *xstats,
+		     unsigned int n)
+{
+	struct bnx2x_softc *sc = dev->data->dev_private;
+	unsigned int num = RTE_DIM(bnx2x_xstats_strings);
+
+	if (n < num)
+		return num;
+
+	bnx2x_stats_handle(sc, STATS_EVENT_UPDATE);
+
+	for (num = 0; num < n; num++) {
+		if (bnx2x_xstats_strings[num].offset_hi !=
+		    bnx2x_xstats_strings[num].offset_lo)
+			xstats[num].value = HILO_U64(
+					  *(uint32_t *)((char *)&sc->eth_stats +
+					  bnx2x_xstats_strings[num].offset_hi),
+					  *(uint32_t *)((char *)&sc->eth_stats +
+					  bnx2x_xstats_strings[num].offset_lo));
+		else
+			xstats[num].value =
+					  *(uint64_t *)((char *)&sc->eth_stats +
+					  bnx2x_xstats_strings[num].offset_lo);
+	}
+
+	return num;
 }
 
 static void
@@ -360,6 +471,8 @@ static const struct eth_dev_ops bnx2x_eth_dev_ops = {
 	.allmulticast_disable         = bnx2x_dev_allmulticast_disable,
 	.link_update                  = bnx2x_dev_link_update,
 	.stats_get                    = bnx2x_dev_stats_get,
+	.xstats_get                   = bnx2x_dev_xstats_get,
+	.xstats_get_names             = bnx2x_get_xstats_names,
 	.dev_infos_get                = bnx2x_dev_infos_get,
 	.rx_queue_setup               = bnx2x_dev_rx_queue_setup,
 	.rx_queue_release             = bnx2x_dev_rx_queue_release,
@@ -383,6 +496,8 @@ static const struct eth_dev_ops bnx2xvf_eth_dev_ops = {
 	.allmulticast_disable         = bnx2x_dev_allmulticast_disable,
 	.link_update                  = bnx2xvf_dev_link_update,
 	.stats_get                    = bnx2x_dev_stats_get,
+	.xstats_get                   = bnx2x_dev_xstats_get,
+	.xstats_get_names             = bnx2x_get_xstats_names,
 	.dev_infos_get                = bnx2x_dev_infos_get,
 	.rx_queue_setup               = bnx2x_dev_rx_queue_setup,
 	.rx_queue_release             = bnx2x_dev_rx_queue_release,
@@ -550,5 +665,7 @@ static struct rte_driver rte_bnx2xvf_driver = {
 	.init = rte_bnx2xvf_pmd_init,
 };
 
-PMD_REGISTER_DRIVER(rte_bnx2x_driver);
-PMD_REGISTER_DRIVER(rte_bnx2xvf_driver);
+PMD_REGISTER_DRIVER(rte_bnx2x_driver, bnx2x);
+DRIVER_REGISTER_PCI_TABLE(bnx2x, pci_id_bnx2x_map);
+PMD_REGISTER_DRIVER(rte_bnx2xvf_driver, bnx2xvf);
+DRIVER_REGISTER_PCI_TABLE(bnx2xvf, pci_id_bnx2xvf_map);

@@ -86,11 +86,11 @@ Features
 - Hardware checksum offloads.
 - Flow director (RTE_FDIR_MODE_PERFECT and RTE_FDIR_MODE_PERFECT_MAC_VLAN).
 - Secondary process TX is supported.
+- KVM and VMware ESX SR-IOV modes are supported.
 
 Limitations
 -----------
 
-- KVM and VMware ESX SR-IOV modes are not supported yet.
 - Inner RSS for VXLAN frames is not supported yet.
 - Port statistics through software counters only.
 - Hardware checksum offloads for VXLAN inner header are not supported yet.
@@ -114,23 +114,6 @@ These options can be modified in the ``.config`` file.
   adds additional run-time checks and debugging messages at the cost of
   lower performance.
 
-- ``CONFIG_RTE_LIBRTE_MLX5_SGE_WR_N`` (default **4**)
-
-  Number of scatter/gather elements (SGEs) per work request (WR). Lowering
-  this number improves performance but also limits the ability to receive
-  scattered packets (packets that do not fit a single mbuf). The default
-  value is a safe tradeoff.
-
-- ``CONFIG_RTE_LIBRTE_MLX5_MAX_INLINE`` (default **0**)
-
-  Amount of data to be inlined during TX operations. Improves latency.
-  Can improve PPS performance when PCI backpressure is detected and may be
-  useful for scenarios involving heavy traffic on many queues.
-
-  Since the additional software logic necessary to handle this mode can
-  lower performance when there is no backpressure, it is not enabled by
-  default.
-
 - ``CONFIG_RTE_LIBRTE_MLX5_TX_MP_CACHE`` (default **8**)
 
   Maximum number of cached memory pools (MPs) per TX queue. Each MP from
@@ -141,16 +124,6 @@ These options can be modified in the ``.config`` file.
 
 Environment variables
 ~~~~~~~~~~~~~~~~~~~~~
-
-- ``MLX5_ENABLE_CQE_COMPRESSION``
-
-  A nonzero value lets ConnectX-4 return smaller completion entries to
-  improve performance when PCI backpressure is detected. It is most useful
-  for scenarios involving heavy traffic on many queues.
-
-  Since the additional software logic necessary to handle this mode can
-  lower performance when there is no backpressure, it is not enabled by
-  default.
 
 - ``MLX5_PMD_ENABLE_PADDING``
 
@@ -174,6 +147,44 @@ Run-time configuration
   reception.
 
 - **ethtool** operations on related kernel interfaces also affect the PMD.
+
+- ``rxq_cqe_comp_en`` parameter [int]
+
+  A nonzero value enables the compression of CQE on RX side. This feature
+  allows to save PCI bandwidth and improve performance at the cost of a
+  slightly higher CPU usage.  Enabled by default.
+
+  Supported on:
+
+  - x86_64 with ConnectX4 and ConnectX4 LX
+  - Power8 with ConnectX4 LX
+
+- ``txq_inline`` parameter [int]
+
+  Amount of data to be inlined during TX operations. Improves latency.
+  Can improve PPS performance when PCI back pressure is detected and may be
+  useful for scenarios involving heavy traffic on many queues.
+
+  It is not enabled by default (set to 0) since the additional software
+  logic necessary to handle this mode can lower performance when back
+  pressure is not expected.
+
+- ``txqs_min_inline`` parameter [int]
+
+  Enable inline send only when the number of TX queues is greater or equal
+  to this value.
+
+  This option should be used in combination with ``txq_inline`` above.
+
+- ``txq_mpw_en`` parameter [int]
+
+  A nonzero value enables multi-packet send. This feature allows the TX
+  burst function to pack up to five packets in two descriptors in order to
+  save PCI bandwidth and improve performance at the cost of a slightly
+  higher CPU usage.
+
+  It is currently only supported on the ConnectX-4 Lx family of adapters.
+  Enabled by default.
 
 Prerequisites
 -------------
@@ -228,40 +239,12 @@ DPDK and must be installed separately:
 
 Currently supported by DPDK:
 
-- Mellanox OFED **3.1-1.0.3**, **3.1-1.5.7.1** or **3.2-2.0.0.0** depending
-  on usage.
-
-    The following features are supported with version **3.1-1.5.7.1** and
-    above only:
-
-    - IPv6, UPDv6, TCPv6 RSS.
-    - RX checksum offloads.
-    - IBM POWER8.
-
-    The following features are supported with version **3.2-2.0.0.0** and
-    above only:
-
-    - Flow director.
-    - RX VLAN stripping.
-    - TX VLAN insertion.
-    - RX CRC stripping configuration.
+- Mellanox OFED **3.3-1.0.0.0** and **3.3-2.0.0.0**.
 
 - Minimum firmware version:
 
-  With MLNX_OFED **3.1-1.0.3**:
-
-  - ConnectX-4: **12.12.1240**
-  - ConnectX-4 Lx: **14.12.1100**
-
-  With MLNX_OFED **3.1-1.5.7.1**:
-
-  - ConnectX-4: **12.13.0144**
-  - ConnectX-4 Lx: **14.13.0144**
-
-  With MLNX_OFED **3.2-2.0.0.0**:
-
-  - ConnectX-4: **12.14.2036**
-  - ConnectX-4 Lx: **14.14.2036**
+  - ConnectX-4: **12.16.1006**
+  - ConnectX-4 Lx: **14.16.1006**
 
 Getting Mellanox OFED
 ~~~~~~~~~~~~~~~~~~~~~

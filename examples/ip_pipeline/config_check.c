@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
+ *   Copyright(c) 2010-2016 Intel Corporation. All rights reserved.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -56,6 +56,26 @@ check_mempools(struct app_params *app)
 	}
 }
 
+static inline uint32_t
+link_rxq_used(struct app_link_params *link, uint32_t q_id)
+{
+	uint32_t i;
+
+	if ((link->arp_q == q_id) ||
+		(link->tcp_syn_q == q_id) ||
+		(link->ip_local_q == q_id) ||
+		(link->tcp_local_q == q_id) ||
+		(link->udp_local_q == q_id) ||
+		(link->sctp_local_q == q_id))
+		return 1;
+
+	for (i = 0; i < link->n_rss_qs; i++)
+		if (link->rss_qs[i] == q_id)
+			return 1;
+
+	return 0;
+}
+
 static void
 check_links(struct app_params *app)
 {
@@ -90,14 +110,12 @@ check_links(struct app_params *app)
 			rxq_max = link->udp_local_q;
 		if (link->sctp_local_q > rxq_max)
 			rxq_max = link->sctp_local_q;
+		for (i = 0; i < link->n_rss_qs; i++)
+			if (link->rss_qs[i] > rxq_max)
+				rxq_max = link->rss_qs[i];
 
 		for (i = 1; i <= rxq_max; i++)
-			APP_CHECK(((link->arp_q == i) ||
-				(link->tcp_syn_q == i) ||
-				(link->ip_local_q == i) ||
-				(link->tcp_local_q == i) ||
-				(link->udp_local_q == i) ||
-				(link->sctp_local_q == i)),
+			APP_CHECK((link_rxq_used(link, i)),
 				"%s RXQs are not contiguous (A)\n", link->name);
 
 		n_rxq = app_link_get_n_rxq(app, link);
@@ -118,7 +136,7 @@ check_links(struct app_params *app)
 				"%s RXQs are not contiguous (C)\n", link->name);
 		}
 
-		/* Check that link RXQs are contiguous */
+		/* Check that link TXQs are contiguous */
 		n_txq = app_link_get_n_txq(app, link);
 
 		APP_CHECK((n_txq),  "%s does not have any TXQ\n", link->name);
@@ -298,6 +316,29 @@ check_tms(struct app_params *app)
 }
 
 static void
+check_knis(struct app_params *app) {
+	uint32_t i;
+
+	for (i = 0; i < app->n_pktq_kni; i++) {
+		struct app_pktq_kni_params *p = &app->kni_params[i];
+		uint32_t n_readers = app_kni_get_readers(app, p);
+		uint32_t n_writers = app_kni_get_writers(app, p);
+
+		APP_CHECK((n_readers != 0),
+			"%s has no reader\n", p->name);
+
+		APP_CHECK((n_readers == 1),
+			"%s has more than one reader\n", p->name);
+
+		APP_CHECK((n_writers != 0),
+			"%s has no writer\n", p->name);
+
+		APP_CHECK((n_writers == 1),
+			"%s has more than one writer\n", p->name);
+	}
+}
+
+static void
 check_sources(struct app_params *app)
 {
 	uint32_t i;
@@ -435,6 +476,7 @@ app_config_check(struct app_params *app)
 	check_txqs(app);
 	check_swqs(app);
 	check_tms(app);
+	check_knis(app);
 	check_sources(app);
 	check_sinks(app);
 	check_msgqs(app);

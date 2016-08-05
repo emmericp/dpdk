@@ -1,6 +1,6 @@
 #   BSD LICENSE
 #
-#   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
+#   Copyright(c) 2010-2016 Intel Corporation. All rights reserved.
 #   All rights reserved.
 #
 #   Redistribution and use in source and binary forms, with or without
@@ -42,9 +42,10 @@ include $(RTE_SDK)/mk/rte.vars.mk
 APP = l2fwd-keepalive
 
 # all source are stored in SRCS-y
-SRCS-y := main.c
+SRCS-y := main.c shm.c
 
 CFLAGS += -O3
 CFLAGS += $(WERROR_FLAGS)
+LDFLAGS += -lrt
 
 include $(RTE_SDK)/mk/rte.extapp.mk

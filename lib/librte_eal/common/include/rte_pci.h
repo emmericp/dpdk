@@ -91,7 +91,7 @@ extern struct pci_driver_list pci_driver_list; /**< Global list of PCI drivers. 
 extern struct pci_device_list pci_device_list; /**< Global list of PCI devices. */
 
 /** Pathname of PCI devices directory. */
-#define SYSFS_PCI_DEVICES "/sys/bus/pci/devices"
+const char *pci_get_sysfs_path(void);
 
 /** Formatting string for PCI device identifier: Ex: 0000:00:01.0 */
 #define PCI_PRI_FMT "%.4" PRIx16 ":%.2" PRIx8 ":%.2" PRIx8 ".%" PRIx8
@@ -104,9 +104,6 @@ extern struct pci_device_list pci_device_list; /**< Global list of PCI devices. 
 
 /** Nb. of values in PCI resource format. */
 #define PCI_RESOURCE_FMT_NVAL 3
-
-/** IO resource type: memory address space */
-#define IORESOURCE_MEM        0x00000200
 
 /**
  * A structure describing a PCI resource.
@@ -125,6 +122,7 @@ struct rte_pci_resource {
  * table of these IDs for each device that it supports.
  */
 struct rte_pci_id {
+	uint32_t class_id;            /**< Class ID (class, subclass, pi) or RTE_CLASS_ANY_ID. */
 	uint16_t vendor_id;           /**< Vendor ID or PCI_ANY_ID. */
 	uint16_t device_id;           /**< Device ID or PCI_ANY_ID. */
 	uint16_t subsystem_vendor_id; /**< Subsystem vendor ID or PCI_ANY_ID. */
@@ -170,10 +168,12 @@ struct rte_pci_device {
 
 /** Any PCI device identifier (vendor, device, ...) */
 #define PCI_ANY_ID (0xffff)
+#define RTE_CLASS_ANY_ID (0xffffff)
 
 #ifdef __cplusplus
 /** C++ macro used to help building up tables of device IDs */
 #define RTE_PCI_DEVICE(vend, dev) \
+	RTE_CLASS_ANY_ID,         \
 	(vend),                   \
 	(dev),                    \
 	PCI_ANY_ID,               \
@@ -181,6 +181,7 @@ struct rte_pci_device {
 #else
 /** Macro used to help building up tables of device IDs */
 #define RTE_PCI_DEVICE(vend, dev)          \
+	.class_id = RTE_CLASS_ANY_ID,      \
 	.vendor_id = (vend),               \
 	.device_id = (dev),                \
 	.subsystem_vendor_id = PCI_ANY_ID, \
@@ -518,15 +519,17 @@ int rte_eal_pci_write_config(const struct rte_pci_device *device,
 struct rte_pci_ioport {
 	struct rte_pci_device *dev;
 	uint64_t base;
+	uint64_t len; /* only filled for memory mapped ports */
 };
 
 /**
- * Initialises a rte_pci_ioport object for a pci device io resource.
+ * Initialize a rte_pci_ioport object for a pci device io resource.
+ *
  * This object is then used to gain access to those io resources (see below).
  *
  * @param dev
- *   A pointer to a rte_pci_device structure describing the device.
- *   to use
+ *   A pointer to a rte_pci_device structure describing the device
+ *   to use.
  * @param bar
  *   Index of the io pci resource we want to access.
  * @param p
@@ -542,6 +545,8 @@ int rte_eal_pci_ioport_map(struct rte_pci_device *dev, int bar,
  *
  * @param p
  *   The rte_pci_ioport object to be uninitialized.
+ * @return
+ *  0 on success, negative on error.
  */
 int rte_eal_pci_ioport_unmap(struct rte_pci_ioport *p);
 

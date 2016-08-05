@@ -153,8 +153,10 @@ rte_pktmbuf_pool_create(const char *name, unsigned n,
 	unsigned cache_size, uint16_t priv_size, uint16_t data_room_size,
 	int socket_id)
 {
+	struct rte_mempool *mp;
 	struct rte_pktmbuf_pool_private mbp_priv;
 	unsigned elt_size;
+	int ret;
 
 	if (RTE_ALIGN(priv_size, RTE_MBUF_PRIV_ALIGN) != priv_size) {
 		RTE_LOG(ERR, MBUF, "mbuf priv_size=%u is not aligned\n",
@@ -167,10 +169,29 @@ rte_pktmbuf_pool_create(const char *name, unsigned n,
 	mbp_priv.mbuf_data_room_size = data_room_size;
 	mbp_priv.mbuf_priv_size = priv_size;
 
-	return rte_mempool_create(name, n, elt_size,
-		cache_size, sizeof(struct rte_pktmbuf_pool_private),
-		rte_pktmbuf_pool_init, &mbp_priv, rte_pktmbuf_init, NULL,
-		socket_id, 0);
+	mp = rte_mempool_create_empty(name, n, elt_size, cache_size,
+		 sizeof(struct rte_pktmbuf_pool_private), socket_id, 0);
+	if (mp == NULL)
+		return NULL;
+
+	rte_errno = rte_mempool_set_ops_byname(mp,
+			RTE_MBUF_DEFAULT_MEMPOOL_OPS, NULL);
+	if (rte_errno != 0) {
+		RTE_LOG(ERR, MBUF, "error setting mempool handler\n");
+		return NULL;
+	}
+	rte_pktmbuf_pool_init(mp, &mbp_priv);
+
+	ret = rte_mempool_populate_default(mp);
+	if (ret < 0) {
+		rte_mempool_free(mp);
+		rte_errno = -ret;
+		return NULL;
+	}
+
+	rte_mempool_obj_iter(mp, rte_pktmbuf_init, NULL);
+
+	return mp;
 }
 
 /* do some sanity checks on a mbuf: panic if it fails */
@@ -218,7 +239,7 @@ rte_pktmbuf_dump(FILE *f, const struct rte_mbuf *m, unsigned dump_len)
 
 	__rte_mbuf_sanity_check(m, 1);
 
-	fprintf(f, "dump mbuf at 0x%p, phys=%"PRIx64", buf_len=%u\n",
+	fprintf(f, "dump mbuf at %p, phys=%"PRIx64", buf_len=%u\n",
 	       m, (uint64_t)m->buf_physaddr, (unsigned)m->buf_len);
 	fprintf(f, "  pkt_len=%"PRIu32", ol_flags=%"PRIx64", nb_segs=%u, "
 	       "in_port=%u\n", m->pkt_len, m->ol_flags,
@@ -228,7 +249,7 @@ rte_pktmbuf_dump(FILE *f, const struct rte_mbuf *m, unsigned dump_len)
 	while (m && nb_segs != 0) {
 		__rte_mbuf_sanity_check(m, 0);
 
-		fprintf(f, "  segment at 0x%p, data=0x%p, data_len=%u\n",
+		fprintf(f, "  segment at %p, data=%p, data_len=%u\n",
 			m, rte_pktmbuf_mtod(m, void *), (unsigned)m->data_len);
 		len = dump_len;
 		if (len > m->data_len)
@@ -254,12 +275,10 @@ const char *rte_get_rx_ol_flag_name(uint64_t mask)
 	case PKT_RX_L4_CKSUM_BAD: return "PKT_RX_L4_CKSUM_BAD";
 	case PKT_RX_IP_CKSUM_BAD: return "PKT_RX_IP_CKSUM_BAD";
 	case PKT_RX_EIP_CKSUM_BAD: return "PKT_RX_EIP_CKSUM_BAD";
-	/* case PKT_RX_OVERSIZE: return "PKT_RX_OVERSIZE"; */
-	/* case PKT_RX_HBUF_OVERFLOW: return "PKT_RX_HBUF_OVERFLOW"; */
-	/* case PKT_RX_RECIP_ERR: return "PKT_RX_RECIP_ERR"; */
-	/* case PKT_RX_MAC_ERR: return "PKT_RX_MAC_ERR"; */
+	case PKT_RX_VLAN_STRIPPED: return "PKT_RX_VLAN_STRIPPED";
 	case PKT_RX_IEEE1588_PTP: return "PKT_RX_IEEE1588_PTP";
 	case PKT_RX_IEEE1588_TMST: return "PKT_RX_IEEE1588_TMST";
+	case PKT_RX_QINQ_STRIPPED: return "PKT_RX_QINQ_STRIPPED";
 	default: return NULL;
 	}
 }

@@ -1650,7 +1650,8 @@ bond_ethdev_info(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 
 	dev_info->max_mac_addrs = 1;
 
-	dev_info->max_rx_pktlen = (uint32_t)2048;
+	dev_info->max_rx_pktlen = internals->candidate_max_rx_pktlen ?
+				  internals->candidate_max_rx_pktlen : 2048;
 
 	dev_info->max_rx_queues = (uint16_t)128;
 	dev_info->max_tx_queues = (uint16_t)512;
@@ -2293,6 +2294,9 @@ bond_ethdev_configure(struct rte_eth_dev *dev)
 		}
 	}
 
+	/* set the max_rx_pktlen */
+	internals->max_rx_pktlen = internals->candidate_max_rx_pktlen;
+
 	/*
 	 * if no kvlist, it means that this bonded device has been created
 	 * through the bonding api.
@@ -2505,10 +2509,20 @@ bond_ethdev_configure(struct rte_eth_dev *dev)
 }
 
 static struct rte_driver bond_drv = {
-	.name = "eth_bond",
 	.type = PMD_VDEV,
 	.init = bond_init,
 	.uninit = bond_uninit,
 };
 
-PMD_REGISTER_DRIVER(bond_drv);
+PMD_REGISTER_DRIVER(bond_drv, eth_bond);
+
+DRIVER_REGISTER_PARAM_STRING(eth_bond,
+	"slave=<ifc> "
+	"primary=<ifc> "
+	"mode=[0-6] "
+	"xmit_policy=[l2 | l23 | l34] "
+	"socket_id=<int> "
+	"mac=<mac addr> "
+	"lsc_poll_period_ms=<int> "
+	"up_delay=<int> "
+	"down_delay=<int>");

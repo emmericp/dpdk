@@ -45,6 +45,8 @@
 #include <ctype.h>
 #include <errno.h>
 #include <getopt.h>
+#include <fcntl.h>
+#include <unistd.h>
 
 #include <rte_atomic.h>
 #include <rte_branch_prediction.h>
@@ -243,7 +245,7 @@ struct l2fwd_crypto_statistics {
 } __rte_cache_aligned;
 
 struct l2fwd_port_statistics port_statistics[RTE_MAX_ETHPORTS];
-struct l2fwd_crypto_statistics crypto_statistics[RTE_MAX_ETHPORTS];
+struct l2fwd_crypto_statistics crypto_statistics[RTE_CRYPTO_MAX_DEVS];
 
 /* A tsc-based timer responsible for triggering statistics printout */
 #define TIMER_MILLISECOND 2000000ULL /* around 1ms at 2 Ghz */
@@ -341,20 +343,25 @@ fill_supported_algorithm_tables(void)
 	strcpy(supported_auth_algo[RTE_CRYPTO_AUTH_AES_GCM], "AES_GCM");
 	strcpy(supported_auth_algo[RTE_CRYPTO_AUTH_MD5_HMAC], "MD5_HMAC");
 	strcpy(supported_auth_algo[RTE_CRYPTO_AUTH_NULL], "NULL");
+	strcpy(supported_auth_algo[RTE_CRYPTO_AUTH_AES_XCBC_MAC],
+		"AES_XCBC_MAC");
 	strcpy(supported_auth_algo[RTE_CRYPTO_AUTH_SHA1_HMAC], "SHA1_HMAC");
 	strcpy(supported_auth_algo[RTE_CRYPTO_AUTH_SHA224_HMAC], "SHA224_HMAC");
 	strcpy(supported_auth_algo[RTE_CRYPTO_AUTH_SHA256_HMAC], "SHA256_HMAC");
 	strcpy(supported_auth_algo[RTE_CRYPTO_AUTH_SHA384_HMAC], "SHA384_HMAC");
 	strcpy(supported_auth_algo[RTE_CRYPTO_AUTH_SHA512_HMAC], "SHA512_HMAC");
 	strcpy(supported_auth_algo[RTE_CRYPTO_AUTH_SNOW3G_UIA2], "SNOW3G_UIA2");
+	strcpy(supported_auth_algo[RTE_CRYPTO_AUTH_KASUMI_F9], "KASUMI_F9");
 
 	for (i = 0; i < RTE_CRYPTO_CIPHER_LIST_END; i++)
 		strcpy(supported_cipher_algo[i], "NOT_SUPPORTED");
 
 	strcpy(supported_cipher_algo[RTE_CRYPTO_CIPHER_AES_CBC], "AES_CBC");
+	strcpy(supported_cipher_algo[RTE_CRYPTO_CIPHER_AES_CTR], "AES_CTR");
 	strcpy(supported_cipher_algo[RTE_CRYPTO_CIPHER_AES_GCM], "AES_GCM");
 	strcpy(supported_cipher_algo[RTE_CRYPTO_CIPHER_NULL], "NULL");
 	strcpy(supported_cipher_algo[RTE_CRYPTO_CIPHER_SNOW3G_UEA2], "SNOW3G_UEA2");
+	strcpy(supported_cipher_algo[RTE_CRYPTO_CIPHER_KASUMI_F8], "KASUMI_F8");
 }
 
 
@@ -463,8 +470,9 @@ l2fwd_simple_crypto_enqueue(struct rte_mbuf *m,
 				rte_pktmbuf_pkt_len(m) - cparams->digest_length);
 		op->sym->auth.digest.length = cparams->digest_length;
 
-		/* For SNOW3G algorithms, offset/length must be in bits */
-		if (cparams->auth_algo == RTE_CRYPTO_AUTH_SNOW3G_UIA2) {
+		/* For SNOW3G/KASUMI algorithms, offset/length must be in bits */
+		if (cparams->auth_algo == RTE_CRYPTO_AUTH_SNOW3G_UIA2 ||
+				cparams->auth_algo == RTE_CRYPTO_AUTH_KASUMI_F9) {
 			op->sym->auth.data.offset = ipdata_offset << 3;
 			op->sym->auth.data.length = data_len << 3;
 		} else {
@@ -485,7 +493,8 @@ l2fwd_simple_crypto_enqueue(struct rte_mbuf *m,
 		op->sym->cipher.iv.length = cparams->iv.length;
 
 		/* For SNOW3G algorithms, offset/length must be in bits */
-		if (cparams->cipher_algo == RTE_CRYPTO_CIPHER_SNOW3G_UEA2) {
+		if (cparams->cipher_algo == RTE_CRYPTO_CIPHER_SNOW3G_UEA2 ||
+				cparams->cipher_algo == RTE_CRYPTO_CIPHER_KASUMI_F8) {
 			op->sym->cipher.data.offset = ipdata_offset << 3;
 			if (cparams->do_hash && cparams->hash_verify)
 				/* Do not cipher the hash tag */
@@ -581,10 +590,18 @@ l2fwd_simple_forward(struct rte_mbuf *m, unsigned portid)
 static void
 generate_random_key(uint8_t *key, unsigned length)
 {
-	unsigned i;
+	int fd;
+	int ret;
 
-	for (i = 0; i < length; i++)
-		key[i] = rand() % 0xff;
+	fd = open("/dev/urandom", O_RDONLY);
+	if (fd < 0)
+		rte_exit(EXIT_FAILURE, "Failed to generate random key\n");
+
+	ret = read(fd, key, length);
+	close(fd);
+
+	if (ret != (signed)length)
+		rte_exit(EXIT_FAILURE, "Failed to generate random key\n");
 }
 
 static struct rte_cryptodev_sym_session *
@@ -621,7 +638,7 @@ l2fwd_main_loop(struct l2fwd_crypto_options *options)
 
 	unsigned lcore_id = rte_lcore_id();
 	uint64_t prev_tsc = 0, diff_tsc, cur_tsc, timer_tsc = 0;
-	unsigned i, j, portid, nb_rx;
+	unsigned i, j, portid, nb_rx, len;
 	struct lcore_queue_conf *qconf = &lcore_queue_conf[lcore_id];
 	const uint64_t drain_tsc = (rte_get_tsc_hz() + US_PER_S - 1) /
 			US_PER_S * BURST_TX_DRAIN_US;
@@ -720,10 +737,18 @@ l2fwd_main_loop(struct l2fwd_crypto_options *options)
 		cur_tsc = rte_rdtsc();
 
 		/*
-		 * TX burst queue drain
+		 * Crypto device/TX burst queue drain
 		 */
 		diff_tsc = cur_tsc - prev_tsc;
 		if (unlikely(diff_tsc > drain_tsc)) {
+			/* Enqueue all crypto ops remaining in buffers */
+			for (i = 0; i < qconf->nb_crypto_devs; i++) {
+				cparams = &port_cparams[i];
+				len = qconf->op_buf[cparams->dev_id].len;
+				l2fwd_crypto_send_burst(qconf, len, cparams);
+				qconf->op_buf[cparams->dev_id].len = 0;
+			}
+			/* Transmit all packets remaining in buffers */
 			for (portid = 0; portid < RTE_MAX_ETHPORTS; portid++) {
 				if (qconf->pkt_buf[portid].len == 0)
 					continue;
@@ -1180,8 +1205,6 @@ l2fwd_crypto_parse_timer_period(struct l2fwd_crypto_options *options,
 static void
 l2fwd_crypto_default_options(struct l2fwd_crypto_options *options)
 {
-	srand(time(NULL));
-
 	options->portmask = 0xffffffff;
 	options->nb_ports_per_lcore = 1;
 	options->refresh_period = 10000;
@@ -1486,6 +1509,15 @@ check_supported_size(uint16_t length, uint16_t min, uint16_t max,
 {
 	uint16_t supp_size;
 
+	/* Single value */
+	if (increment == 0) {
+		if (length == min)
+			return 0;
+		else
+			return -1;
+	}
+
+	/* Range of values */
 	for (supp_size = min; supp_size <= max; supp_size += increment) {
 		if (length == supp_size)
 			return 0;
@@ -1761,6 +1793,13 @@ initialize_cryptodevs(struct l2fwd_crypto_options *options, unsigned nb_ports,
 		if (retval < 0) {
 			printf("Failed to setup queue pair %u on cryptodev %u",
 					0, cdev_id);
+			return -1;
+		}
+
+		retval = rte_cryptodev_start(cdev_id);
+		if (retval < 0) {
+			printf("Failed to start device %u: error %d\n",
+					cdev_id, retval);
 			return -1;
 		}
 

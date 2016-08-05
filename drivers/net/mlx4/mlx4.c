@@ -54,7 +54,6 @@
 #include <sys/ioctl.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
-#include <linux/if.h>
 #include <linux/ethtool.h>
 #include <linux/sockios.h>
 #include <fcntl.h>
@@ -197,7 +196,6 @@ struct rxq {
 	unsigned int sp:1; /* Use scattered RX elements. */
 	unsigned int csum:1; /* Enable checksum offloading. */
 	unsigned int csum_l2tun:1; /* Same for L2 tunnels. */
-	uint32_t mb_len; /* Length of a mp-issued mbuf. */
 	struct mlx4_rxq_stats stats; /* RX queue counters. */
 	unsigned int socket; /* CPU socket ID for allocations. */
 	struct ibv_exp_res_domain *rd; /* Resource Domain. */
@@ -659,7 +657,15 @@ priv_get_mtu(struct priv *priv, uint16_t *mtu)
 static int
 priv_set_mtu(struct priv *priv, uint16_t mtu)
 {
-	return priv_set_sysfs_ulong(priv, "mtu", mtu);
+	uint16_t new_mtu;
+
+	if (priv_set_sysfs_ulong(priv, "mtu", mtu) ||
+	    priv_get_mtu(priv, &new_mtu))
+		return -1;
+	if (new_mtu == mtu)
+		return 0;
+	errno = EINVAL;
+	return -1;
 }
 
 /**
@@ -683,7 +689,7 @@ priv_set_flags(struct priv *priv, unsigned int keep, unsigned int flags)
 	if (priv_get_sysfs_ulong(priv, "flags", &tmp) == -1)
 		return -1;
 	tmp &= keep;
-	tmp |= flags;
+	tmp |= (flags & (~keep));
 	return priv_set_sysfs_ulong(priv, "flags", tmp);
 }
 
@@ -998,7 +1004,7 @@ txq_alloc_elts(struct txq *txq, unsigned int elts_n)
 	}
 	mr_linear =
 		ibv_reg_mr(txq->priv->pd, elts_linear, sizeof(*elts_linear),
-			   (IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE));
+			   IBV_ACCESS_LOCAL_WRITE);
 	if (mr_linear == NULL) {
 		ERROR("%p: unable to configure MR, ibv_reg_mr() failed",
 		      (void *)txq);
@@ -1310,7 +1316,7 @@ mlx4_mp2mr(struct ibv_pd *pd, struct rte_mempool *mp)
 	return ibv_reg_mr(pd,
 			  (void *)start,
 			  end - start,
-			  IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE);
+			  IBV_ACCESS_LOCAL_WRITE);
 }
 
 /**
@@ -3152,7 +3158,6 @@ mlx4_rx_burst_sp(void *dpdk_rxq, struct rte_mbuf **pkts, uint16_t pkts_n)
 			rep->ol_flags = -1;
 #endif
 			assert(rep->buf_len == seg->buf_len);
-			assert(rep->buf_len == rxq->mb_len);
 			/* Reconfigure sge to use rep instead of seg. */
 			assert(sge->lkey == rxq->mr->lkey);
 			sge->addr = ((uintptr_t)rep->buf_addr + seg_headroom);
@@ -3573,6 +3578,7 @@ rxq_rehash(struct rte_eth_dev *dev, struct rxq *rxq)
 	unsigned int i, k;
 	struct ibv_exp_qp_attr mod;
 	struct ibv_recv_wr *bad_wr;
+	unsigned int mb_len;
 	int err;
 	int parent = (rxq == &priv->rxq_parent);
 
@@ -3581,6 +3587,7 @@ rxq_rehash(struct rte_eth_dev *dev, struct rxq *rxq)
 		      (void *)dev, (void *)rxq);
 		return EINVAL;
 	}
+	mb_len = rte_pktmbuf_data_room_size(rxq->mp);
 	DEBUG("%p: rehashing queue %p", (void *)dev, (void *)rxq);
 	/* Number of descriptors and mbufs currently allocated. */
 	desc_n = (tmpl.elts_n * (tmpl.sp ? MLX4_PMD_SGE_WR_N : 1));
@@ -3595,9 +3602,10 @@ rxq_rehash(struct rte_eth_dev *dev, struct rxq *rxq)
 		rxq->csum_l2tun = tmpl.csum_l2tun;
 	}
 	/* Enable scattered packets support for this queue if necessary. */
+	assert(mb_len >= RTE_PKTMBUF_HEADROOM);
 	if ((dev->data->dev_conf.rxmode.jumbo_frame) &&
 	    (dev->data->dev_conf.rxmode.max_rx_pkt_len >
-	     (tmpl.mb_len - RTE_PKTMBUF_HEADROOM))) {
+	     (mb_len - RTE_PKTMBUF_HEADROOM))) {
 		tmpl.sp = 1;
 		desc_n /= MLX4_PMD_SGE_WR_N;
 	} else
@@ -3788,7 +3796,7 @@ rxq_setup(struct rte_eth_dev *dev, struct rxq *rxq, uint16_t desc,
 	} attr;
 	enum ibv_exp_query_intf_status status;
 	struct ibv_recv_wr *bad_wr;
-	struct rte_mbuf *buf;
+	unsigned int mb_len;
 	int ret = 0;
 	int parent = (rxq == &priv->rxq_parent);
 
@@ -3804,31 +3812,22 @@ rxq_setup(struct rte_eth_dev *dev, struct rxq *rxq, uint16_t desc,
 		desc = 1;
 		goto skip_mr;
 	}
+	mb_len = rte_pktmbuf_data_room_size(mp);
 	if ((desc == 0) || (desc % MLX4_PMD_SGE_WR_N)) {
 		ERROR("%p: invalid number of RX descriptors (must be a"
 		      " multiple of %d)", (void *)dev, MLX4_PMD_SGE_WR_N);
 		return EINVAL;
 	}
-	/* Get mbuf length. */
-	buf = rte_pktmbuf_alloc(mp);
-	if (buf == NULL) {
-		ERROR("%p: unable to allocate mbuf", (void *)dev);
-		return ENOMEM;
-	}
-	tmpl.mb_len = buf->buf_len;
-	assert((rte_pktmbuf_headroom(buf) +
-		rte_pktmbuf_tailroom(buf)) == tmpl.mb_len);
-	assert(rte_pktmbuf_headroom(buf) == RTE_PKTMBUF_HEADROOM);
-	rte_pktmbuf_free(buf);
 	/* Toggle RX checksum offload if hardware supports it. */
 	if (priv->hw_csum)
 		tmpl.csum = !!dev->data->dev_conf.rxmode.hw_ip_checksum;
 	if (priv->hw_csum_l2tun)
 		tmpl.csum_l2tun = !!dev->data->dev_conf.rxmode.hw_ip_checksum;
 	/* Enable scattered packets support for this queue if necessary. */
+	assert(mb_len >= RTE_PKTMBUF_HEADROOM);
 	if ((dev->data->dev_conf.rxmode.jumbo_frame) &&
 	    (dev->data->dev_conf.rxmode.max_rx_pkt_len >
-	     (tmpl.mb_len - RTE_PKTMBUF_HEADROOM))) {
+	     (mb_len - RTE_PKTMBUF_HEADROOM))) {
 		tmpl.sp = 1;
 		desc /= MLX4_PMD_SGE_WR_N;
 	}
@@ -4329,6 +4328,90 @@ mlx4_dev_close(struct rte_eth_dev *dev)
 }
 
 /**
+ * Change the link state (UP / DOWN).
+ *
+ * @param priv
+ *   Pointer to Ethernet device private data.
+ * @param up
+ *   Nonzero for link up, otherwise link down.
+ *
+ * @return
+ *   0 on success, errno value on failure.
+ */
+static int
+priv_set_link(struct priv *priv, int up)
+{
+	struct rte_eth_dev *dev = priv->dev;
+	int err;
+	unsigned int i;
+
+	if (up) {
+		err = priv_set_flags(priv, ~IFF_UP, IFF_UP);
+		if (err)
+			return err;
+		for (i = 0; i < priv->rxqs_n; i++)
+			if ((*priv->rxqs)[i]->sp)
+				break;
+		/* Check if an sp queue exists.
+		 * Note: Some old frames might be received.
+		 */
+		if (i == priv->rxqs_n)
+			dev->rx_pkt_burst = mlx4_rx_burst;
+		else
+			dev->rx_pkt_burst = mlx4_rx_burst_sp;
+		dev->tx_pkt_burst = mlx4_tx_burst;
+	} else {
+		err = priv_set_flags(priv, ~IFF_UP, ~IFF_UP);
+		if (err)
+			return err;
+		dev->rx_pkt_burst = removed_rx_burst;
+		dev->tx_pkt_burst = removed_tx_burst;
+	}
+	return 0;
+}
+
+/**
+ * DPDK callback to bring the link DOWN.
+ *
+ * @param dev
+ *   Pointer to Ethernet device structure.
+ *
+ * @return
+ *   0 on success, errno value on failure.
+ */
+static int
+mlx4_set_link_down(struct rte_eth_dev *dev)
+{
+	struct priv *priv = dev->data->dev_private;
+	int err;
+
+	priv_lock(priv);
+	err = priv_set_link(priv, 0);
+	priv_unlock(priv);
+	return err;
+}
+
+/**
+ * DPDK callback to bring the link UP.
+ *
+ * @param dev
+ *   Pointer to Ethernet device structure.
+ *
+ * @return
+ *   0 on success, errno value on failure.
+ */
+static int
+mlx4_set_link_up(struct rte_eth_dev *dev)
+{
+	struct priv *priv = dev->data->dev_private;
+	int err;
+
+	priv_lock(priv);
+	err = priv_set_link(priv, 1);
+	priv_unlock(priv);
+	return err;
+}
+/**
  * DPDK callback to get information about the device.
  *
  * @param dev
@@ -4771,7 +4854,7 @@ mlx4_link_update_unlocked(struct rte_eth_dev *dev, int wait_to_complete)
 	memset(&dev_link, 0, sizeof(dev_link));
 	dev_link.link_status = ((ifr.ifr_flags & IFF_UP) &&
 				(ifr.ifr_flags & IFF_RUNNING));
-	ifr.ifr_data = &edata;
+	ifr.ifr_data = (void *)&edata;
 	if (priv_ifreq(priv, SIOCETHTOOL, &ifr)) {
 		WARN("ioctl(SIOCETHTOOL, ETHTOOL_GSET) failed: %s",
 		     strerror(errno));
@@ -4865,6 +4948,7 @@ mlx4_dev_set_mtu(struct rte_eth_dev *dev, uint16_t mtu)
 	/* Reconfigure each RX queue. */
 	for (i = 0; (i != priv->rxqs_n); ++i) {
 		struct rxq *rxq = (*priv->rxqs)[i];
+		unsigned int mb_len;
 		unsigned int max_frame_len;
 		int sp;
 
@@ -4874,7 +4958,9 @@ mlx4_dev_set_mtu(struct rte_eth_dev *dev, uint16_t mtu)
 		 * toggle scattered support (sp) if necessary. */
 		max_frame_len = (priv->mtu + ETHER_HDR_LEN +
 				 (ETHER_MAX_VLAN_FRAME_LEN - ETHER_MAX_LEN));
-		sp = (max_frame_len > (rxq->mb_len - RTE_PKTMBUF_HEADROOM));
+		mb_len = rte_pktmbuf_data_room_size(rxq->mp);
+		assert(mb_len >= RTE_PKTMBUF_HEADROOM);
+		sp = (max_frame_len > (mb_len - RTE_PKTMBUF_HEADROOM));
 		/* Provide new values to rxq_setup(). */
 		dev->data->dev_conf.rxmode.jumbo_frame = sp;
 		dev->data->dev_conf.rxmode.max_rx_pkt_len = max_frame_len;
@@ -4930,7 +5016,7 @@ mlx4_dev_get_flow_ctrl(struct rte_eth_dev *dev, struct rte_eth_fc_conf *fc_conf)
 
 	if (mlx4_is_secondary())
 		return -E_RTE_SECONDARY;
-	ifr.ifr_data = &ethpause;
+	ifr.ifr_data = (void *)&ethpause;
 	priv_lock(priv);
 	if (priv_ifreq(priv, SIOCETHTOOL, &ifr)) {
 		ret = errno;
@@ -4980,7 +5066,7 @@ mlx4_dev_set_flow_ctrl(struct rte_eth_dev *dev, struct rte_eth_fc_conf *fc_conf)
 
 	if (mlx4_is_secondary())
 		return -E_RTE_SECONDARY;
-	ifr.ifr_data = &ethpause;
+	ifr.ifr_data = (void *)&ethpause;
 	ethpause.autoneg = fc_conf->autoneg;
 	if (((fc_conf->mode & RTE_FC_FULL) == RTE_FC_FULL) ||
 	    (fc_conf->mode & RTE_FC_RX_PAUSE))
@@ -5132,6 +5218,8 @@ static const struct eth_dev_ops mlx4_dev_ops = {
 	.dev_configure = mlx4_dev_configure,
 	.dev_start = mlx4_dev_start,
 	.dev_stop = mlx4_dev_stop,
+	.dev_set_link_down = mlx4_set_link_down,
+	.dev_set_link_up = mlx4_set_link_up,
 	.dev_close = mlx4_dev_close,
 	.promiscuous_enable = mlx4_promiscuous_enable,
 	.promiscuous_disable = mlx4_promiscuous_disable,
@@ -5406,7 +5494,7 @@ priv_dev_interrupt_handler_uninstall(struct priv *priv, struct rte_eth_dev *dev)
 		rte_eal_alarm_cancel(mlx4_dev_link_status_handler, dev);
 	priv->pending_alarm = 0;
 	priv->intr_handle.fd = 0;
-	priv->intr_handle.type = 0;
+	priv->intr_handle.type = RTE_INTR_HANDLE_UNKNOWN;
 }
 
 /**
@@ -5805,22 +5893,16 @@ error:
 
 static const struct rte_pci_id mlx4_pci_id_map[] = {
 	{
-		.vendor_id = PCI_VENDOR_ID_MELLANOX,
-		.device_id = PCI_DEVICE_ID_MELLANOX_CONNECTX3,
-		.subsystem_vendor_id = PCI_ANY_ID,
-		.subsystem_device_id = PCI_ANY_ID
+		RTE_PCI_DEVICE(PCI_VENDOR_ID_MELLANOX,
+			       PCI_DEVICE_ID_MELLANOX_CONNECTX3)
 	},
 	{
-		.vendor_id = PCI_VENDOR_ID_MELLANOX,
-		.device_id = PCI_DEVICE_ID_MELLANOX_CONNECTX3PRO,
-		.subsystem_vendor_id = PCI_ANY_ID,
-		.subsystem_device_id = PCI_ANY_ID
+		RTE_PCI_DEVICE(PCI_VENDOR_ID_MELLANOX,
+			       PCI_DEVICE_ID_MELLANOX_CONNECTX3PRO)
 	},
 	{
-		.vendor_id = PCI_VENDOR_ID_MELLANOX,
-		.device_id = PCI_DEVICE_ID_MELLANOX_CONNECTX3VF,
-		.subsystem_vendor_id = PCI_ANY_ID,
-		.subsystem_device_id = PCI_ANY_ID
+		RTE_PCI_DEVICE(PCI_VENDOR_ID_MELLANOX,
+			       PCI_DEVICE_ID_MELLANOX_CONNECTX3VF)
 	},
 	{
 		.vendor_id = 0
@@ -5861,8 +5943,8 @@ rte_mlx4_pmd_init(const char *name, const char *args)
 
 static struct rte_driver rte_mlx4_driver = {
 	.type = PMD_PDEV,
-	.name = MLX4_DRIVER_NAME,
 	.init = rte_mlx4_pmd_init,
 };
 
-PMD_REGISTER_DRIVER(rte_mlx4_driver)
+PMD_REGISTER_DRIVER(rte_mlx4_driver, mlx4);
+DRIVER_REGISTER_PCI_TABLE(mlx4, mlx4_pci_id_map);

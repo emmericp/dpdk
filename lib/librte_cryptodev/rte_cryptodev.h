@@ -49,16 +49,18 @@ extern "C" {
 #include "rte_crypto.h"
 #include "rte_dev.h"
 
-#define CRYPTODEV_NAME_NULL_PMD		("cryptodev_null_pmd")
+#define CRYPTODEV_NAME_NULL_PMD		cryptodev_null_pmd
 /**< Null crypto PMD device name */
-#define CRYPTODEV_NAME_AESNI_MB_PMD	("cryptodev_aesni_mb_pmd")
+#define CRYPTODEV_NAME_AESNI_MB_PMD	cryptodev_aesni_mb_pmd
 /**< AES-NI Multi buffer PMD device name */
-#define CRYPTODEV_NAME_AESNI_GCM_PMD	("cryptodev_aesni_gcm_pmd")
+#define CRYPTODEV_NAME_AESNI_GCM_PMD	cryptodev_aesni_gcm_pmd
 /**< AES-NI GCM PMD device name */
-#define CRYPTODEV_NAME_QAT_SYM_PMD	("cryptodev_qat_sym_pmd")
+#define CRYPTODEV_NAME_QAT_SYM_PMD	cryptodev_qat_sym_pmd
 /**< Intel QAT Symmetric Crypto PMD device name */
-#define CRYPTODEV_NAME_SNOW3G_PMD	("cryptodev_snow3g_pmd")
+#define CRYPTODEV_NAME_SNOW3G_PMD	cryptodev_snow3g_pmd
 /**< SNOW 3G PMD device name */
+#define CRYPTODEV_NAME_KASUMI_PMD	cryptodev_kasumi_pmd
+/**< KASUMI PMD device name */
 
 /** Crypto device type */
 enum rte_cryptodev_type {
@@ -67,6 +69,7 @@ enum rte_cryptodev_type {
 	RTE_CRYPTODEV_AESNI_MB_PMD,	/**< AES-NI multi buffer PMD */
 	RTE_CRYPTODEV_QAT_SYM_PMD,	/**< QAT PMD Symmetric Crypto */
 	RTE_CRYPTODEV_SNOW3G_PMD,	/**< SNOW 3G PMD */
+	RTE_CRYPTODEV_KASUMI_PMD,	/**< KASUMI PMD */
 };
 
 extern const char **rte_cyptodev_names;
@@ -297,48 +300,6 @@ struct rte_crypto_vdev_init_params {
 	uint8_t socket_id;
 };
 
-#define RTE_CRYPTODEV_VDEV_MAX_NB_QP_ARG		("max_nb_queue_pairs")
-#define RTE_CRYPTODEV_VDEV_MAX_NB_SESS_ARG		("max_nb_sessions")
-#define RTE_CRYPTODEV_VDEV_SOCKET_ID			("socket_id")
-
-static const char *cryptodev_vdev_valid_params[] = {
-	RTE_CRYPTODEV_VDEV_MAX_NB_QP_ARG,
-	RTE_CRYPTODEV_VDEV_MAX_NB_SESS_ARG,
-	RTE_CRYPTODEV_VDEV_SOCKET_ID
-};
-
-static inline uint8_t
-number_of_sockets(void)
-{
-	int sockets = 0;
-	int i;
-	const struct rte_memseg *ms = rte_eal_get_physmem_layout();
-
-	for (i = 0; ((i < RTE_MAX_MEMSEG) && (ms[i].addr != NULL)); i++) {
-		if (sockets < ms[i].socket_id)
-			sockets = ms[i].socket_id;
-	}
-
-	/* Number of sockets = maximum socket_id + 1 */
-	return ++sockets;
-}
-
-/** Parse integer from integer argument */
-static inline int
-__rte_cryptodev_parse_integer_arg(const char *key __rte_unused,
-		const char *value, void *extra_args)
-{
-	int *i = (int *) extra_args;
-
-	*i = atoi(value);
-	if (*i < 0) {
-		CDEV_LOG_ERR("Argument has to be positive.");
-		return -1;
-	}
-
-	return 0;
-}
-
 /**
  * Parse virtual device initialisation parameters input arguments
  * @internal
@@ -350,55 +311,10 @@ __rte_cryptodev_parse_integer_arg(const char *key __rte_unused,
  * 0 on successful parse
  * <0 on failure to parse
  */
-static inline int
-rte_cryptodev_parse_vdev_init_params(struct rte_crypto_vdev_init_params *params,
-		const char *input_args)
-{
-	struct rte_kvargs *kvlist;
-	int ret;
-
-	if (params == NULL)
-		return -EINVAL;
-
-	if (input_args) {
-		kvlist = rte_kvargs_parse(input_args,
-				cryptodev_vdev_valid_params);
-		if (kvlist == NULL)
-			return -1;
-
-		ret = rte_kvargs_process(kvlist,
-					RTE_CRYPTODEV_VDEV_MAX_NB_QP_ARG,
-					&__rte_cryptodev_parse_integer_arg,
-					&params->max_nb_queue_pairs);
-		if (ret < 0)
-			goto free_kvlist;
-
-		ret = rte_kvargs_process(kvlist,
-					RTE_CRYPTODEV_VDEV_MAX_NB_SESS_ARG,
-					&__rte_cryptodev_parse_integer_arg,
-					&params->max_nb_sessions);
-		if (ret < 0)
-			goto free_kvlist;
-
-		ret = rte_kvargs_process(kvlist, RTE_CRYPTODEV_VDEV_SOCKET_ID,
-					&__rte_cryptodev_parse_integer_arg,
-					&params->socket_id);
-		if (ret < 0)
-			goto free_kvlist;
-
-		if (params->socket_id >= number_of_sockets()) {
-			CDEV_LOG_ERR("Invalid socket id specified to create "
-				"the virtual crypto device on");
-			goto free_kvlist;
-		}
-	}
-
-	return 0;
-
-free_kvlist:
-	rte_kvargs_free(kvlist);
-	return ret;
-}
+int
+rte_cryptodev_parse_vdev_init_params(
+		struct rte_crypto_vdev_init_params *params,
+		const char *input_args);
 
 /**
  * Create a virtual crypto device

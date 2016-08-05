@@ -45,7 +45,6 @@ There are many libraries, so their headers may be grouped by topics:
   [vhost]              (@ref rte_virtio_net.h),
   [KNI]                (@ref rte_kni.h),
   [PCI]                (@ref rte_pci.h),
-  [PCI IDs]            (@ref rte_pci_dev_ids.h)
 
 - **memory**:
   [memseg]             (@ref rte_memory.h),
@@ -118,6 +117,7 @@ There are many libraries, so their headers may be grouped by topics:
     [frag]             (@ref rte_port_frag.h),
     [reass]            (@ref rte_port_ras.h),
     [sched]            (@ref rte_port_sched.h),
+    [kni]              (@ref rte_port_kni.h),
     [src/sink]         (@ref rte_port_source_sink.h)
   * [table]            (@ref rte_table.h):
     [lpm IPv4]         (@ref rte_table_lpm.h),

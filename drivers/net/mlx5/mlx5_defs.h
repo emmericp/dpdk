@@ -48,21 +48,14 @@
 /* Maximum number of special flows. */
 #define MLX5_MAX_SPECIAL_FLOWS 4
 
-/* Request send completion once in every 64 sends, might be less. */
-#define MLX5_PMD_TX_PER_COMP_REQ 64
+/*
+ * Request TX completion every time descriptors reach this threshold since
+ * the previous request. Must be a power of two for performance reasons.
+ */
+#define MLX5_TX_COMP_THRESH 32
 
 /* RSS Indirection table size. */
 #define RSS_INDIRECTION_TABLE_SIZE 256
-
-/* Maximum number of Scatter/Gather Elements per Work Request. */
-#ifndef MLX5_PMD_SGE_WR_N
-#define MLX5_PMD_SGE_WR_N 4
-#endif
-
-/* Maximum size for inline data. */
-#ifndef MLX5_PMD_MAX_INLINE
-#define MLX5_PMD_MAX_INLINE 0
-#endif
 
 /*
  * Maximum number of cached Memory Pools (MPs) per TX queue. Each RTE MP
@@ -85,14 +78,5 @@
 
 /* Alarm timeout. */
 #define MLX5_ALARM_TIMEOUT_US 100000
-
-/*
- * Extended flow priorities necessary to support flow director are available
- * since MLNX_OFED 3.2. Considering this version adds support for VLAN
- * offloads as well, their availability means flow director can be used.
- */
-#ifdef HAVE_EXP_DEVICE_ATTR_VLAN_OFFLOADS
-#define MLX5_FDIR_SUPPORT 1
-#endif
 
 #endif /* RTE_PMD_MLX5_DEFS_H_ */

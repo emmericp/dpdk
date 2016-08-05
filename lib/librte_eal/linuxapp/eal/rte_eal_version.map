@@ -138,6 +138,7 @@ DPDK_2.2 {
 	rte_keepalive_mark_alive;
 	rte_keepalive_register_core;
 	rte_xen_dom0_supported;
+	rte_xen_mem_phy2mch;
 
 } DPDK_2.1;
 
@@ -154,3 +155,14 @@ DPDK_16.04 {
 	rte_eal_primary_proc_alive;
 
 } DPDK_2.2;
+
+DPDK_16.07 {
+	global:
+
+	pci_get_sysfs_path;
+	rte_keepalive_mark_sleep;
+	rte_keepalive_register_relay_callback;
+	rte_rtm_supported;
+	rte_thread_setname;
+
+} DPDK_16.04;

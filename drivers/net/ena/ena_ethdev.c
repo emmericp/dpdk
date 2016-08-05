@@ -37,6 +37,8 @@
 #include <rte_atomic.h>
 #include <rte_dev.h>
 #include <rte_errno.h>
+#include <rte_version.h>
+#include <rte_eal_memconfig.h>
 
 #include "ena_ethdev.h"
 #include "ena_logs.h"
@@ -48,6 +50,10 @@
 #include <ena_regs_defs.h>
 #include <ena_admin_defs.h>
 #include <ena_eth_io_defs.h>
+
+#define DRV_MODULE_VER_MAJOR	1
+#define DRV_MODULE_VER_MINOR	0
+#define DRV_MODULE_VER_SUBMINOR	0
 
 #define ENA_IO_TXQ_IDX(q)	(2 * (q))
 #define ENA_IO_RXQ_IDX(q)	(2 * (q) + 1)
@@ -72,6 +78,89 @@
 #define ENA_RX_RSS_TABLE_LOG_SIZE  7
 #define ENA_RX_RSS_TABLE_SIZE	(1 << ENA_RX_RSS_TABLE_LOG_SIZE)
 #define ENA_HASH_KEY_SIZE	40
+#define ENA_ETH_SS_STATS	0xFF
+#define ETH_GSTRING_LEN	32
+
+#define ARRAY_SIZE(x) (sizeof(x) / sizeof((x)[0]))
+
+enum ethtool_stringset {
+	ETH_SS_TEST             = 0,
+	ETH_SS_STATS,
+};
+
+struct ena_stats {
+	char name[ETH_GSTRING_LEN];
+	int stat_offset;
+};
+
+#define ENA_STAT_ENA_COM_ENTRY(stat) { \
+	.name = #stat, \
+	.stat_offset = offsetof(struct ena_com_stats_admin, stat) \
+}
+
+#define ENA_STAT_ENTRY(stat, stat_type) { \
+	.name = #stat, \
+	.stat_offset = offsetof(struct ena_stats_##stat_type, stat) \
+}
+
+#define ENA_STAT_RX_ENTRY(stat) \
+	ENA_STAT_ENTRY(stat, rx)
+
+#define ENA_STAT_TX_ENTRY(stat) \
+	ENA_STAT_ENTRY(stat, tx)
+
+#define ENA_STAT_GLOBAL_ENTRY(stat) \
+	ENA_STAT_ENTRY(stat, dev)
+
+static const struct ena_stats ena_stats_global_strings[] = {
+	ENA_STAT_GLOBAL_ENTRY(tx_timeout),
+	ENA_STAT_GLOBAL_ENTRY(io_suspend),
+	ENA_STAT_GLOBAL_ENTRY(io_resume),
+	ENA_STAT_GLOBAL_ENTRY(wd_expired),
+	ENA_STAT_GLOBAL_ENTRY(interface_up),
+	ENA_STAT_GLOBAL_ENTRY(interface_down),
+	ENA_STAT_GLOBAL_ENTRY(admin_q_pause),
+};
+
+static const struct ena_stats ena_stats_tx_strings[] = {
+	ENA_STAT_TX_ENTRY(cnt),
+	ENA_STAT_TX_ENTRY(bytes),
+	ENA_STAT_TX_ENTRY(queue_stop),
+	ENA_STAT_TX_ENTRY(queue_wakeup),
+	ENA_STAT_TX_ENTRY(dma_mapping_err),
+	ENA_STAT_TX_ENTRY(linearize),
+	ENA_STAT_TX_ENTRY(linearize_failed),
+	ENA_STAT_TX_ENTRY(tx_poll),
+	ENA_STAT_TX_ENTRY(doorbells),
+	ENA_STAT_TX_ENTRY(prepare_ctx_err),
+	ENA_STAT_TX_ENTRY(missing_tx_comp),
+	ENA_STAT_TX_ENTRY(bad_req_id),
+};
+
+static const struct ena_stats ena_stats_rx_strings[] = {
+	ENA_STAT_RX_ENTRY(cnt),
+	ENA_STAT_RX_ENTRY(bytes),
+	ENA_STAT_RX_ENTRY(refil_partial),
+	ENA_STAT_RX_ENTRY(bad_csum),
+	ENA_STAT_RX_ENTRY(page_alloc_fail),
+	ENA_STAT_RX_ENTRY(skb_alloc_fail),
+	ENA_STAT_RX_ENTRY(dma_mapping_err),
+	ENA_STAT_RX_ENTRY(bad_desc_num),
+	ENA_STAT_RX_ENTRY(small_copy_len_pkt),
+};
+
+static const struct ena_stats ena_stats_ena_com_strings[] = {
+	ENA_STAT_ENA_COM_ENTRY(aborted_cmd),
+	ENA_STAT_ENA_COM_ENTRY(submitted_cmd),
+	ENA_STAT_ENA_COM_ENTRY(completed_cmd),
+	ENA_STAT_ENA_COM_ENTRY(out_of_space),
+	ENA_STAT_ENA_COM_ENTRY(no_completion),
+};
+
+#define ENA_STATS_ARRAY_GLOBAL	ARRAY_SIZE(ena_stats_global_strings)
+#define ENA_STATS_ARRAY_TX	ARRAY_SIZE(ena_stats_tx_strings)
+#define ENA_STATS_ARRAY_RX	ARRAY_SIZE(ena_stats_rx_strings)
+#define ENA_STATS_ARRAY_ENA_COM	ARRAY_SIZE(ena_stats_ena_com_strings)
 
 /** Vendor ID used by Amazon devices */
 #define PCI_VENDOR_ID_AMAZON 0x1D0F
@@ -80,11 +169,9 @@
 #define PCI_DEVICE_ID_ENA_LLQ_VF	0xEC21
 
 static struct rte_pci_id pci_id_ena_map[] = {
-#define RTE_PCI_DEV_ID_DECL_ENA(vend, dev) {RTE_PCI_DEVICE(vend, dev)},
-
-	RTE_PCI_DEV_ID_DECL_ENA(PCI_VENDOR_ID_AMAZON, PCI_DEVICE_ID_ENA_VF)
-	RTE_PCI_DEV_ID_DECL_ENA(PCI_VENDOR_ID_AMAZON, PCI_DEVICE_ID_ENA_LLQ_VF)
-	{.device_id = 0},
+	{ RTE_PCI_DEVICE(PCI_VENDOR_ID_AMAZON, PCI_DEVICE_ID_ENA_VF) },
+	{ RTE_PCI_DEVICE(PCI_VENDOR_ID_AMAZON, PCI_DEVICE_ID_ENA_LLQ_VF) },
+	{ .device_id = 0 },
 };
 
 static int ena_device_init(struct ena_com_dev *ena_dev,
@@ -127,6 +214,7 @@ static int ena_rss_reta_update(struct rte_eth_dev *dev,
 static int ena_rss_reta_query(struct rte_eth_dev *dev,
 			      struct rte_eth_rss_reta_entry64 *reta_conf,
 			      uint16_t reta_size);
+static int ena_get_sset_count(struct rte_eth_dev *dev, int sset);
 
 static struct eth_dev_ops ena_dev_ops = {
 	.dev_configure        = ena_dev_configure,
@@ -143,6 +231,18 @@ static struct eth_dev_ops ena_dev_ops = {
 	.reta_update          = ena_rss_reta_update,
 	.reta_query           = ena_rss_reta_query,
 };
+
+#define NUMA_NO_NODE	SOCKET_ID_ANY
+
+static inline int ena_cpu_to_node(int cpu)
+{
+	struct rte_config *config = rte_eal_get_configuration();
+
+	if (likely(cpu < RTE_MAX_MEMZONE))
+		return config->mem_config->memzone[cpu].socket_id;
+
+	return NUMA_NO_NODE;
+}
 
 static inline void ena_rx_mbuf_prepare(struct rte_mbuf *mbuf,
 				       struct ena_com_rx_ctx *ena_rx_ctx)
@@ -224,6 +324,103 @@ static inline void ena_tx_mbuf_prepare(struct rte_mbuf *mbuf,
 	} else {
 		ena_tx_ctx->meta_valid = false;
 	}
+}
+
+static void ena_config_host_info(struct ena_com_dev *ena_dev)
+{
+	struct ena_admin_host_info *host_info;
+	int rc;
+
+	/* Allocate only the host info */
+	rc = ena_com_allocate_host_info(ena_dev);
+	if (rc) {
+		RTE_LOG(ERR, PMD, "Cannot allocate host info\n");
+		return;
+	}
+
+	host_info = ena_dev->host_attr.host_info;
+
+	host_info->os_type = ENA_ADMIN_OS_DPDK;
+	host_info->kernel_ver = RTE_VERSION;
+	strncpy((char *)host_info->kernel_ver_str, rte_version(),
+		strlen(rte_version()));
+	host_info->os_dist = RTE_VERSION;
+	strncpy((char *)host_info->os_dist_str, rte_version(),
+		strlen(rte_version()));
+	host_info->driver_version =
+		(DRV_MODULE_VER_MAJOR) |
+		(DRV_MODULE_VER_MINOR << ENA_ADMIN_HOST_INFO_MINOR_SHIFT) |
+		(DRV_MODULE_VER_SUBMINOR <<
+			ENA_ADMIN_HOST_INFO_SUB_MINOR_SHIFT);
+
+	rc = ena_com_set_host_attributes(ena_dev);
+	if (rc) {
+		if (rc == -EPERM)
+			RTE_LOG(ERR, PMD, "Cannot set host attributes\n");
+		else
+			RTE_LOG(ERR, PMD, "Cannot set host attributes\n");
+
+		goto err;
+	}
+
+	return;
+
+err:
+	ena_com_delete_host_info(ena_dev);
+}
+
+static int
+ena_get_sset_count(struct rte_eth_dev *dev, int sset)
+{
+	if (sset != ETH_SS_STATS)
+		return -EOPNOTSUPP;
+
+	 /* Workaround for clang:
+	 * touch internal structures to prevent
+	 * compiler error
+	 */
+	ENA_TOUCH(ena_stats_global_strings);
+	ENA_TOUCH(ena_stats_tx_strings);
+	ENA_TOUCH(ena_stats_rx_strings);
+	ENA_TOUCH(ena_stats_ena_com_strings);
+
+	return  dev->data->nb_tx_queues *
+		(ENA_STATS_ARRAY_TX + ENA_STATS_ARRAY_RX) +
+		ENA_STATS_ARRAY_GLOBAL + ENA_STATS_ARRAY_ENA_COM;
+}
+
+static void ena_config_debug_area(struct ena_adapter *adapter)
+{
+	u32 debug_area_size;
+	int rc, ss_count;
+
+	ss_count = ena_get_sset_count(adapter->rte_dev, ETH_SS_STATS);
+	if (ss_count <= 0) {
+		RTE_LOG(ERR, PMD, "SS count is negative\n");
+		return;
+	}
+
+	/* allocate 32 bytes for each string and 64bit for the value */
+	debug_area_size = ss_count * ETH_GSTRING_LEN + sizeof(u64) * ss_count;
+
+	rc = ena_com_allocate_debug_area(&adapter->ena_dev, debug_area_size);
+	if (rc) {
+		RTE_LOG(ERR, PMD, "Cannot allocate debug area\n");
+		return;
+	}
+
+	rc = ena_com_set_host_attributes(&adapter->ena_dev);
+	if (rc) {
+		if (rc == -EPERM)
+			RTE_LOG(WARNING, PMD, "Cannot set host attributes\n");
+		else
+			RTE_LOG(ERR, PMD, "Cannot set host attributes\n");
+		goto err;
+	}
+
+	return;
+err:
+	ena_com_delete_debug_area(&adapter->ena_dev);
 }
 
 static void ena_close(struct rte_eth_dev *dev)
@@ -742,6 +939,10 @@ static int ena_tx_queue_setup(struct rte_eth_dev *dev,
 			      __rte_unused unsigned int socket_id,
 			      __rte_unused const struct rte_eth_txconf *tx_conf)
 {
+	struct ena_com_create_io_ctx ctx =
+		/* policy set to _HOST just to satisfy icc compiler */
+		{ ENA_ADMIN_PLACEMENT_POLICY_HOST,
+		  ENA_COM_IO_QUEUE_DIRECTION_TX, 0, 0, 0, 0 };
 	struct ena_ring *txq = NULL;
 	struct ena_adapter *adapter =
 		(struct ena_adapter *)(dev->data->dev_private);
@@ -767,11 +968,15 @@ static int ena_tx_queue_setup(struct rte_eth_dev *dev,
 	}
 
 	ena_qid = ENA_IO_TXQ_IDX(queue_idx);
-	rc = ena_com_create_io_queue(ena_dev, ena_qid,
-				     ENA_COM_IO_QUEUE_DIRECTION_TX,
-				     ena_dev->tx_mem_queue_type,
-				     -1 /* admin interrupts is not used */,
-				     nb_desc);
+
+	ctx.direction = ENA_COM_IO_QUEUE_DIRECTION_TX;
+	ctx.qid = ena_qid;
+	ctx.msix_vector = -1; /* admin interrupts not used */
+	ctx.mem_queue_type = ena_dev->tx_mem_queue_type;
+	ctx.queue_size = adapter->tx_ring_size;
+	ctx.numa_node = ena_cpu_to_node(queue_idx);
+
+	rc = ena_com_create_io_queue(ena_dev, &ctx);
 	if (rc) {
 		RTE_LOG(ERR, PMD,
 			"failed to create io TX queue #%d (qid:%d) rc: %d\n",
@@ -779,6 +984,17 @@ static int ena_tx_queue_setup(struct rte_eth_dev *dev,
 	}
 	txq->ena_com_io_cq = &ena_dev->io_cq_queues[ena_qid];
 	txq->ena_com_io_sq = &ena_dev->io_sq_queues[ena_qid];
+
+	rc = ena_com_get_io_handlers(ena_dev, ena_qid,
+				     &txq->ena_com_io_sq,
+				     &txq->ena_com_io_cq);
+	if (rc) {
+		RTE_LOG(ERR, PMD,
+			"Failed to get TX queue handlers. TX queue num %d rc: %d\n",
+			queue_idx, rc);
+		ena_com_destroy_io_queue(ena_dev, ena_qid);
+		goto err;
+	}
 
 	txq->port_id = dev->data->port_id;
 	txq->next_to_clean = 0;
@@ -808,7 +1024,7 @@ static int ena_tx_queue_setup(struct rte_eth_dev *dev,
 	/* Store pointer to this queue in upper layer */
 	txq->configured = 1;
 	dev->data->tx_queues[queue_idx] = txq;
-
+err:
 	return rc;
 }
 
@@ -819,6 +1035,10 @@ static int ena_rx_queue_setup(struct rte_eth_dev *dev,
 			      __rte_unused const struct rte_eth_rxconf *rx_conf,
 			      struct rte_mempool *mp)
 {
+	struct ena_com_create_io_ctx ctx =
+		/* policy set to _HOST just to satisfy icc compiler */
+		{ ENA_ADMIN_PLACEMENT_POLICY_HOST,
+		  ENA_COM_IO_QUEUE_DIRECTION_RX, 0, 0, 0, 0 };
 	struct ena_adapter *adapter =
 		(struct ena_adapter *)(dev->data->dev_private);
 	struct ena_ring *rxq = NULL;
@@ -842,17 +1062,31 @@ static int ena_rx_queue_setup(struct rte_eth_dev *dev,
 	}
 
 	ena_qid = ENA_IO_RXQ_IDX(queue_idx);
-	rc = ena_com_create_io_queue(ena_dev, ena_qid,
-				     ENA_COM_IO_QUEUE_DIRECTION_RX,
-				     ENA_ADMIN_PLACEMENT_POLICY_HOST,
-				     -1 /* admin interrupts not used */,
-				     nb_desc);
+
+	ctx.qid = ena_qid;
+	ctx.direction = ENA_COM_IO_QUEUE_DIRECTION_RX;
+	ctx.mem_queue_type = ENA_ADMIN_PLACEMENT_POLICY_HOST;
+	ctx.msix_vector = -1; /* admin interrupts not used */
+	ctx.queue_size = adapter->rx_ring_size;
+	ctx.numa_node = ena_cpu_to_node(queue_idx);
+
+	rc = ena_com_create_io_queue(ena_dev, &ctx);
 	if (rc)
 		RTE_LOG(ERR, PMD, "failed to create io RX queue #%d rc: %d\n",
 			queue_idx, rc);
 
 	rxq->ena_com_io_cq = &ena_dev->io_cq_queues[ena_qid];
 	rxq->ena_com_io_sq = &ena_dev->io_sq_queues[ena_qid];
+
+	rc = ena_com_get_io_handlers(ena_dev, ena_qid,
+				     &rxq->ena_com_io_sq,
+				     &rxq->ena_com_io_cq);
+	if (rc) {
+		RTE_LOG(ERR, PMD,
+			"Failed to get RX queue handlers. RX queue num %d rc: %d\n",
+			queue_idx, rc);
+		ena_com_destroy_io_queue(ena_dev, ena_qid);
+	}
 
 	rxq->port_id = dev->data->port_id;
 	rxq->next_to_clean = 0;
@@ -920,10 +1154,14 @@ static int ena_populate_rx_queue(struct ena_ring *rxq, unsigned int count)
 		next_to_use = ENA_RX_RING_IDX_NEXT(next_to_use, ring_size);
 	}
 
-	rte_wmb();
-	rxq->next_to_use = next_to_use;
-	/* let HW know that it can fill buffers with data */
-	ena_com_write_sq_doorbell(rxq->ena_com_io_sq);
+	/* When we submitted free recources to device... */
+	if (i > 0) {
+		/* ...let HW know that it can fill buffers with data */
+		rte_wmb();
+		ena_com_write_sq_doorbell(rxq->ena_com_io_sq);
+
+		rxq->next_to_use = next_to_use;
+	}
 
 	return i;
 }
@@ -932,6 +1170,7 @@ static int ena_device_init(struct ena_com_dev *ena_dev,
 			   struct ena_com_dev_get_features_ctx *get_feat_ctx)
 {
 	int rc;
+	bool readless_supported;
 
 	/* Initialize mmio registers */
 	rc = ena_com_mmio_reg_read_request_init(ena_dev);
@@ -939,6 +1178,14 @@ static int ena_device_init(struct ena_com_dev *ena_dev,
 		RTE_LOG(ERR, PMD, "failed to init mmio read less\n");
 		return rc;
 	}
+
+	/* The PCIe configuration space revision id indicate if mmio reg
+	 * read is disabled.
+	 */
+	readless_supported =
+		!(((struct rte_pci_device *)ena_dev->dmadev)->id.class_id
+			       & ENA_MMIO_DISABLE_REG_READ);
+	ena_com_set_mmio_read_mode(ena_dev, readless_supported);
 
 	/* reset device */
 	rc = ena_com_dev_reset(ena_dev);
@@ -963,6 +1210,8 @@ static int ena_device_init(struct ena_com_dev *ena_dev,
 			"cannot initialize ena admin queue with device\n");
 		goto err_mmio_read_less;
 	}
+
+	ena_config_host_info(ena_dev);
 
 	/* To enable the msix interrupts the driver needs to know the number
 	 * of queues. So the driver uses polling mode to retrieve this
@@ -1076,6 +1325,8 @@ static int eth_ena_dev_init(struct rte_eth_dev *eth_dev)
 
 	/* prepare ring structures */
 	ena_init_rings(adapter);
+
+	ena_config_debug_area(adapter);
 
 	/* Set max MTU for this device */
 	adapter->max_mtu = get_feat_ctx.dev_attr.max_mtu;
@@ -1316,7 +1567,7 @@ static uint16_t eth_ena_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 	struct ena_tx_buffer *tx_info;
 	struct ena_com_buf *ebuf;
 	uint16_t rc, req_id, total_tx_descs = 0;
-	int sent_idx = 0;
+	uint16_t sent_idx = 0;
 	int nb_hw_desc;
 
 	/* Check adapter state */
@@ -1395,9 +1646,14 @@ static uint16_t eth_ena_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 		next_to_use = ENA_TX_RING_IDX_NEXT(next_to_use, ring_size);
 	}
 
-	/* Let HW do it's best :-) */
-	rte_wmb();
-	ena_com_write_sq_doorbell(tx_ring->ena_com_io_sq);
+	/* If there are ready packets to be xmitted... */
+	if (sent_idx > 0) {
+		/* ...let HW do its best :-) */
+		rte_wmb();
+		ena_com_write_sq_doorbell(tx_ring->ena_com_io_sq);
+
+		tx_ring->next_to_use = next_to_use;
+	}
 
 	/* Clear complete packets  */
 	while (ena_com_tx_comp_req_id_get(tx_ring->ena_com_io_cq, &req_id) >= 0) {
@@ -1420,9 +1676,11 @@ static uint16_t eth_ena_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 			break;
 	}
 
-	/* acknowledge completion of sent packets */
-	ena_com_comp_ack(tx_ring->ena_com_io_sq, total_tx_descs);
-	tx_ring->next_to_use = next_to_use;
+	if (total_tx_descs > 0) {
+		/* acknowledge completion of sent packets */
+		ena_com_comp_ack(tx_ring->ena_com_io_sq, total_tx_descs);
+	}
+
 	return sent_idx;
 }
 
@@ -1445,9 +1703,9 @@ rte_ena_pmd_init(const char *name __rte_unused,
 };
 
 struct rte_driver ena_pmd_drv = {
-	.name = "ena_driver",
 	.type = PMD_PDEV,
 	.init = rte_ena_pmd_init,
 };
 
-PMD_REGISTER_DRIVER(ena_pmd_drv);
+PMD_REGISTER_DRIVER(ena_pmd_drv, ena);
+DRIVER_REGISTER_PCI_TABLE(ena, pci_id_ena_map);

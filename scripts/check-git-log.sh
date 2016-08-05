@@ -49,10 +49,12 @@ fi
 
 range=${1:-origin/master..}
 
+commits=$(git log --format='%h' $range)
 headlines=$(git log --format='%s' $range)
 bodylines=$(git log --format='%b' $range)
-tags=$(git log --format='%b' $range | grep -i -e 'by *:' -e 'fix.*:')
 fixes=$(git log --format='%h %s' $range | grep -i ': *fix' | cut -d' ' -f1)
+tags=$(git log --format='%b' $range | grep -i -e 'by *:' -e 'fix.*:')
+bytag='\(Reported\|Suggested\|Signed-off\|Acked\|Reviewed\|Tested\)-by:'
 
 # check headline format (spacing, no punctuation, no code)
 bad=$(echo "$headlines" | grep --color=always \
@@ -62,11 +64,29 @@ bad=$(echo "$headlines" | grep --color=always \
 	-e '\.$' \
 	-e '[,;!?&|]' \
 	-e ':.*_' \
-	-e '^[^:]*$' \
+	-e '^[^:]\+$' \
 	-e ':[^ ]' \
 	-e ' :' \
 	| sed 's,^,\t,')
 [ -z "$bad" ] || printf "Wrong headline format:\n$bad\n"
+
+# check headline prefix when touching only drivers, e.g. net/<driver name>
+bad=$(for commit in $commits ; do
+	headline=$(git log --format='%s' -1 $commit)
+	files=$(git diff-tree --no-commit-id --name-only -r $commit)
+	[ -z "$(echo "$files" | grep -v '^\(drivers\|doc\|config\)/')" ] ||
+		continue
+	drv=$(echo "$files" | grep '^drivers/' | cut -d "/" -f 2,3 | sort -u)
+	drvgrp=$(echo "$drv" | cut -d "/" -f 1 | uniq)
+	if [ $(echo "$drvgrp" | wc -l) -gt 1 ] ; then
+		echo "$headline" | grep -v '^drivers:'
+	elif [ $(echo "$drv" | wc -l) -gt 1 ] ; then
+		echo "$headline" | grep -v "^$drvgrp"
+	else
+		echo "$headline" | grep -v "^$drv"
+	fi
+done | sed 's,^,\t,')
+[ -z "$bad" ] || printf "Wrong headline prefix:\n$bad\n"
 
 # check headline label for common typos
 bad=$(echo "$headlines" | grep --color=always \
@@ -89,11 +109,14 @@ bad=$(echo "$headlines" | grep --color=always \
 bad=$(echo "$headlines" | grep -E --color=always \
 	-e '\<(rx|tx|RX|TX)\>' \
 	-e '\<[pv]f\>' \
+	-e '\<[hsf]w\>' \
 	-e '\<l[234]\>' \
+	-e ':.*\<api\>' \
 	-e ':.*\<dma\>' \
 	-e ':.*\<pci\>' \
 	-e ':.*\<mtu\>' \
 	-e ':.*\<mac\>' \
+	-e ':.*\<numa\>' \
 	-e ':.*\<vlan\>' \
 	-e ':.*\<rss\>' \
 	-e ':.*\<freebsd\>' \
@@ -106,20 +129,43 @@ bad=$(echo "$headlines" | grep -E --color=always \
 	| sed 's,^,\t,')
 [ -z "$bad" ] || printf "Wrong headline lowercase:\n$bad\n"
 
+# special case check for VMDq to give good error message
+bad=$(echo "$headlines" | grep -E --color=always \
+	-e '\<(vmdq|VMDQ)\>' \
+	| sed 's,^,\t,')
+[ -z "$bad" ] || printf "Wrong headline capitalization, use 'VMDq':\n$bad\n"
+
 # check headline length (60 max)
-bad=$(echo "$headlines" | awk 'length>60 {print}' | sed 's,^,\t,')
+bad=$(echo "$headlines" |
+	awk 'length>60 {print}' |
+	sed 's,^,\t,')
 [ -z "$bad" ] || printf "Headline too long:\n$bad\n"
 
 # check body lines length (75 max)
-bad=$(echo "$bodylines" | awk 'length>75 {print}' | sed 's,^,\t,')
+bad=$(echo "$bodylines" | grep -v '^Fixes:' |
+	awk 'length>75 {print}' |
+	sed 's,^,\t,')
 [ -z "$bad" ] || printf "Line too long:\n$bad\n"
+
+# check starting commit message with "It"
+bad=$(for commit in $commits ; do
+	firstbodyline=$(git log --format='%b' -1 $commit | head -n1)
+	echo "$firstbodyline" | grep --color=always -ie '^It '
+done | sed 's,^,\t,')
+[ -z "$bad" ] || printf "Wrong beginning of commit message:\n$bad\n"
 
 # check tags spelling
 bad=$(echo "$tags" |
-	grep -v '^\(Reported\|Suggested\|Signed-off\|Acked\|Reviewed\|Tested\)-by: [^,]* <.*@.*>$' |
+	grep -v "^$bytag [^,]* <.*@.*>$" |
 	grep -v '^Fixes: [0-9a-f]\{7\}[0-9a-f]* (".*")$' |
 	sed 's,^.,\t&,')
 [ -z "$bad" ] || printf "Wrong tag:\n$bad\n"
+
+# check blank line after last Fixes: tag
+bad=$(echo "$bodylines" |
+	sed -n 'N;/\nFixes:/D;/\n$/D;/^Fixes:/P' |
+	sed 's,^.,\t&,')
+[ -z "$bad" ] || printf "Missing blank line after 'Fixes' tag:\n$bad\n"
 
 # check missing Fixes: tag
 bad=$(for fix in $fixes ; do
@@ -134,7 +180,11 @@ IFS='
 fixtags=$(echo "$tags" | grep '^Fixes: ')
 bad=$(for fixtag in $fixtags ; do
 	hash=$(echo "$fixtag" | sed 's,^Fixes: \([0-9a-f]*\).*,\1,')
-	good="Fixes: $hash "$(git log --format='("%s")' -1 $hash 2>&-)
+	if git branch --contains $hash | grep -q '^\*' ; then
+		good="Fixes: $hash "$(git log --format='("%s")' -1 $hash 2>&-)
+	else
+		good="reference not in current branch"
+	fi
 	printf "$fixtag" | grep -v "^$good$"
 done | sed 's,^,\t,')
 [ -z "$bad" ] || printf "Wrong 'Fixes' reference:\n$bad\n"

@@ -221,7 +221,7 @@ pipeline_fc_parse_args(struct pipeline_flow_classification *p,
 	uint32_t flow_id_offset_present = 0;
 
 	uint32_t i;
-	char key_mask_str[PIPELINE_FC_FLOW_KEY_MAX_SIZE * 2];
+	char key_mask_str[PIPELINE_FC_FLOW_KEY_MAX_SIZE * 2 + 1];
 
 	p->hash_offset = 0;
 
@@ -303,13 +303,13 @@ pipeline_fc_parse_args(struct pipeline_flow_classification *p,
 				params->name, arg_name);
 			key_mask_present = 1;
 
-			PIPELINE_ARG_CHECK((mask_str_len <
+			PIPELINE_ARG_CHECK((mask_str_len <=
 				(PIPELINE_FC_FLOW_KEY_MAX_SIZE * 2)),
 				"Parse error in section \"%s\": entry "
 				"\"%s\" is too long", params->name,
 				arg_name);
 
-			snprintf(key_mask_str, sizeof(key_mask_str), "%s",
+			snprintf(key_mask_str, mask_str_len + 1, "%s",
 				arg_value);
 
 			continue;
@@ -643,27 +643,6 @@ pipeline_fc_free(void *pipeline)
 }
 
 static int
-pipeline_fc_track(void *pipeline,
-	__rte_unused uint32_t port_in,
-	uint32_t *port_out)
-{
-	struct pipeline *p = (struct pipeline *) pipeline;
-
-	/* Check input arguments */
-	if ((p == NULL) ||
-		(port_in >= p->n_ports_in) ||
-		(port_out == NULL))
-		return -1;
-
-	if (p->n_ports_in == 1) {
-		*port_out = 0;
-		return 0;
-	}
-
-	return -1;
-}
-
-static int
 pipeline_fc_timer(void *pipeline)
 {
 	struct pipeline *p = (struct pipeline *) pipeline;
@@ -807,5 +786,4 @@ struct pipeline_be_ops pipeline_flow_classification_be_ops = {
 	.f_free = pipeline_fc_free,
 	.f_run = NULL,
 	.f_timer = pipeline_fc_timer,
-	.f_track = pipeline_fc_track,
 };

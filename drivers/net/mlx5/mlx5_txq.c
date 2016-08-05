@@ -60,6 +60,7 @@
 #endif
 
 #include "mlx5_utils.h"
+#include "mlx5_defs.h"
 #include "mlx5.h"
 #include "mlx5_rxtx.h"
 #include "mlx5_autoconf.h"
@@ -68,118 +69,62 @@
 /**
  * Allocate TX queue elements.
  *
- * @param txq
+ * @param txq_ctrl
  *   Pointer to TX queue structure.
  * @param elts_n
  *   Number of elements to allocate.
- *
- * @return
- *   0 on success, errno value on failure.
  */
-static int
-txq_alloc_elts(struct txq *txq, unsigned int elts_n)
+static void
+txq_alloc_elts(struct txq_ctrl *txq_ctrl, unsigned int elts_n)
 {
 	unsigned int i;
-	struct txq_elt (*elts)[elts_n] =
-		rte_calloc_socket("TXQ", 1, sizeof(*elts), 0, txq->socket);
-	linear_t (*elts_linear)[elts_n] =
-		rte_calloc_socket("TXQ", 1, sizeof(*elts_linear), 0,
-				  txq->socket);
-	struct ibv_mr *mr_linear = NULL;
-	int ret = 0;
 
-	if ((elts == NULL) || (elts_linear == NULL)) {
-		ERROR("%p: can't allocate packets array", (void *)txq);
-		ret = ENOMEM;
-		goto error;
+	for (i = 0; (i != elts_n); ++i)
+		(*txq_ctrl->txq.elts)[i] = NULL;
+	for (i = 0; (i != txq_ctrl->txq.wqe_n); ++i) {
+		volatile union mlx5_wqe *wqe = &(*txq_ctrl->txq.wqes)[i];
+
+		memset((void *)(uintptr_t)wqe, 0x0, sizeof(*wqe));
 	}
-	mr_linear =
-		ibv_reg_mr(txq->priv->pd, elts_linear, sizeof(*elts_linear),
-			   (IBV_ACCESS_LOCAL_WRITE | IBV_ACCESS_REMOTE_WRITE));
-	if (mr_linear == NULL) {
-		ERROR("%p: unable to configure MR, ibv_reg_mr() failed",
-		      (void *)txq);
-		ret = EINVAL;
-		goto error;
-	}
-	for (i = 0; (i != elts_n); ++i) {
-		struct txq_elt *elt = &(*elts)[i];
-
-		elt->buf = NULL;
-	}
-	DEBUG("%p: allocated and configured %u WRs", (void *)txq, elts_n);
-	txq->elts_n = elts_n;
-	txq->elts = elts;
-	txq->elts_head = 0;
-	txq->elts_tail = 0;
-	txq->elts_comp = 0;
-	/* Request send completion every MLX5_PMD_TX_PER_COMP_REQ packets or
-	 * at least 4 times per ring. */
-	txq->elts_comp_cd_init =
-		((MLX5_PMD_TX_PER_COMP_REQ < (elts_n / 4)) ?
-		 MLX5_PMD_TX_PER_COMP_REQ : (elts_n / 4));
-	txq->elts_comp_cd = txq->elts_comp_cd_init;
-	txq->elts_linear = elts_linear;
-	txq->mr_linear = mr_linear;
-	assert(ret == 0);
-	return 0;
-error:
-	if (mr_linear != NULL)
-		claim_zero(ibv_dereg_mr(mr_linear));
-
-	rte_free(elts_linear);
-	rte_free(elts);
-
-	DEBUG("%p: failed, freed everything", (void *)txq);
-	assert(ret > 0);
-	return ret;
+	DEBUG("%p: allocated and configured %u WRs", (void *)txq_ctrl, elts_n);
+	txq_ctrl->txq.elts_head = 0;
+	txq_ctrl->txq.elts_tail = 0;
+	txq_ctrl->txq.elts_comp = 0;
 }
 
 /**
  * Free TX queue elements.
  *
- * @param txq
+ * @param txq_ctrl
  *   Pointer to TX queue structure.
  */
 static void
-txq_free_elts(struct txq *txq)
+txq_free_elts(struct txq_ctrl *txq_ctrl)
 {
-	unsigned int elts_n = txq->elts_n;
-	unsigned int elts_head = txq->elts_head;
-	unsigned int elts_tail = txq->elts_tail;
-	struct txq_elt (*elts)[elts_n] = txq->elts;
-	linear_t (*elts_linear)[elts_n] = txq->elts_linear;
-	struct ibv_mr *mr_linear = txq->mr_linear;
+	unsigned int elts_n = txq_ctrl->txq.elts_n;
+	unsigned int elts_head = txq_ctrl->txq.elts_head;
+	unsigned int elts_tail = txq_ctrl->txq.elts_tail;
+	struct rte_mbuf *(*elts)[elts_n] = txq_ctrl->txq.elts;
 
-	DEBUG("%p: freeing WRs", (void *)txq);
-	txq->elts_n = 0;
-	txq->elts_head = 0;
-	txq->elts_tail = 0;
-	txq->elts_comp = 0;
-	txq->elts_comp_cd = 0;
-	txq->elts_comp_cd_init = 0;
-	txq->elts = NULL;
-	txq->elts_linear = NULL;
-	txq->mr_linear = NULL;
-	if (mr_linear != NULL)
-		claim_zero(ibv_dereg_mr(mr_linear));
+	DEBUG("%p: freeing WRs", (void *)txq_ctrl);
+	txq_ctrl->txq.elts_head = 0;
+	txq_ctrl->txq.elts_tail = 0;
+	txq_ctrl->txq.elts_comp = 0;
 
-	rte_free(elts_linear);
-	if (elts == NULL)
-		return;
 	while (elts_tail != elts_head) {
-		struct txq_elt *elt = &(*elts)[elts_tail];
+		struct rte_mbuf *elt = (*elts)[elts_tail];
 
-		assert(elt->buf != NULL);
-		rte_pktmbuf_free(elt->buf);
+		assert(elt != NULL);
+		rte_pktmbuf_free(elt);
 #ifndef NDEBUG
 		/* Poisoning. */
-		memset(elt, 0x77, sizeof(*elt));
+		memset(&(*elts)[elts_tail],
+		       0x77,
+		       sizeof((*elts)[elts_tail]));
 #endif
 		if (++elts_tail == elts_n)
 			elts_tail = 0;
 	}
-	rte_free(elts);
 }
 
 /**
@@ -187,66 +132,104 @@ txq_free_elts(struct txq *txq)
  *
  * Destroy objects, free allocated memory and reset the structure for reuse.
  *
- * @param txq
+ * @param txq_ctrl
  *   Pointer to TX queue structure.
  */
 void
-txq_cleanup(struct txq *txq)
+txq_cleanup(struct txq_ctrl *txq_ctrl)
 {
 	struct ibv_exp_release_intf_params params;
 	size_t i;
 
-	DEBUG("cleaning up %p", (void *)txq);
-	txq_free_elts(txq);
-	txq->poll_cnt = NULL;
-#if MLX5_PMD_MAX_INLINE > 0
-	txq->send_pending_inline = NULL;
-#endif
-	txq->send_flush = NULL;
-	if (txq->if_qp != NULL) {
-		assert(txq->priv != NULL);
-		assert(txq->priv->ctx != NULL);
-		assert(txq->qp != NULL);
+	DEBUG("cleaning up %p", (void *)txq_ctrl);
+	txq_free_elts(txq_ctrl);
+	if (txq_ctrl->if_qp != NULL) {
+		assert(txq_ctrl->priv != NULL);
+		assert(txq_ctrl->priv->ctx != NULL);
+		assert(txq_ctrl->qp != NULL);
 		params = (struct ibv_exp_release_intf_params){
 			.comp_mask = 0,
 		};
-		claim_zero(ibv_exp_release_intf(txq->priv->ctx,
-						txq->if_qp,
+		claim_zero(ibv_exp_release_intf(txq_ctrl->priv->ctx,
+						txq_ctrl->if_qp,
 						&params));
 	}
-	if (txq->if_cq != NULL) {
-		assert(txq->priv != NULL);
-		assert(txq->priv->ctx != NULL);
-		assert(txq->cq != NULL);
+	if (txq_ctrl->if_cq != NULL) {
+		assert(txq_ctrl->priv != NULL);
+		assert(txq_ctrl->priv->ctx != NULL);
+		assert(txq_ctrl->cq != NULL);
 		params = (struct ibv_exp_release_intf_params){
 			.comp_mask = 0,
 		};
-		claim_zero(ibv_exp_release_intf(txq->priv->ctx,
-						txq->if_cq,
+		claim_zero(ibv_exp_release_intf(txq_ctrl->priv->ctx,
+						txq_ctrl->if_cq,
 						&params));
 	}
-	if (txq->qp != NULL)
-		claim_zero(ibv_destroy_qp(txq->qp));
-	if (txq->cq != NULL)
-		claim_zero(ibv_destroy_cq(txq->cq));
-	if (txq->rd != NULL) {
+	if (txq_ctrl->qp != NULL)
+		claim_zero(ibv_destroy_qp(txq_ctrl->qp));
+	if (txq_ctrl->cq != NULL)
+		claim_zero(ibv_destroy_cq(txq_ctrl->cq));
+	if (txq_ctrl->rd != NULL) {
 		struct ibv_exp_destroy_res_domain_attr attr = {
 			.comp_mask = 0,
 		};
 
-		assert(txq->priv != NULL);
-		assert(txq->priv->ctx != NULL);
-		claim_zero(ibv_exp_destroy_res_domain(txq->priv->ctx,
-						      txq->rd,
+		assert(txq_ctrl->priv != NULL);
+		assert(txq_ctrl->priv->ctx != NULL);
+		claim_zero(ibv_exp_destroy_res_domain(txq_ctrl->priv->ctx,
+						      txq_ctrl->rd,
 						      &attr));
 	}
-	for (i = 0; (i != RTE_DIM(txq->mp2mr)); ++i) {
-		if (txq->mp2mr[i].mp == NULL)
+	for (i = 0; (i != RTE_DIM(txq_ctrl->txq.mp2mr)); ++i) {
+		if (txq_ctrl->txq.mp2mr[i].mp == NULL)
 			break;
-		assert(txq->mp2mr[i].mr != NULL);
-		claim_zero(ibv_dereg_mr(txq->mp2mr[i].mr));
+		assert(txq_ctrl->txq.mp2mr[i].mr != NULL);
+		claim_zero(ibv_dereg_mr(txq_ctrl->txq.mp2mr[i].mr));
 	}
-	memset(txq, 0, sizeof(*txq));
+	memset(txq_ctrl, 0, sizeof(*txq_ctrl));
+}
+
+/**
+ * Initialize TX queue.
+ *
+ * @param tmpl
+ *   Pointer to TX queue control template.
+ * @param txq_ctrl
+ *   Pointer to TX queue control.
+ *
+ * @return
+ *   0 on success, errno value on failure.
+ */
+static inline int
+txq_setup(struct txq_ctrl *tmpl, struct txq_ctrl *txq_ctrl)
+{
+	struct mlx5_qp *qp = to_mqp(tmpl->qp);
+	struct ibv_cq *ibcq = tmpl->cq;
+	struct mlx5_cq *cq = to_mxxx(cq, cq);
+
+	if (cq->cqe_sz != RTE_CACHE_LINE_SIZE) {
+		ERROR("Wrong MLX5_CQE_SIZE environment variable value: "
+		      "it should be set to %u", RTE_CACHE_LINE_SIZE);
+		return EINVAL;
+	}
+	tmpl->txq.cqe_n = ibcq->cqe + 1;
+	tmpl->txq.qp_num_8s = qp->ctrl_seg.qp_num << 8;
+	tmpl->txq.wqes =
+		(volatile union mlx5_wqe (*)[])
+		(uintptr_t)qp->gen_data.sqstart;
+	tmpl->txq.wqe_n = qp->sq.wqe_cnt;
+	tmpl->txq.qp_db = &qp->gen_data.db[MLX5_SND_DBR];
+	tmpl->txq.bf_reg = qp->gen_data.bf->reg;
+	tmpl->txq.bf_offset = qp->gen_data.bf->offset;
+	tmpl->txq.bf_buf_size = qp->gen_data.bf->buf_size;
+	tmpl->txq.cq_db = cq->dbrec;
+	tmpl->txq.cqes =
+		(volatile struct mlx5_cqe (*)[])
+		(uintptr_t)cq->active_buf->buf;
+	tmpl->txq.elts =
+		(struct rte_mbuf *(*)[tmpl->txq.elts_n])
+		((uintptr_t)txq_ctrl + sizeof(*txq_ctrl));
+	return 0;
 }
 
 /**
@@ -254,7 +237,7 @@ txq_cleanup(struct txq *txq)
  *
  * @param dev
  *   Pointer to Ethernet device structure.
- * @param txq
+ * @param txq_ctrl
  *   Pointer to TX queue structure.
  * @param desc
  *   Number of descriptors to configure in queue.
@@ -267,13 +250,14 @@ txq_cleanup(struct txq *txq)
  *   0 on success, errno value on failure.
  */
 int
-txq_setup(struct rte_eth_dev *dev, struct txq *txq, uint16_t desc,
-	  unsigned int socket, const struct rte_eth_txconf *conf)
+txq_ctrl_setup(struct rte_eth_dev *dev, struct txq_ctrl *txq_ctrl,
+	       uint16_t desc, unsigned int socket,
+	       const struct rte_eth_txconf *conf)
 {
 	struct priv *priv = mlx5_get_priv(dev);
-	struct txq tmpl = {
+	struct txq_ctrl tmpl = {
 		.priv = priv,
-		.socket = socket
+		.socket = socket,
 	};
 	union {
 		struct ibv_exp_query_intf_params params;
@@ -281,17 +265,19 @@ txq_setup(struct rte_eth_dev *dev, struct txq *txq, uint16_t desc,
 		struct ibv_exp_res_domain_init_attr rd;
 		struct ibv_exp_cq_init_attr cq;
 		struct ibv_exp_qp_attr mod;
+		struct ibv_exp_cq_attr cq_attr;
 	} attr;
 	enum ibv_exp_query_intf_status status;
 	int ret = 0;
 
-	(void)conf; /* Thresholds configuration (ignored). */
-	if ((desc == 0) || (desc % MLX5_PMD_SGE_WR_N)) {
-		ERROR("%p: invalid number of TX descriptors (must be a"
-		      " multiple of %d)", (void *)dev, MLX5_PMD_SGE_WR_N);
-		return EINVAL;
+	if (mlx5_getenv_int("MLX5_ENABLE_CQE_COMPRESSION")) {
+		ret = ENOTSUP;
+		ERROR("MLX5_ENABLE_CQE_COMPRESSION must never be set");
+		goto error;
 	}
-	desc /= MLX5_PMD_SGE_WR_N;
+	(void)conf; /* Thresholds configuration (ignored). */
+	assert(desc > MLX5_TX_COMP_THRESH);
+	tmpl.txq.elts_n = desc;
 	/* MRs will be registered in mp2mr[] later. */
 	attr.rd = (struct ibv_exp_res_domain_init_attr){
 		.comp_mask = (IBV_EXP_RES_DOMAIN_THREAD_MODEL |
@@ -310,7 +296,10 @@ txq_setup(struct rte_eth_dev *dev, struct txq *txq, uint16_t desc,
 		.comp_mask = IBV_EXP_CQ_INIT_ATTR_RES_DOMAIN,
 		.res_domain = tmpl.rd,
 	};
-	tmpl.cq = ibv_exp_create_cq(priv->ctx, desc, NULL, NULL, 0, &attr.cq);
+	tmpl.cq = ibv_exp_create_cq(priv->ctx,
+				    (((desc / MLX5_TX_COMP_THRESH) - 1) ?
+				     ((desc / MLX5_TX_COMP_THRESH) - 1) : 1),
+				    NULL, NULL, 0, &attr.cq);
 	if (tmpl.cq == NULL) {
 		ret = ENOMEM;
 		ERROR("%p: CQ creation failure: %s",
@@ -331,14 +320,14 @@ txq_setup(struct rte_eth_dev *dev, struct txq *txq, uint16_t desc,
 			.max_send_wr = ((priv->device_attr.max_qp_wr < desc) ?
 					priv->device_attr.max_qp_wr :
 					desc),
-			/* Max number of scatter/gather elements in a WR. */
-			.max_send_sge = ((priv->device_attr.max_sge <
-					  MLX5_PMD_SGE_WR_N) ?
-					 priv->device_attr.max_sge :
-					 MLX5_PMD_SGE_WR_N),
-#if MLX5_PMD_MAX_INLINE > 0
-			.max_inline_data = MLX5_PMD_MAX_INLINE,
-#endif
+			/*
+			 * Max number of scatter/gather elements in a WR,
+			 * must be 1 to prevent libmlx5 from trying to affect
+			 * too much memory. TX gather is not impacted by the
+			 * priv->device_attr.max_sge limit and will still work
+			 * properly.
+			 */
+			.max_send_sge = 1,
 		},
 		.qp_type = IBV_QPT_RAW_PACKET,
 		/* Do *NOT* enable this, completions events are managed per
@@ -349,6 +338,10 @@ txq_setup(struct rte_eth_dev *dev, struct txq *txq, uint16_t desc,
 		.comp_mask = (IBV_EXP_QP_INIT_ATTR_PD |
 			      IBV_EXP_QP_INIT_ATTR_RES_DOMAIN),
 	};
+	if (priv->txq_inline && priv->txqs_n >= priv->txqs_inline) {
+		tmpl.txq.max_inline = priv->txq_inline;
+		attr.init.cap.max_inline_data = tmpl.txq.max_inline;
+	}
 	tmpl.qp = ibv_exp_create_qp(priv->ctx, &attr.init);
 	if (tmpl.qp == NULL) {
 		ret = (errno ? errno : EINVAL);
@@ -356,10 +349,11 @@ txq_setup(struct rte_eth_dev *dev, struct txq *txq, uint16_t desc,
 		      (void *)dev, strerror(ret));
 		goto error;
 	}
-#if MLX5_PMD_MAX_INLINE > 0
-	/* ibv_create_qp() updates this value. */
-	tmpl.max_inline = attr.init.cap.max_inline_data;
-#endif
+	DEBUG("TX queue capabilities: max_send_wr=%u, max_send_sge=%u,"
+	      " max_inline_data=%u",
+	      attr.init.cap.max_send_wr,
+	      attr.init.cap.max_send_sge,
+	      attr.init.cap.max_inline_data);
 	attr.mod = (struct ibv_exp_qp_attr){
 		/* Move the QP to this state. */
 		.qp_state = IBV_QPS_INIT,
@@ -373,12 +367,13 @@ txq_setup(struct rte_eth_dev *dev, struct txq *txq, uint16_t desc,
 		      (void *)dev, strerror(ret));
 		goto error;
 	}
-	ret = txq_alloc_elts(&tmpl, desc);
+	ret = txq_setup(&tmpl, txq_ctrl);
 	if (ret) {
-		ERROR("%p: TXQ allocation failed: %s",
+		ERROR("%p: cannot initialize TX queue structure: %s",
 		      (void *)dev, strerror(ret));
 		goto error;
 	}
+	txq_alloc_elts(&tmpl, desc);
 	attr.mod = (struct ibv_exp_qp_attr){
 		.qp_state = IBV_QPS_RTR
 	};
@@ -410,17 +405,13 @@ txq_setup(struct rte_eth_dev *dev, struct txq *txq, uint16_t desc,
 	attr.params = (struct ibv_exp_query_intf_params){
 		.intf_scope = IBV_EXP_INTF_GLOBAL,
 		.intf = IBV_EXP_INTF_QP_BURST,
-		.obj = tmpl.qp,
-#ifdef HAVE_VERBS_VLAN_INSERTION
 		.intf_version = 1,
-#endif
-#ifdef HAVE_EXP_QP_BURST_CREATE_ENABLE_MULTI_PACKET_SEND_WR
+		.obj = tmpl.qp,
 		/* Enable multi-packet send if supported. */
 		.family_flags =
-			(priv->mps ?
+			((priv->mps && !priv->sriov) ?
 			 IBV_EXP_QP_BURST_CREATE_ENABLE_MULTI_PACKET_SEND_WR :
 			 0),
-#endif
 	};
 	tmpl.if_qp = ibv_exp_query_intf(priv->ctx, &attr.params, &status);
 	if (tmpl.if_qp == NULL) {
@@ -430,30 +421,12 @@ txq_setup(struct rte_eth_dev *dev, struct txq *txq, uint16_t desc,
 		goto error;
 	}
 	/* Clean up txq in case we're reinitializing it. */
-	DEBUG("%p: cleaning-up old txq just in case", (void *)txq);
-	txq_cleanup(txq);
-	*txq = tmpl;
-	txq->poll_cnt = txq->if_cq->poll_cnt;
-#if MLX5_PMD_MAX_INLINE > 0
-	txq->send_pending_inline = txq->if_qp->send_pending_inline;
-#ifdef HAVE_VERBS_VLAN_INSERTION
-	txq->send_pending_inline_vlan = txq->if_qp->send_pending_inline_vlan;
-#endif
-#endif
-#if MLX5_PMD_SGE_WR_N > 1
-	txq->send_pending_sg_list = txq->if_qp->send_pending_sg_list;
-#ifdef HAVE_VERBS_VLAN_INSERTION
-	txq->send_pending_sg_list_vlan = txq->if_qp->send_pending_sg_list_vlan;
-#endif
-#endif
-	txq->send_pending = txq->if_qp->send_pending;
-#ifdef HAVE_VERBS_VLAN_INSERTION
-	txq->send_pending_vlan = txq->if_qp->send_pending_vlan;
-#endif
-	txq->send_flush = txq->if_qp->send_flush;
-	DEBUG("%p: txq updated with %p", (void *)txq, (void *)&tmpl);
+	DEBUG("%p: cleaning-up old txq just in case", (void *)txq_ctrl);
+	txq_cleanup(txq_ctrl);
+	*txq_ctrl = tmpl;
+	DEBUG("%p: txq updated with %p", (void *)txq_ctrl, (void *)&tmpl);
 	/* Pre-register known mempools. */
-	rte_mempool_walk(txq_mp2mr_iter, txq);
+	rte_mempool_walk(txq_mp2mr_iter, txq_ctrl);
 	assert(ret == 0);
 	return 0;
 error:
@@ -485,12 +458,26 @@ mlx5_tx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 {
 	struct priv *priv = dev->data->dev_private;
 	struct txq *txq = (*priv->txqs)[idx];
+	struct txq_ctrl *txq_ctrl = container_of(txq, struct txq_ctrl, txq);
 	int ret;
 
 	if (mlx5_is_secondary())
 		return -E_RTE_SECONDARY;
 
 	priv_lock(priv);
+	if (desc <= MLX5_TX_COMP_THRESH) {
+		WARN("%p: number of descriptors requested for TX queue %u"
+		     " must be higher than MLX5_TX_COMP_THRESH, using"
+		     " %u instead of %u",
+		     (void *)dev, idx, MLX5_TX_COMP_THRESH + 1, desc);
+		desc = MLX5_TX_COMP_THRESH + 1;
+	}
+	if (!rte_is_power_of_2(desc)) {
+		desc = 1 << log2above(desc);
+		WARN("%p: increased number of descriptors in TX queue %u"
+		     " to the next power of two (%d)",
+		     (void *)dev, idx, desc);
+	}
 	DEBUG("%p: configuring queue %u for %u descriptors",
 	      (void *)dev, idx, desc);
 	if (idx >= priv->txqs_n) {
@@ -507,26 +494,30 @@ mlx5_tx_queue_setup(struct rte_eth_dev *dev, uint16_t idx, uint16_t desc,
 			return -EEXIST;
 		}
 		(*priv->txqs)[idx] = NULL;
-		txq_cleanup(txq);
+		txq_cleanup(txq_ctrl);
 	} else {
-		txq = rte_calloc_socket("TXQ", 1, sizeof(*txq), 0, socket);
-		if (txq == NULL) {
+		txq_ctrl =
+			rte_calloc_socket("TXQ", 1,
+					  sizeof(*txq_ctrl) +
+					  desc * sizeof(struct rte_mbuf *),
+					  0, socket);
+		if (txq_ctrl == NULL) {
 			ERROR("%p: unable to allocate queue index %u",
 			      (void *)dev, idx);
 			priv_unlock(priv);
 			return -ENOMEM;
 		}
 	}
-	ret = txq_setup(dev, txq, desc, socket, conf);
+	ret = txq_ctrl_setup(dev, txq_ctrl, desc, socket, conf);
 	if (ret)
-		rte_free(txq);
+		rte_free(txq_ctrl);
 	else {
-		txq->stats.idx = idx;
+		txq_ctrl->txq.stats.idx = idx;
 		DEBUG("%p: adding TX queue %p to list",
-		      (void *)dev, (void *)txq);
-		(*priv->txqs)[idx] = txq;
+		      (void *)dev, (void *)txq_ctrl);
+		(*priv->txqs)[idx] = &txq_ctrl->txq;
 		/* Update send callback. */
-		dev->tx_pkt_burst = mlx5_tx_burst;
+		priv_select_tx_function(priv);
 	}
 	priv_unlock(priv);
 	return -ret;
@@ -542,6 +533,7 @@ void
 mlx5_tx_queue_release(void *dpdk_txq)
 {
 	struct txq *txq = (struct txq *)dpdk_txq;
+	struct txq_ctrl *txq_ctrl;
 	struct priv *priv;
 	unsigned int i;
 
@@ -550,17 +542,18 @@ mlx5_tx_queue_release(void *dpdk_txq)
 
 	if (txq == NULL)
 		return;
-	priv = txq->priv;
+	txq_ctrl = container_of(txq, struct txq_ctrl, txq);
+	priv = txq_ctrl->priv;
 	priv_lock(priv);
 	for (i = 0; (i != priv->txqs_n); ++i)
 		if ((*priv->txqs)[i] == txq) {
 			DEBUG("%p: removing TX queue %p from list",
-			      (void *)priv->dev, (void *)txq);
+			      (void *)priv->dev, (void *)txq_ctrl);
 			(*priv->txqs)[i] = NULL;
 			break;
 		}
-	txq_cleanup(txq);
-	rte_free(txq);
+	txq_cleanup(txq_ctrl);
+	rte_free(txq_ctrl);
 	priv_unlock(priv);
 }
 
@@ -585,7 +578,8 @@ mlx5_tx_burst_secondary_setup(void *dpdk_txq, struct rte_mbuf **pkts,
 			      uint16_t pkts_n)
 {
 	struct txq *txq = dpdk_txq;
-	struct priv *priv = mlx5_secondary_data_setup(txq->priv);
+	struct txq_ctrl *txq_ctrl = container_of(txq, struct txq_ctrl, txq);
+	struct priv *priv = mlx5_secondary_data_setup(txq_ctrl->priv);
 	struct priv *primary_priv;
 	unsigned int index;
 

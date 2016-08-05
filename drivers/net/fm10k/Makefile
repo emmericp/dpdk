@@ -43,13 +43,14 @@ EXPORT_MAP := rte_pmd_fm10k_version.map
 
 LIBABIVER := 1
 
-ifeq ($(CC), icc)
+ifeq ($(CONFIG_RTE_TOOLCHAIN_ICC),y)
 #
 # CFLAGS for icc
 #
 CFLAGS_BASE_DRIVER = -wd174 -wd593 -wd869 -wd981 -wd2259
 
-else ifeq ($(CC), clang)
+else ifeq ($(CONFIG_RTE_TOOLCHAIN_CLANG),y)
+
 #
 ## CFLAGS for clang
 #
@@ -99,5 +100,6 @@ SRCS-$(CONFIG_RTE_LIBRTE_FM10K_INC_VECTOR) += fm10k_rxtx_vec.c
 DEPDIRS-$(CONFIG_RTE_LIBRTE_FM10K_PMD) += lib/librte_eal lib/librte_ether
 DEPDIRS-$(CONFIG_RTE_LIBRTE_FM10K_PMD) += lib/librte_mempool lib/librte_mbuf
 DEPDIRS-$(CONFIG_RTE_LIBRTE_FM10K_PMD) += lib/librte_net
+DEPDIRS-$(CONFIG_RTE_LIBRTE_FM10K_PMD) += lib/librte_kvargs
 
 include $(RTE_SDK)/mk/rte.lib.mk

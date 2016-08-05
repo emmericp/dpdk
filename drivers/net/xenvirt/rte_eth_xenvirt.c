@@ -39,6 +39,9 @@
 #include <sys/mman.h>
 #include <errno.h>
 #include <sys/user.h>
+#ifndef PAGE_SIZE
+#define PAGE_SIZE sysconf(_SC_PAGE_SIZE)
+#endif
 #include <linux/binfmts.h>
 #include <xen/xen-compat.h>
 #if __XEN_LATEST_INTERFACE_VERSION__ < 0x00040200
@@ -757,10 +760,11 @@ rte_pmd_xenvirt_devuninit(const char *name)
 }
 
 static struct rte_driver pmd_xenvirt_drv = {
-	.name = "eth_xenvirt",
 	.type = PMD_VDEV,
 	.init = rte_pmd_xenvirt_devinit,
 	.uninit = rte_pmd_xenvirt_devuninit,
 };
 
-PMD_REGISTER_DRIVER(pmd_xenvirt_drv);
+PMD_REGISTER_DRIVER(pmd_xenvirt_drv, eth_xenvirt);
+DRIVER_REGISTER_PARAM_STRING(eth_xenvirt,
+	"mac=<mac addr>");

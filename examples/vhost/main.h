@@ -49,8 +49,6 @@ struct device_statistics {
 };
 
 struct vhost_dev {
-	/**< Pointer to device created by vhost lib. */
-	struct virtio_net      *dev;
 	/**< Number of memory regions for gpa to hpa translation. */
 	uint32_t nregions_hpa;
 	/**< Device MAC address (Obtained on first TX packet). */
@@ -66,8 +64,10 @@ struct vhost_dev {
 	/**< Device is marked for removal from the data core. */
 	volatile uint8_t remove;
 
+	int vid;
 	struct device_statistics stats;
-	TAILQ_ENTRY(vhost_dev) next;
+	TAILQ_ENTRY(vhost_dev) global_vdev_entry;
+	TAILQ_ENTRY(vhost_dev) lcore_vdev_entry;
 } __rte_cache_aligned;
 
 TAILQ_HEAD(vhost_dev_tailq_list, vhost_dev);

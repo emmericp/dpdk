@@ -49,6 +49,7 @@
 #include <inttypes.h>
 
 #include <rte_common.h>
+#include <rte_errno.h>
 #include <rte_byteorder.h>
 #include <rte_log.h>
 #include <rte_debug.h>
@@ -74,6 +75,9 @@
 #include <rte_string_fns.h>
 #ifdef RTE_LIBRTE_PMD_XENVIRT
 #include <rte_eth_xenvirt.h>
+#endif
+#ifdef RTE_LIBRTE_PDUMP
+#include <rte_pdump.h>
 #endif
 
 #include "testpmd.h"
@@ -143,7 +147,6 @@ streamid_t nb_fwd_streams;       /**< Is equal to (nb_ports * nb_rxq). */
 struct fwd_engine * fwd_engines[] = {
 	&io_fwd_engine,
 	&mac_fwd_engine,
-	&mac_retry_fwd_engine,
 	&mac_swap_engine,
 	&flow_gen_engine,
 	&rx_only_engine,
@@ -158,6 +161,9 @@ struct fwd_engine * fwd_engines[] = {
 
 struct fwd_config cur_fwd_config;
 struct fwd_engine *cur_fwd_eng = &io_fwd_engine; /**< IO mode by default. */
+uint32_t retry_enabled;
+uint32_t burst_tx_delay_time = BURST_TX_WAIT_US;
+uint32_t burst_tx_retry_num = BURST_TX_RETRIES;
 
 uint16_t mbuf_data_size = DEFAULT_MBUF_DATA_SIZE; /**< Mbuf data space size. */
 uint32_t param_total_num_mbufs = 0;  /**< number of mbufs in all pools - if
@@ -265,6 +271,9 @@ uint8_t no_link_check = 0; /* check by default */
 uint32_t bypass_timeout = RTE_BYPASS_TMT_OFF;
 
 #endif
+
+/* default period is 1 second */
+static uint64_t timer_period = 1;
 
 /*
  * Ethernet device configuration.
@@ -415,6 +424,10 @@ mbuf_pool_create(uint16_t mbuf_seg_size, unsigned nb_mbuf,
 	mb_size = sizeof(struct rte_mbuf) + mbuf_seg_size;
 	mbuf_poolname_build(socket_id, pool_name, sizeof(pool_name));
 
+	RTE_LOG(INFO, USER1,
+		"create a new mbuf pool <%s>: n=%u, size=%u, socket=%u\n",
+		pool_name, nb_mbuf, mbuf_seg_size, socket_id);
+
 #ifdef RTE_LIBRTE_PMD_XENVIRT
 	rte_mp = rte_mempool_gntalloc_create(pool_name, nb_mbuf, mb_size,
 		(unsigned) mb_mempool_cache,
@@ -446,8 +459,9 @@ mbuf_pool_create(uint16_t mbuf_seg_size, unsigned nb_mbuf,
 	}
 
 	if (rte_mp == NULL) {
-		rte_exit(EXIT_FAILURE, "Creation of mbuf pool for socket %u "
-						"failed\n", socket_id);
+		rte_exit(EXIT_FAILURE,
+			"Creation of mbuf pool for socket %u failed: %s\n",
+			socket_id, rte_strerror(rte_errno));
 	} else if (verbose_level > 0) {
 		rte_mempool_dump(stdout, rte_mp);
 	}
@@ -585,6 +599,8 @@ init_config(void)
 	/* Configuration of packet forwarding streams. */
 	if (init_fwd_streams() < 0)
 		rte_exit(EXIT_FAILURE, "FAIL from init_fwd_streams()\n");
+
+	fwd_config_setup();
 }
 
 
@@ -864,17 +880,34 @@ flush_fwd_rx_queues(void)
 	uint16_t  nb_rx;
 	uint16_t  i;
 	uint8_t   j;
+	uint64_t prev_tsc = 0, diff_tsc, cur_tsc, timer_tsc = 0;
+
+	/* convert to number of cycles */
+	timer_period *= rte_get_timer_hz();
 
 	for (j = 0; j < 2; j++) {
 		for (rxp = 0; rxp < cur_fwd_config.nb_fwd_ports; rxp++) {
 			for (rxq = 0; rxq < nb_rxq; rxq++) {
 				port_id = fwd_ports_ids[rxp];
+				/**
+				* testpmd can stuck in the below do while loop
+				* if rte_eth_rx_burst() always returns nonzero
+				* packets. So timer is added to exit this loop
+				* after 1sec timer expiry.
+				*/
+				prev_tsc = rte_rdtsc();
 				do {
 					nb_rx = rte_eth_rx_burst(port_id, rxq,
 						pkts_burst, MAX_PKT_BURST);
 					for (i = 0; i < nb_rx; i++)
 						rte_pktmbuf_free(pkts_burst[i]);
-				} while (nb_rx > 0);
+
+					cur_tsc = rte_rdtsc();
+					diff_tsc = cur_tsc - prev_tsc;
+					timer_tsc += diff_tsc;
+				} while ((nb_rx > 0) &&
+					(timer_tsc < timer_period));
+				timer_tsc = 0;
 			}
 		}
 		rte_delay_ms(10); /* wait 10 milli-seconds before retrying */
@@ -986,6 +1019,12 @@ start_packet_forwarding(int with_tx_first)
 		printf("Packet forwarding already started\n");
 		return;
 	}
+
+	if (init_fwd_streams() < 0) {
+		printf("Fail from init_fwd_streams()\n");
+		return;
+	}
+
 	if(dcb_test) {
 		for (i = 0; i < nb_fwd_ports; i++) {
 			pt_id = fwd_ports_ids[i];
@@ -1008,6 +1047,7 @@ start_packet_forwarding(int with_tx_first)
 		flush_fwd_rx_queues();
 
 	fwd_config_setup();
+	pkt_fwd_config_display(&cur_fwd_config);
 	rxtx_config_display();
 
 	for (i = 0; i < cur_fwd_config.nb_fwd_ports; i++) {
@@ -1041,8 +1081,11 @@ start_packet_forwarding(int with_tx_first)
 			for (i = 0; i < cur_fwd_config.nb_fwd_ports; i++)
 				(*port_fwd_begin)(fwd_ports_ids[i]);
 		}
-		launch_packet_forwarding(run_one_txonly_burst_on_core);
-		rte_eal_mp_wait_lcore();
+		while (with_tx_first--) {
+			launch_packet_forwarding(
+					run_one_txonly_burst_on_core);
+			rte_eal_mp_wait_lcore();
+		}
 		port_fwd_end = tx_only_engine.port_fwd_end;
 		if (port_fwd_end != NULL) {
 			for (i = 0; i < cur_fwd_config.nb_fwd_ports; i++)
@@ -1075,10 +1118,6 @@ stop_packet_forwarding(void)
 #endif
 	static const char *acc_stats_border = "+++++++++++++++";
 
-	if (all_ports_started() == 0) {
-		printf("Not all ports were started\n");
-		return;
-	}
 	if (test_done) {
 		printf("Packet forwarding not started\n");
 		return;
@@ -1273,18 +1312,8 @@ start_port(portid_t pid)
 	struct rte_port *port;
 	struct ether_addr mac_addr;
 
-	if (test_done == 0) {
-		printf("Please stop forwarding first\n");
-		return -1;
-	}
-
 	if (port_id_is_invalid(pid, ENABLED_WARN))
 		return 0;
-
-	if (init_fwd_streams() < 0) {
-		printf("Fail from init_fwd_streams()\n");
-		return -1;
-	}
 
 	if(dcb_config)
 		dcb_test = 1;
@@ -1356,7 +1385,7 @@ start_port(portid_t pid)
 					if (mp == NULL) {
 						printf("Failed to setup RX queue:"
 							"No mempool allocation"
-							"on the socket %d\n",
+							" on the socket %d\n",
 							rxring_numa[pi]);
 						return -1;
 					}
@@ -1364,16 +1393,22 @@ start_port(portid_t pid)
 					diag = rte_eth_rx_queue_setup(pi, qi,
 					     nb_rxd,rxring_numa[pi],
 					     &(port->rx_conf),mp);
-				}
-				else
+				} else {
+					struct rte_mempool *mp =
+						mbuf_pool_find(port->socket_id);
+					if (mp == NULL) {
+						printf("Failed to setup RX queue:"
+							"No mempool allocation"
+							" on the socket %d\n",
+							port->socket_id);
+						return -1;
+					}
 					diag = rte_eth_rx_queue_setup(pi, qi,
 					     nb_rxd,port->socket_id,
-					     &(port->rx_conf),
-				             mbuf_pool_find(port->socket_id));
-
+					     &(port->rx_conf), mp);
+				}
 				if (diag == 0)
 					continue;
-
 
 				/* Fail to setup rx queue, return */
 				if (rte_atomic16_cmpset(&(port->port_status),
@@ -1429,10 +1464,6 @@ stop_port(portid_t pid)
 	struct rte_port *port;
 	int need_check_link_status = 0;
 
-	if (test_done == 0) {
-		printf("Please stop forwarding first\n");
-		return;
-	}
 	if (dcb_test) {
 		dcb_test = 0;
 		dcb_config = 0;
@@ -1446,6 +1477,16 @@ stop_port(portid_t pid)
 	FOREACH_PORT(pi, ports) {
 		if (pid != pi && pid != (portid_t)RTE_PORT_ALL)
 			continue;
+
+		if (port_is_forwarding(pi) != 0 && test_done == 0) {
+			printf("Please remove port %d from forwarding configuration.\n", pi);
+			continue;
+		}
+
+		if (port_is_bonding_slave(pi)) {
+			printf("Please remove port %d from bonded device.\n", pi);
+			continue;
+		}
 
 		port = &ports[pi];
 		if (rte_atomic16_cmpset(&(port->port_status), RTE_PORT_STARTED,
@@ -1471,11 +1512,6 @@ close_port(portid_t pid)
 	portid_t pi;
 	struct rte_port *port;
 
-	if (test_done == 0) {
-		printf("Please stop forwarding first\n");
-		return;
-	}
-
 	if (port_id_is_invalid(pid, ENABLED_WARN))
 		return;
 
@@ -1484,6 +1520,16 @@ close_port(portid_t pid)
 	FOREACH_PORT(pi, ports) {
 		if (pid != pi && pid != (portid_t)RTE_PORT_ALL)
 			continue;
+
+		if (port_is_forwarding(pi) != 0 && test_done == 0) {
+			printf("Please remove port %d from forwarding configuration.\n", pi);
+			continue;
+		}
+
+		if (port_is_bonding_slave(pi)) {
+			printf("Please remove port %d from bonded device.\n", pi);
+			continue;
+		}
 
 		port = &ports[pi];
 		if (rte_atomic16_cmpset(&(port->port_status),
@@ -1502,7 +1548,7 @@ close_port(portid_t pid)
 
 		if (rte_atomic16_cmpset(&(port->port_status),
 			RTE_PORT_HANDLING, RTE_PORT_CLOSED) == 0)
-			printf("Port %d can not be set into stopped\n", pi);
+			printf("Port %d cannot be set to closed\n", pi);
 	}
 
 	printf("Done\n");
@@ -1511,7 +1557,8 @@ close_port(portid_t pid)
 void
 attach_port(char *identifier)
 {
-	portid_t i, j, pi = 0;
+	portid_t pi = 0;
+	unsigned int socket_id;
 
 	printf("Attaching a new port...\n");
 
@@ -1520,29 +1567,18 @@ attach_port(char *identifier)
 		return;
 	}
 
-	if (test_done == 0) {
-		printf("Please stop forwarding first\n");
-		return;
-	}
-
 	if (rte_eth_dev_attach(identifier, &pi))
 		return;
 
 	ports[pi].enabled = 1;
-	reconfig(pi, rte_eth_dev_socket_id(pi));
+	socket_id = (unsigned)rte_eth_dev_socket_id(pi);
+	/* if socket_id is invalid, set to 0 */
+	if (check_socket_id(socket_id) < 0)
+		socket_id = 0;
+	reconfig(pi, socket_id);
 	rte_eth_promiscuous_enable(pi);
 
 	nb_ports = rte_eth_dev_count();
-
-	/* set_default_fwd_ports_config(); */
-	memset(fwd_ports_ids, 0, sizeof(fwd_ports_ids));
-	i = 0;
-	FOREACH_PORT(j, ports) {
-		fwd_ports_ids[i] = j;
-		i++;
-	}
-	nb_cfg_ports = nb_ports;
-	nb_fwd_ports++;
 
 	ports[pi].port_status = RTE_PORT_STOPPED;
 
@@ -1553,7 +1589,6 @@ attach_port(char *identifier)
 void
 detach_port(uint8_t port_id)
 {
-	portid_t i, pi = 0;
 	char name[RTE_ETH_NAME_MAX_LEN];
 
 	printf("Detaching a port...\n");
@@ -1568,16 +1603,6 @@ detach_port(uint8_t port_id)
 
 	ports[port_id].enabled = 0;
 	nb_ports = rte_eth_dev_count();
-
-	/* set_default_fwd_ports_config(); */
-	memset(fwd_ports_ids, 0, sizeof(fwd_ports_ids));
-	i = 0;
-	FOREACH_PORT(pi, ports) {
-		fwd_ports_ids[i] = pi;
-		i++;
-	}
-	nb_cfg_ports = nb_ports;
-	nb_fwd_ports--;
 
 	printf("Port '%s' is detached. Now total ports is %d\n",
 			name, nb_ports);
@@ -1848,6 +1873,14 @@ void clear_port_slave_flag(portid_t slave_pid)
 	port->slave_flag = 0;
 }
 
+uint8_t port_is_bonding_slave(portid_t slave_pid)
+{
+	struct rte_port *port;
+
+	port = &ports[slave_pid];
+	return port->slave_flag;
+}
+
 const uint16_t vlan_tags[] = {
 		0,  1,  2,  3,  4,  5,  6,  7,
 		8,  9, 10, 11,  12, 13, 14, 15,
@@ -2023,6 +2056,10 @@ signal_handler(int signum)
 	if (signum == SIGINT || signum == SIGTERM) {
 		printf("\nSignal %d received, preparing to exit...\n",
 				signum);
+#ifdef RTE_LIBRTE_PDUMP
+		/* uninitialize packet capture framework */
+		rte_pdump_uninit();
+#endif
 		force_quit();
 		/* exit with the expected status */
 		signal(signum, SIG_DFL);
@@ -2042,6 +2079,11 @@ main(int argc, char** argv)
 	diag = rte_eal_init(argc, argv);
 	if (diag < 0)
 		rte_panic("Cannot init EAL\n");
+
+#ifdef RTE_LIBRTE_PDUMP
+	/* initialize packet capture framework */
+	rte_pdump_init(NULL);
+#endif
 
 	nb_ports = (portid_t) rte_eth_dev_count();
 	if (nb_ports == 0)

@@ -48,9 +48,9 @@ LIBABIVER := 1
 # Add extra flags for base driver files (also known as shared code)
 # to disable warnings
 #
-ifeq ($(CC), icc)
+ifeq ($(CONFIG_RTE_TOOLCHAIN_ICC),y)
 CFLAGS_BASE_DRIVER = -wd593 -wd188
-else ifeq ($(CC), clang)
+else ifeq ($(CONFIG_RTE_TOOLCHAIN_CLANG),y)
 CFLAGS_BASE_DRIVER += -Wno-sign-compare
 CFLAGS_BASE_DRIVER += -Wno-unused-value
 CFLAGS_BASE_DRIVER += -Wno-unused-parameter
@@ -85,7 +85,7 @@ VPATH += $(SRCDIR)/base
 
 #
 # all source are stored in SRCS-y
-# base driver is based on the package of dpdk-i40e.2016.01.07.14.tar.gz.
+# base driver is based on the package of dpdk-i40e.2016.04.18.12.tar.gz.
 #
 SRCS-$(CONFIG_RTE_LIBRTE_I40E_PMD) += i40e_adminq.c
 SRCS-$(CONFIG_RTE_LIBRTE_I40E_PMD) += i40e_common.c
@@ -112,5 +112,6 @@ endif
 DEPDIRS-$(CONFIG_RTE_LIBRTE_I40E_PMD) += lib/librte_eal lib/librte_ether
 DEPDIRS-$(CONFIG_RTE_LIBRTE_I40E_PMD) += lib/librte_mempool lib/librte_mbuf
 DEPDIRS-$(CONFIG_RTE_LIBRTE_I40E_PMD) += lib/librte_net
+DEPDIRS-$(CONFIG_RTE_LIBRTE_I40E_PMD) += lib/librte_kvargs
 
 include $(RTE_SDK)/mk/rte.lib.mk

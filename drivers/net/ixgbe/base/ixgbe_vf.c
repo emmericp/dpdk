@@ -362,8 +362,10 @@ s32 ixgbe_set_rar_vf(struct ixgbe_hw *hw, u32 index, u8 *addr, u32 vmdq,
 
 	/* if nacked the address was rejected, use "perm_addr" */
 	if (!ret_val &&
-	    (msgbuf[0] == (IXGBE_VF_SET_MAC_ADDR | IXGBE_VT_MSGTYPE_NACK)))
+	    (msgbuf[0] == (IXGBE_VF_SET_MAC_ADDR | IXGBE_VT_MSGTYPE_NACK))) {
 		ixgbe_get_mac_addr_vf(hw, hw->mac.addr);
+		return IXGBE_ERR_MBX;
+	}
 
 	return ret_val;
 }
@@ -422,13 +424,15 @@ s32 ixgbe_update_mc_addr_list_vf(struct ixgbe_hw *hw, u8 *mc_addr_list,
  *  @vlan: 12 bit VLAN ID
  *  @vind: unused by VF drivers
  *  @vlan_on: if true then set bit, else clear bit
+ *  @vlvf_bypass: boolean flag indicating updating default pool is okay
  **/
-s32 ixgbe_set_vfta_vf(struct ixgbe_hw *hw, u32 vlan, u32 vind, bool vlan_on)
+s32 ixgbe_set_vfta_vf(struct ixgbe_hw *hw, u32 vlan, u32 vind,
+		      bool vlan_on, bool vlvf_bypass)
 {
 	struct ixgbe_mbx_info *mbx = &hw->mbx;
 	u32 msgbuf[2];
 	s32 ret_val;
-	UNREFERENCED_1PARAMETER(vind);
+	UNREFERENCED_2PARAMETER(vind, vlvf_bypass);
 
 	msgbuf[0] = IXGBE_VF_SET_VLAN;
 	msgbuf[1] = vlan;

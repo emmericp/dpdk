@@ -33,6 +33,40 @@ include $(RTE_SDK)/mk/rte.vars.mk
 
 ifeq ($(CONFIG_RTE_APP_TEST),y)
 
+# default rule
+all:
+
+# Define an externally linked resource. A linked resource is an arbitrary
+# file that is linked into the test binary. The application refers to this
+# resource by name. The linked generates identifiers beg_<name> and end_<name>
+# for referencing by the C code.
+#
+# Parameters: <unique name>, <file to be linked>
+define linked_resource
+SRCS-y += $(1).res.o
+$(1).res.o: $(2)
+	@  echo '  MKRES $$@'
+	$Q [ "$$(<D)" = . ] || ln -fs $$<
+	$Q $(OBJCOPY) -I binary -B $(RTE_OBJCOPY_ARCH) -O $(RTE_OBJCOPY_TARGET) \
+		--rename-section                                         \
+			.data=.rodata,alloc,load,data,contents,readonly  \
+		--redefine-sym _binary_$$(subst .,_,$$(<F))_start=beg_$(1) \
+		--redefine-sym _binary_$$(subst .,_,$$(<F))_end=end_$(1)   \
+		--redefine-sym _binary_$$(subst .,_,$$(<F))_size=siz_$(1)  \
+		$$(<F) $$@
+endef
+
+ifeq ($(CONFIG_RTE_APP_TEST_RESOURCE_TAR),y)
+define linked_tar_resource
+$(1).tar: $(2)
+	@  echo '  TAR $$@'
+	$Q tar -C $$(dir $$<) -cf $$@ $$(notdir $$<)
+$(call linked_resource,$(1),$(1).tar)
+endef
+else # ! CONFIG_RTE_APP_TEST_RESOURCE_TAR
+linked_tar_resource =
+endif # CONFIG_RTE_APP_TEST_RESOURCE_TAR
+
 #
 # library name
 #
@@ -43,7 +77,14 @@ APP = test
 #
 SRCS-$(CONFIG_RTE_LIBRTE_CMDLINE) := commands.c
 SRCS-y += test.c
-SRCS-y += test_pci.c
+SRCS-y += resource.c
+SRCS-y += test_resource.c
+test_resource.res: test_resource.c
+	@ cp $< $@
+$(eval $(call linked_resource,test_resource_c,test_resource.res))
+$(eval $(call linked_tar_resource,test_resource_tar,test_resource.c))
+SRCS-$(CONFIG_RTE_APP_TEST_RESOURCE_TAR) += test_pci.c
+$(eval $(call linked_tar_resource,test_pci_sysfs,test_pci_sysfs))
 SRCS-y += test_prefetch.c
 SRCS-y += test_byteorder.c
 SRCS-y += test_per_lcore.c
@@ -87,6 +128,7 @@ SRCS-$(CONFIG_RTE_LIBRTE_HASH) += test_thash.c
 SRCS-$(CONFIG_RTE_LIBRTE_HASH) += test_hash_perf.c
 SRCS-$(CONFIG_RTE_LIBRTE_HASH) += test_hash_functions.c
 SRCS-$(CONFIG_RTE_LIBRTE_HASH) += test_hash_scaling.c
+SRCS-$(CONFIG_RTE_LIBRTE_HASH) += test_hash_multiwriter.c
 
 SRCS-$(CONFIG_RTE_LIBRTE_LPM) += test_lpm.c
 SRCS-$(CONFIG_RTE_LIBRTE_LPM) += test_lpm_perf.c
@@ -116,7 +158,6 @@ SRCS-$(CONFIG_RTE_LIBRTE_CMDLINE) += test_cmdline_string.c
 SRCS-$(CONFIG_RTE_LIBRTE_CMDLINE) += test_cmdline_lib.c
 
 ifeq ($(CONFIG_RTE_LIBRTE_SCHED),y)
-LDLIBS += -lrt
 SRCS-y += test_red.c
 SRCS-y += test_sched.c
 endif
@@ -153,6 +194,7 @@ endif
 SRCS-$(CONFIG_RTE_LIBRTE_PMD_RING) += test_pmd_ring.c
 SRCS-$(CONFIG_RTE_LIBRTE_PMD_RING) += test_pmd_ring_perf.c
 
+SRCS-$(CONFIG_RTE_LIBRTE_CRYPTODEV) += test_cryptodev_aes.c
 SRCS-$(CONFIG_RTE_LIBRTE_CRYPTODEV) += test_cryptodev_perf.c
 SRCS-$(CONFIG_RTE_LIBRTE_CRYPTODEV) += test_cryptodev.c
 
@@ -166,7 +208,7 @@ CFLAGS += -D_GNU_SOURCE
 LDLIBS += -lm
 
 # Disable VTA for memcpy test
-ifeq ($(CC), gcc)
+ifeq ($(CONFIG_RTE_TOOLCHAIN_GCC),y)
 ifeq ($(shell test $(GCC_VERSION) -ge 44 && echo 1), 1)
 CFLAGS_test_memcpy.o += -fno-var-tracking-assignments
 CFLAGS_test_memcpy_perf.o += -fno-var-tracking-assignments
@@ -185,6 +227,10 @@ ifeq ($(CONFIG_RTE_BUILD_SHARED_LIB),y)
 LDLIBS += -lrte_pmd_ring
 endif
 endif
+endif
+
+ifeq ($(CONFIG_RTE_APP_TEST_RESOURCE_TAR),y)
+LDLIBS += -larchive
 endif
 
 include $(RTE_SDK)/mk/rte.app.mk

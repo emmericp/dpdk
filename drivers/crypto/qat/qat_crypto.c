@@ -263,6 +263,26 @@ static const struct rte_cryptodev_capabilities qat_pmd_capabilities[] = {
 			}, }
 		}, }
 	},
+	{	/* AES CTR */
+		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
+		{.sym = {
+			.xform_type = RTE_CRYPTO_SYM_XFORM_CIPHER,
+			{.cipher = {
+				.algo = RTE_CRYPTO_CIPHER_AES_CTR,
+				.block_size = 16,
+				.key_size = {
+					.min = 16,
+					.max = 32,
+					.increment = 8
+				},
+				.iv_size = {
+					.min = 16,
+					.max = 16,
+					.increment = 0
+				}
+			}, }
+		}, }
+	},
 	RTE_CRYPTODEV_END_OF_CAPABILITIES_LIST()
 };
 
@@ -276,14 +296,15 @@ void qat_crypto_sym_clear_session(struct rte_cryptodev *dev,
 		void *session)
 {
 	struct qat_session *sess = session;
-	phys_addr_t cd_paddr = sess->cd_paddr;
+	phys_addr_t cd_paddr;
 
 	PMD_INIT_FUNC_TRACE();
 	if (session) {
+		cd_paddr = sess->cd_paddr;
 		memset(sess, 0, qat_crypto_sym_get_session_private_size(dev));
-
 		sess->cd_paddr = cd_paddr;
-	}
+	} else
+		PMD_DRV_LOG(ERR, "NULL session");
 }
 
 static int
@@ -368,6 +389,14 @@ qat_crypto_sym_configure_session_cipher(struct rte_cryptodev *dev,
 		}
 		session->qat_mode = ICP_QAT_HW_CIPHER_CTR_MODE;
 		break;
+	case RTE_CRYPTO_CIPHER_AES_CTR:
+		if (qat_alg_validate_aes_key(cipher_xform->key.length,
+				&session->qat_cipher_alg) != 0) {
+			PMD_DRV_LOG(ERR, "Invalid AES cipher key size");
+			goto error_out;
+		}
+		session->qat_mode = ICP_QAT_HW_CIPHER_CTR_MODE;
+		break;
 	case RTE_CRYPTO_CIPHER_SNOW3G_UEA2:
 		if (qat_alg_validate_snow3g_key(cipher_xform->key.length,
 					&session->qat_cipher_alg) != 0) {
@@ -380,7 +409,6 @@ qat_crypto_sym_configure_session_cipher(struct rte_cryptodev *dev,
 	case RTE_CRYPTO_CIPHER_3DES_ECB:
 	case RTE_CRYPTO_CIPHER_3DES_CBC:
 	case RTE_CRYPTO_CIPHER_AES_ECB:
-	case RTE_CRYPTO_CIPHER_AES_CTR:
 	case RTE_CRYPTO_CIPHER_AES_CCM:
 	case RTE_CRYPTO_CIPHER_KASUMI_F8:
 		PMD_DRV_LOG(ERR, "Crypto: Unsupported Cipher alg %u",
@@ -532,14 +560,16 @@ qat_crypto_sym_configure_session_auth(struct rte_cryptodev *dev,
 				cipher_xform->key.data,
 				cipher_xform->key.length,
 				auth_xform->add_auth_data_length,
-				auth_xform->digest_length))
+				auth_xform->digest_length,
+				auth_xform->op))
 			goto error_out;
 	} else {
 		if (qat_alg_aead_session_create_content_desc_auth(session,
 				auth_xform->key.data,
 				auth_xform->key.length,
 				auth_xform->add_auth_data_length,
-				auth_xform->digest_length))
+				auth_xform->digest_length,
+				auth_xform->op))
 			goto error_out;
 	}
 	return session;
@@ -807,12 +837,15 @@ static inline uint32_t adf_modulo(uint32_t data, uint32_t shift)
 	return data - mult;
 }
 
-void qat_crypto_sym_session_init(struct rte_mempool *mp, void *priv_sess)
+void qat_crypto_sym_session_init(struct rte_mempool *mp, void *sym_sess)
 {
-	struct qat_session *s = priv_sess;
+	struct rte_cryptodev_sym_session *sess = sym_sess;
+	struct qat_session *s = (void *)sess->_private;
 
 	PMD_INIT_FUNC_TRACE();
-	s->cd_paddr = rte_mempool_virt2phy(mp, &s->cd);
+	s->cd_paddr = rte_mempool_virt2phy(mp, sess) +
+		offsetof(struct qat_session, cd) +
+		offsetof(struct rte_cryptodev_sym_session, _private);
 }
 
 int qat_dev_config(__rte_unused struct rte_cryptodev *dev)

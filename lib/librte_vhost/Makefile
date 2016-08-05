@@ -36,7 +36,7 @@ LIB = librte_vhost.a
 
 EXPORT_MAP := rte_vhost_version.map
 
-LIBABIVER := 2
+LIBABIVER := 3
 
 CFLAGS += $(WERROR_FLAGS) -I$(SRCDIR) -O3 -D_FILE_OFFSET_BITS=64
 ifeq ($(CONFIG_RTE_LIBRTE_VHOST_USER),y)
@@ -66,6 +66,7 @@ SYMLINK-$(CONFIG_RTE_LIBRTE_VHOST)-include += rte_virtio_net.h
 DEPDIRS-$(CONFIG_RTE_LIBRTE_VHOST) += lib/librte_eal
 DEPDIRS-$(CONFIG_RTE_LIBRTE_VHOST) += lib/librte_ether
 DEPDIRS-$(CONFIG_RTE_LIBRTE_VHOST) += lib/librte_mbuf
+DEPDIRS-$(CONFIG_RTE_LIBRTE_VHOST) += lib/librte_mempool
 DEPDIRS-$(CONFIG_RTE_LIBRTE_VHOST) += lib/librte_net
 
 include $(RTE_SDK)/mk/rte.lib.mk

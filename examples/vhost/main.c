@@ -132,6 +132,8 @@ static uint32_t enable_tx_csum;
 /* Disable TSO offload */
 static uint32_t enable_tso;
 
+static int client_mode;
+
 /* Specify timeout (in useconds) between retries on RX. */
 static uint32_t burst_rx_delay_time = BURST_RX_WAIT_US;
 /* Specify the number of retries on RX. */
@@ -325,13 +327,18 @@ port_init(uint8_t port)
 	if (enable_tso == 0) {
 		rte_vhost_feature_disable(1ULL << VIRTIO_NET_F_HOST_TSO4);
 		rte_vhost_feature_disable(1ULL << VIRTIO_NET_F_HOST_TSO6);
+		rte_vhost_feature_disable(1ULL << VIRTIO_NET_F_GUEST_TSO4);
+		rte_vhost_feature_disable(1ULL << VIRTIO_NET_F_GUEST_TSO6);
 	}
 
 	rx_rings = (uint16_t)dev_info.max_rx_queues;
 	/* Configure ethernet device. */
 	retval = rte_eth_dev_configure(port, rx_rings, tx_rings, &port_conf);
-	if (retval != 0)
+	if (retval != 0) {
+		RTE_LOG(ERR, VHOST_PORT, "Failed to configure port %u: %s.\n",
+			port, strerror(-retval));
 		return retval;
+	}
 
 	/* Setup the queues. */
 	for (q = 0; q < rx_rings; q ++) {
@@ -339,21 +346,30 @@ port_init(uint8_t port)
 						rte_eth_dev_socket_id(port),
 						rxconf,
 						mbuf_pool);
-		if (retval < 0)
+		if (retval < 0) {
+			RTE_LOG(ERR, VHOST_PORT,
+				"Failed to setup rx queue %u of port %u: %s.\n",
+				q, port, strerror(-retval));
 			return retval;
+		}
 	}
 	for (q = 0; q < tx_rings; q ++) {
 		retval = rte_eth_tx_queue_setup(port, q, tx_ring_size,
 						rte_eth_dev_socket_id(port),
 						txconf);
-		if (retval < 0)
+		if (retval < 0) {
+			RTE_LOG(ERR, VHOST_PORT,
+				"Failed to setup tx queue %u of port %u: %s.\n",
+				q, port, strerror(-retval));
 			return retval;
+		}
 	}
 
 	/* Start the device. */
 	retval  = rte_eth_dev_start(port);
 	if (retval < 0) {
-		RTE_LOG(ERR, VHOST_DATA, "Failed to start the device.\n");
+		RTE_LOG(ERR, VHOST_PORT, "Failed to start port %u: %s\n",
+			port, strerror(-retval));
 		return retval;
 	}
 
@@ -458,7 +474,8 @@ us_vhost_usage(const char *prgname)
 	"		--stats [0-N]: 0: Disable stats, N: Time in seconds to print stats\n"
 	"		--dev-basename: The basename to be used for the character device.\n"
 	"		--tx-csum [0|1] disable/enable TX checksum offload.\n"
-	"		--tso [0|1] disable/enable TCP segment offload.\n",
+	"		--tso [0|1] disable/enable TCP segment offload.\n"
+	"		--client register a vhost-user socket as client mode.\n",
 	       prgname);
 }
 
@@ -483,6 +500,7 @@ us_vhost_parse_args(int argc, char **argv)
 		{"dev-basename", required_argument, NULL, 0},
 		{"tx-csum", required_argument, NULL, 0},
 		{"tso", required_argument, NULL, 0},
+		{"client", no_argument, &client_mode, 1},
 		{NULL, 0, 0, 0},
 	};
 
@@ -691,7 +709,7 @@ find_vhost_dev(struct ether_addr *mac)
 {
 	struct vhost_dev *vdev;
 
-	TAILQ_FOREACH(vdev, &vhost_dev_list, next) {
+	TAILQ_FOREACH(vdev, &vhost_dev_list, global_vdev_entry) {
 		if (vdev->ready == DEVICE_RX &&
 		    is_same_ether_addr(mac, &vdev->mac_address))
 			return vdev;
@@ -708,7 +726,6 @@ static int
 link_vmdq(struct vhost_dev *vdev, struct rte_mbuf *m)
 {
 	struct ether_hdr *pkt_hdr;
-	struct virtio_net *dev = vdev->dev;
 	int i, ret;
 
 	/* Learn MAC address of guest device from packet */
@@ -716,8 +733,8 @@ link_vmdq(struct vhost_dev *vdev, struct rte_mbuf *m)
 
 	if (find_vhost_dev(&pkt_hdr->s_addr)) {
 		RTE_LOG(ERR, VHOST_DATA,
-			"Device (%" PRIu64 ") is using a registered MAC!\n",
-			dev->device_fh);
+			"(%d) device is using a registered MAC!\n",
+			vdev->vid);
 		return -1;
 	}
 
@@ -725,11 +742,12 @@ link_vmdq(struct vhost_dev *vdev, struct rte_mbuf *m)
 		vdev->mac_address.addr_bytes[i] = pkt_hdr->s_addr.addr_bytes[i];
 
 	/* vlan_tag currently uses the device_id. */
-	vdev->vlan_tag = vlan_tags[dev->device_fh];
+	vdev->vlan_tag = vlan_tags[vdev->vid];
 
 	/* Print out VMDQ registration info. */
-	RTE_LOG(INFO, VHOST_DATA, "(%"PRIu64") MAC_ADDRESS %02x:%02x:%02x:%02x:%02x:%02x and VLAN_TAG %d registered\n",
-		dev->device_fh,
+	RTE_LOG(INFO, VHOST_DATA,
+		"(%d) mac %02x:%02x:%02x:%02x:%02x:%02x and vlan %d registered\n",
+		vdev->vid,
 		vdev->mac_address.addr_bytes[0], vdev->mac_address.addr_bytes[1],
 		vdev->mac_address.addr_bytes[2], vdev->mac_address.addr_bytes[3],
 		vdev->mac_address.addr_bytes[4], vdev->mac_address.addr_bytes[5],
@@ -737,10 +755,11 @@ link_vmdq(struct vhost_dev *vdev, struct rte_mbuf *m)
 
 	/* Register the MAC address. */
 	ret = rte_eth_dev_mac_addr_add(ports[0], &vdev->mac_address,
-				(uint32_t)dev->device_fh + vmdq_pool_base);
+				(uint32_t)vdev->vid + vmdq_pool_base);
 	if (ret)
-		RTE_LOG(ERR, VHOST_DATA, "(%"PRIu64") Failed to add device MAC address to VMDQ\n",
-					dev->device_fh);
+		RTE_LOG(ERR, VHOST_DATA,
+			"(%d) failed to add device MAC address to VMDQ\n",
+			vdev->vid);
 
 	/* Enable stripping of the vlan tag as we handle routing. */
 	if (vlan_strip)
@@ -794,7 +813,7 @@ virtio_xmit(struct vhost_dev *dst_vdev, struct vhost_dev *src_vdev,
 {
 	uint16_t ret;
 
-	ret = rte_vhost_enqueue_burst(dst_vdev->dev, VIRTIO_RXQ, &m, 1);
+	ret = rte_vhost_enqueue_burst(dst_vdev->vid, VIRTIO_RXQ, &m, 1);
 	if (enable_stats) {
 		rte_atomic64_inc(&dst_vdev->stats.rx_total_atomic);
 		rte_atomic64_add(&dst_vdev->stats.rx_atomic, ret);
@@ -812,7 +831,6 @@ virtio_tx_local(struct vhost_dev *vdev, struct rte_mbuf *m)
 {
 	struct ether_hdr *pkt_hdr;
 	struct vhost_dev *dst_vdev;
-	uint64_t fh;
 
 	pkt_hdr = rte_pktmbuf_mtod(m, struct ether_hdr *);
 
@@ -820,20 +838,19 @@ virtio_tx_local(struct vhost_dev *vdev, struct rte_mbuf *m)
 	if (!dst_vdev)
 		return -1;
 
-	fh = dst_vdev->dev->device_fh;
-	if (fh == vdev->dev->device_fh) {
+	if (vdev->vid == dst_vdev->vid) {
 		RTE_LOG(DEBUG, VHOST_DATA,
-			"(%" PRIu64 ") TX: src and dst MAC is same. "
-			"Dropping packet.\n", fh);
+			"(%d) TX: src and dst MAC is same. Dropping packet.\n",
+			vdev->vid);
 		return 0;
 	}
 
 	RTE_LOG(DEBUG, VHOST_DATA,
-		"(%" PRIu64 ") TX: MAC address is local\n", fh);
+		"(%d) TX: MAC address is local\n", dst_vdev->vid);
 
 	if (unlikely(dst_vdev->remove)) {
-		RTE_LOG(DEBUG, VHOST_DATA, "(%" PRIu64 ") "
-			"Device is marked for removal\n", fh);
+		RTE_LOG(DEBUG, VHOST_DATA,
+			"(%d) device is marked for removal\n", dst_vdev->vid);
 		return 0;
 	}
 
@@ -846,7 +863,7 @@ virtio_tx_local(struct vhost_dev *vdev, struct rte_mbuf *m)
  * and get its vlan tag, and offset if it is.
  */
 static inline int __attribute__((always_inline))
-find_local_dest(struct virtio_net *dev, struct rte_mbuf *m,
+find_local_dest(struct vhost_dev *vdev, struct rte_mbuf *m,
 	uint32_t *offset, uint16_t *vlan_tag)
 {
 	struct vhost_dev *dst_vdev;
@@ -856,10 +873,10 @@ find_local_dest(struct virtio_net *dev, struct rte_mbuf *m,
 	if (!dst_vdev)
 		return 0;
 
-	if (dst_vdev->dev->device_fh == dev->device_fh) {
+	if (vdev->vid == dst_vdev->vid) {
 		RTE_LOG(DEBUG, VHOST_DATA,
-			"(%" PRIu64 ") TX: src and dst MAC is same. "
-			" Dropping packet.\n", dst_vdev->dev->device_fh);
+			"(%d) TX: src and dst MAC is same. Dropping packet.\n",
+			vdev->vid);
 		return -1;
 	}
 
@@ -869,12 +886,11 @@ find_local_dest(struct virtio_net *dev, struct rte_mbuf *m,
 	 * the packet length by plus it.
 	 */
 	*offset  = VLAN_HLEN;
-	*vlan_tag = vlan_tags[(uint16_t)dst_vdev->dev->device_fh];
+	*vlan_tag = vlan_tags[vdev->vid];
 
 	RTE_LOG(DEBUG, VHOST_DATA,
-		"(%" PRIu64 ") TX: pkt to local VM device id: (%" PRIu64 ") "
-		"vlan tag: %u.\n",
-		dev->device_fh, dst_vdev->dev->device_fh, *vlan_tag);
+		"(%d) TX: pkt to local VM device id: (%d), vlan tag: %u.\n",
+		vdev->vid, dst_vdev->vid, *vlan_tag);
 
 	return 0;
 }
@@ -937,7 +953,6 @@ virtio_tx_route(struct vhost_dev *vdev, struct rte_mbuf *m, uint16_t vlan_tag)
 	struct mbuf_table *tx_q;
 	unsigned offset = 0;
 	const uint16_t lcore_id = rte_lcore_id();
-	struct virtio_net *dev = vdev->dev;
 	struct ether_hdr *nh;
 
 
@@ -945,7 +960,7 @@ virtio_tx_route(struct vhost_dev *vdev, struct rte_mbuf *m, uint16_t vlan_tag)
 	if (unlikely(is_broadcast_ether_addr(&nh->d_addr))) {
 		struct vhost_dev *vdev2;
 
-		TAILQ_FOREACH(vdev2, &vhost_dev_list, next) {
+		TAILQ_FOREACH(vdev2, &vhost_dev_list, global_vdev_entry) {
 			virtio_xmit(vdev2, vdev, m);
 		}
 		goto queue2nic;
@@ -958,14 +973,15 @@ virtio_tx_route(struct vhost_dev *vdev, struct rte_mbuf *m, uint16_t vlan_tag)
 	}
 
 	if (unlikely(vm2vm_mode == VM2VM_HARDWARE)) {
-		if (unlikely(find_local_dest(dev, m, &offset, &vlan_tag) != 0)) {
+		if (unlikely(find_local_dest(vdev, m, &offset,
+					     &vlan_tag) != 0)) {
 			rte_pktmbuf_free(m);
 			return;
 		}
 	}
 
-	RTE_LOG(DEBUG, VHOST_DATA, "(%" PRIu64 ") TX: "
-		"MAC address is external\n", dev->device_fh);
+	RTE_LOG(DEBUG, VHOST_DATA,
+		"(%d) TX: MAC address is external\n", vdev->vid);
 
 queue2nic:
 
@@ -1043,7 +1059,6 @@ static inline void __attribute__((always_inline))
 drain_eth_rx(struct vhost_dev *vdev)
 {
 	uint16_t rx_count, enqueue_count;
-	struct virtio_net *dev = vdev->dev;
 	struct rte_mbuf *pkts[MAX_PKT_BURST];
 
 	rx_count = rte_eth_rx_burst(ports[0], vdev->vmdq_rx_q,
@@ -1057,19 +1072,19 @@ drain_eth_rx(struct vhost_dev *vdev)
 	 * to diminish packet loss.
 	 */
 	if (enable_retry &&
-	    unlikely(rx_count > rte_vring_available_entries(dev,
+	    unlikely(rx_count > rte_vhost_avail_entries(vdev->vid,
 			VIRTIO_RXQ))) {
 		uint32_t retry;
 
 		for (retry = 0; retry < burst_rx_retry_num; retry++) {
 			rte_delay_us(burst_rx_delay_time);
-			if (rx_count <= rte_vring_available_entries(dev,
+			if (rx_count <= rte_vhost_avail_entries(vdev->vid,
 					VIRTIO_RXQ))
 				break;
 		}
 	}
 
-	enqueue_count = rte_vhost_enqueue_burst(dev, VIRTIO_RXQ,
+	enqueue_count = rte_vhost_enqueue_burst(vdev->vid, VIRTIO_RXQ,
 						pkts, rx_count);
 	if (enable_stats) {
 		rte_atomic64_add(&vdev->stats.rx_total_atomic, rx_count);
@@ -1086,7 +1101,7 @@ drain_virtio_tx(struct vhost_dev *vdev)
 	uint16_t count;
 	uint16_t i;
 
-	count = rte_vhost_dequeue_burst(vdev->dev, VIRTIO_TXQ, mbuf_pool,
+	count = rte_vhost_dequeue_burst(vdev->vid, VIRTIO_TXQ, mbuf_pool,
 					pkts, MAX_PKT_BURST);
 
 	/* setup VMDq for the first packet */
@@ -1095,10 +1110,8 @@ drain_virtio_tx(struct vhost_dev *vdev)
 			free_pkts(pkts, count);
 	}
 
-	for (i = 0; i < count; ++i) {
-		virtio_tx_route(vdev, pkts[i],
-			vlan_tags[(uint16_t)vdev->dev->device_fh]);
-	}
+	for (i = 0; i < count; ++i)
+		virtio_tx_route(vdev, pkts[i], vlan_tags[vdev->vid]);
 }
 
 /*
@@ -1149,7 +1162,8 @@ switch_worker(void *arg __rte_unused)
 		/*
 		 * Process vhost devices
 		 */
-		TAILQ_FOREACH(vdev, &lcore_info[lcore_id].vdev_list, next) {
+		TAILQ_FOREACH(vdev, &lcore_info[lcore_id].vdev_list,
+			      lcore_vdev_entry) {
 			if (unlikely(vdev->remove)) {
 				unlink_vmdq(vdev);
 				vdev->ready = DEVICE_SAFE_REMOVE;
@@ -1174,22 +1188,27 @@ switch_worker(void *arg __rte_unused)
  * of dev->remove=1 which can cause an infinite loop in the rte_pause loop.
  */
 static void
-destroy_device (volatile struct virtio_net *dev)
+destroy_device(int vid)
 {
-	struct vhost_dev *vdev;
+	struct vhost_dev *vdev = NULL;
 	int lcore;
 
-	dev->flags &= ~VIRTIO_DEV_RUNNING;
-
-	vdev = (struct vhost_dev *)dev->priv;
+	TAILQ_FOREACH(vdev, &vhost_dev_list, global_vdev_entry) {
+		if (vdev->vid == vid)
+			break;
+	}
+	if (!vdev)
+		return;
 	/*set the remove flag. */
 	vdev->remove = 1;
 	while(vdev->ready != DEVICE_SAFE_REMOVE) {
 		rte_pause();
 	}
 
-	TAILQ_REMOVE(&lcore_info[vdev->coreid].vdev_list, vdev, next);
-	TAILQ_REMOVE(&vhost_dev_list, vdev, next);
+	TAILQ_REMOVE(&lcore_info[vdev->coreid].vdev_list, vdev,
+		     lcore_vdev_entry);
+	TAILQ_REMOVE(&vhost_dev_list, vdev, global_vdev_entry);
+
 
 	/* Set the dev_removal_flag on each lcore. */
 	RTE_LCORE_FOREACH_SLAVE(lcore)
@@ -1208,8 +1227,8 @@ destroy_device (volatile struct virtio_net *dev)
 	lcore_info[vdev->coreid].device_num--;
 
 	RTE_LOG(INFO, VHOST_DATA,
-		"(%" PRIu64 ") Device has been removed from data core\n",
-		dev->device_fh);
+		"(%d) device has been removed from data core\n",
+		vdev->vid);
 
 	rte_free(vdev);
 }
@@ -1219,7 +1238,7 @@ destroy_device (volatile struct virtio_net *dev)
  * and the allocated to a specific data core.
  */
 static int
-new_device (struct virtio_net *dev)
+new_device(int vid)
 {
 	int lcore, core_add = 0;
 	uint32_t device_num_min = num_devices;
@@ -1227,16 +1246,15 @@ new_device (struct virtio_net *dev)
 
 	vdev = rte_zmalloc("vhost device", sizeof(*vdev), RTE_CACHE_LINE_SIZE);
 	if (vdev == NULL) {
-		RTE_LOG(INFO, VHOST_DATA, "(%"PRIu64") Couldn't allocate memory for vhost dev\n",
-			dev->device_fh);
+		RTE_LOG(INFO, VHOST_DATA,
+			"(%d) couldn't allocate memory for vhost dev\n",
+			vid);
 		return -1;
 	}
-	vdev->dev = dev;
-	dev->priv = vdev;
+	vdev->vid = vid;
 
-	TAILQ_INSERT_TAIL(&vhost_dev_list, vdev, next);
-	vdev->vmdq_rx_q
-		= dev->device_fh * queues_per_pool + vmdq_queue_base;
+	TAILQ_INSERT_TAIL(&vhost_dev_list, vdev, global_vdev_entry);
+	vdev->vmdq_rx_q = vid * queues_per_pool + vmdq_queue_base;
 
 	/*reset ready flag*/
 	vdev->ready = DEVICE_MAC_LEARNING;
@@ -1251,15 +1269,17 @@ new_device (struct virtio_net *dev)
 	}
 	vdev->coreid = core_add;
 
-	TAILQ_INSERT_TAIL(&lcore_info[vdev->coreid].vdev_list, vdev, next);
+	TAILQ_INSERT_TAIL(&lcore_info[vdev->coreid].vdev_list, vdev,
+			  lcore_vdev_entry);
 	lcore_info[vdev->coreid].device_num++;
 
 	/* Disable notifications. */
-	rte_vhost_enable_guest_notification(dev, VIRTIO_RXQ, 0);
-	rte_vhost_enable_guest_notification(dev, VIRTIO_TXQ, 0);
-	dev->flags |= VIRTIO_DEV_RUNNING;
+	rte_vhost_enable_guest_notification(vid, VIRTIO_RXQ, 0);
+	rte_vhost_enable_guest_notification(vid, VIRTIO_TXQ, 0);
 
-	RTE_LOG(INFO, VHOST_DATA, "(%"PRIu64") Device has been added to data core %d\n", dev->device_fh, vdev->coreid);
+	RTE_LOG(INFO, VHOST_DATA,
+		"(%d) device has been added to data core %d\n",
+		vid, vdev->coreid);
 
 	return 0;
 }
@@ -1294,7 +1314,7 @@ print_stats(void)
 		printf("%s%s\n", clr, top_left);
 		printf("Device statistics =================================\n");
 
-		TAILQ_FOREACH(vdev, &vhost_dev_list, next) {
+		TAILQ_FOREACH(vdev, &vhost_dev_list, global_vdev_entry) {
 			tx_total   = vdev->stats.tx_total;
 			tx         = vdev->stats.tx;
 			tx_dropped = tx_total - tx;
@@ -1303,7 +1323,7 @@ print_stats(void)
 			rx         = rte_atomic64_read(&vdev->stats.rx_atomic);
 			rx_dropped = rx_total - rx;
 
-			printf("Statistics for device %" PRIu64 "\n"
+			printf("Statistics for device %d\n"
 				"-----------------------\n"
 				"TX total:              %" PRIu64 "\n"
 				"TX dropped:            %" PRIu64 "\n"
@@ -1311,7 +1331,7 @@ print_stats(void)
 				"RX total:              %" PRIu64 "\n"
 				"RX dropped:            %" PRIu64 "\n"
 				"RX successful:         %" PRIu64 "\n",
-				vdev->dev->device_fh,
+				vdev->vid,
 				tx_total, tx_dropped, tx,
 				rx_total, rx_dropped, rx);
 		}
@@ -1395,6 +1415,7 @@ main(int argc, char *argv[])
 	uint8_t portid;
 	static pthread_t tid;
 	char thread_name[RTE_MAX_THREAD_NAME_LEN];
+	uint64_t flags = 0;
 
 	signal(SIGINT, sigint_handler);
 
@@ -1474,7 +1495,7 @@ main(int argc, char *argv[])
 		snprintf(thread_name, RTE_MAX_THREAD_NAME_LEN, "print-stats");
 		ret = rte_thread_setname(tid, thread_name);
 		if (ret != 0)
-			RTE_LOG(ERR, VHOST_CONFIG,
+			RTE_LOG(DEBUG, VHOST_CONFIG,
 				"Cannot set print-stats name\n");
 	}
 
@@ -1485,8 +1506,11 @@ main(int argc, char *argv[])
 	if (mergeable == 0)
 		rte_vhost_feature_disable(1ULL << VIRTIO_NET_F_MRG_RXBUF);
 
+	if (client_mode)
+		flags |= RTE_VHOST_USER_CLIENT;
+
 	/* Register vhost(cuse or user) driver to handle vhost messages. */
-	ret = rte_vhost_driver_register((char *)&dev_basename);
+	ret = rte_vhost_driver_register(dev_basename, flags);
 	if (ret != 0)
 		rte_exit(EXIT_FAILURE, "vhost driver register failure.\n");
 

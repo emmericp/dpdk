@@ -717,7 +717,7 @@ test_refcnt_iter(unsigned lcore, unsigned iter)
 	 * - increment it's reference up to N+1,
 	 * - enqueue it N times into the ring for slave cores to free.
 	 */
-	for (i = 0, n = rte_mempool_count(refcnt_pool);
+	for (i = 0, n = rte_mempool_avail_count(refcnt_pool);
 	    i != n && (m = rte_pktmbuf_alloc(refcnt_pool)) != NULL;
 	    i++) {
 		ref = RTE_MAX(rte_rand() % REFCNT_MAX_REF, 1UL);
@@ -745,7 +745,7 @@ test_refcnt_iter(unsigned lcore, unsigned iter)
 
 	/* check that all mbufs are back into mempool by now */
 	for (wn = 0; wn != REFCNT_MAX_TIMEOUT; wn++) {
-		if ((i = rte_mempool_count(refcnt_pool)) == n) {
+		if ((i = rte_mempool_avail_count(refcnt_pool)) == n) {
 			refcnt_lcore[lcore] += tref;
 			printf("%s(lcore=%u, iter=%u) completed, "
 			    "%u references processed\n",
@@ -809,7 +809,7 @@ test_refcnt_mbuf(void)
 
 	if (refcnt_mbuf_ring == NULL &&
 			(refcnt_mbuf_ring = rte_ring_create("refcnt_mbuf_ring",
-			REFCNT_RING_SIZE, SOCKET_ID_ANY,
+			rte_align32pow2(REFCNT_RING_SIZE), SOCKET_ID_ANY,
 			RING_F_SP_ENQ)) == NULL) {
 		printf("%s: cannot allocate " MAKE_STRING(refcnt_mbuf_ring)
 		    "\n", __func__);
@@ -1026,8 +1026,4 @@ test_mbuf(void)
 	return 0;
 }
 
-static struct test_command mbuf_cmd = {
-	.command = "mbuf_autotest",
-	.callback = test_mbuf,
-};
-REGISTER_TEST_COMMAND(mbuf_cmd);
+REGISTER_TEST_COMMAND(mbuf_autotest, test_mbuf);

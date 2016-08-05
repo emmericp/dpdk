@@ -7,10 +7,157 @@
  */
 
 #include "qede_ethdev.h"
+#include <rte_alarm.h>
 
 /* Globals */
 static const struct qed_eth_ops *qed_ops;
 static const char *drivername = "qede pmd";
+static int64_t timer_period = 1;
+
+struct rte_qede_xstats_name_off {
+	char name[RTE_ETH_XSTATS_NAME_SIZE];
+	uint64_t offset;
+};
+
+static const struct rte_qede_xstats_name_off qede_xstats_strings[] = {
+	{"rx_unicast_bytes", offsetof(struct ecore_eth_stats, rx_ucast_bytes)},
+	{"rx_multicast_bytes",
+		offsetof(struct ecore_eth_stats, rx_mcast_bytes)},
+	{"rx_broadcast_bytes",
+		offsetof(struct ecore_eth_stats, rx_bcast_bytes)},
+	{"rx_unicast_packets", offsetof(struct ecore_eth_stats, rx_ucast_pkts)},
+	{"rx_multicast_packets",
+		offsetof(struct ecore_eth_stats, rx_mcast_pkts)},
+	{"rx_broadcast_packets",
+		offsetof(struct ecore_eth_stats, rx_bcast_pkts)},
+
+	{"tx_unicast_bytes", offsetof(struct ecore_eth_stats, tx_ucast_bytes)},
+	{"tx_multicast_bytes",
+		offsetof(struct ecore_eth_stats, tx_mcast_bytes)},
+	{"tx_broadcast_bytes",
+		offsetof(struct ecore_eth_stats, tx_bcast_bytes)},
+	{"tx_unicast_packets", offsetof(struct ecore_eth_stats, tx_ucast_pkts)},
+	{"tx_multicast_packets",
+		offsetof(struct ecore_eth_stats, tx_mcast_pkts)},
+	{"tx_broadcast_packets",
+		offsetof(struct ecore_eth_stats, tx_bcast_pkts)},
+
+	{"rx_64_byte_packets",
+		offsetof(struct ecore_eth_stats, rx_64_byte_packets)},
+	{"rx_65_to_127_byte_packets",
+		offsetof(struct ecore_eth_stats, rx_65_to_127_byte_packets)},
+	{"rx_128_to_255_byte_packets",
+		offsetof(struct ecore_eth_stats, rx_128_to_255_byte_packets)},
+	{"rx_256_to_511_byte_packets",
+		offsetof(struct ecore_eth_stats, rx_256_to_511_byte_packets)},
+	{"rx_512_to_1023_byte_packets",
+		offsetof(struct ecore_eth_stats, rx_512_to_1023_byte_packets)},
+	{"rx_1024_to_1518_byte_packets",
+		offsetof(struct ecore_eth_stats, rx_1024_to_1518_byte_packets)},
+	{"rx_1519_to_1522_byte_packets",
+		offsetof(struct ecore_eth_stats, rx_1519_to_1522_byte_packets)},
+	{"rx_1519_to_2047_byte_packets",
+		offsetof(struct ecore_eth_stats, rx_1519_to_2047_byte_packets)},
+	{"rx_2048_to_4095_byte_packets",
+		offsetof(struct ecore_eth_stats, rx_2048_to_4095_byte_packets)},
+	{"rx_4096_to_9216_byte_packets",
+		offsetof(struct ecore_eth_stats, rx_4096_to_9216_byte_packets)},
+	{"rx_9217_to_16383_byte_packets",
+		offsetof(struct ecore_eth_stats,
+			 rx_9217_to_16383_byte_packets)},
+	{"tx_64_byte_packets",
+		offsetof(struct ecore_eth_stats, tx_64_byte_packets)},
+	{"tx_65_to_127_byte_packets",
+		offsetof(struct ecore_eth_stats, tx_65_to_127_byte_packets)},
+	{"tx_128_to_255_byte_packets",
+		offsetof(struct ecore_eth_stats, tx_128_to_255_byte_packets)},
+	{"tx_256_to_511_byte_packets",
+		offsetof(struct ecore_eth_stats, tx_256_to_511_byte_packets)},
+	{"tx_512_to_1023_byte_packets",
+		offsetof(struct ecore_eth_stats, tx_512_to_1023_byte_packets)},
+	{"tx_1024_to_1518_byte_packets",
+		offsetof(struct ecore_eth_stats, tx_1024_to_1518_byte_packets)},
+	{"trx_1519_to_1522_byte_packets",
+		offsetof(struct ecore_eth_stats, tx_1519_to_2047_byte_packets)},
+	{"tx_2048_to_4095_byte_packets",
+		offsetof(struct ecore_eth_stats, tx_2048_to_4095_byte_packets)},
+	{"tx_4096_to_9216_byte_packets",
+		offsetof(struct ecore_eth_stats, tx_4096_to_9216_byte_packets)},
+	{"tx_9217_to_16383_byte_packets",
+		offsetof(struct ecore_eth_stats,
+			 tx_9217_to_16383_byte_packets)},
+
+	{"rx_mac_crtl_frames",
+		offsetof(struct ecore_eth_stats, rx_mac_crtl_frames)},
+	{"tx_mac_control_frames",
+		offsetof(struct ecore_eth_stats, tx_mac_ctrl_frames)},
+	{"rx_pause_frames", offsetof(struct ecore_eth_stats, rx_pause_frames)},
+	{"tx_pause_frames", offsetof(struct ecore_eth_stats, tx_pause_frames)},
+	{"rx_priority_flow_control_frames",
+		offsetof(struct ecore_eth_stats, rx_pfc_frames)},
+	{"tx_priority_flow_control_frames",
+		offsetof(struct ecore_eth_stats, tx_pfc_frames)},
+
+	{"rx_crc_errors", offsetof(struct ecore_eth_stats, rx_crc_errors)},
+	{"rx_align_errors", offsetof(struct ecore_eth_stats, rx_align_errors)},
+	{"rx_carrier_errors",
+		offsetof(struct ecore_eth_stats, rx_carrier_errors)},
+	{"rx_oversize_packet_errors",
+		offsetof(struct ecore_eth_stats, rx_oversize_packets)},
+	{"rx_jabber_errors", offsetof(struct ecore_eth_stats, rx_jabbers)},
+	{"rx_undersize_packet_errors",
+		offsetof(struct ecore_eth_stats, rx_undersize_packets)},
+	{"rx_fragments", offsetof(struct ecore_eth_stats, rx_fragments)},
+	{"rx_host_buffer_not_available",
+		offsetof(struct ecore_eth_stats, no_buff_discards)},
+	/* Number of packets discarded because they are bigger than MTU */
+	{"rx_packet_too_big_discards",
+		offsetof(struct ecore_eth_stats, packet_too_big_discard)},
+	{"rx_ttl_zero_discards",
+		offsetof(struct ecore_eth_stats, ttl0_discard)},
+	{"rx_multi_function_tag_filter_discards",
+		offsetof(struct ecore_eth_stats, mftag_filter_discards)},
+	{"rx_mac_filter_discards",
+		offsetof(struct ecore_eth_stats, mac_filter_discards)},
+	{"rx_hw_buffer_truncates",
+		offsetof(struct ecore_eth_stats, brb_truncates)},
+	{"rx_hw_buffer_discards",
+		offsetof(struct ecore_eth_stats, brb_discards)},
+	{"tx_lpi_entry_count",
+		offsetof(struct ecore_eth_stats, tx_lpi_entry_count)},
+	{"tx_total_collisions",
+		offsetof(struct ecore_eth_stats, tx_total_collisions)},
+	{"tx_error_drop_packets",
+		offsetof(struct ecore_eth_stats, tx_err_drop_pkts)},
+
+	{"rx_mac_bytes", offsetof(struct ecore_eth_stats, rx_mac_bytes)},
+	{"rx_mac_unicast_packets",
+		offsetof(struct ecore_eth_stats, rx_mac_uc_packets)},
+	{"rx_mac_multicast_packets",
+		offsetof(struct ecore_eth_stats, rx_mac_mc_packets)},
+	{"rx_mac_broadcast_packets",
+		offsetof(struct ecore_eth_stats, rx_mac_bc_packets)},
+	{"rx_mac_frames_ok",
+		offsetof(struct ecore_eth_stats, rx_mac_frames_ok)},
+	{"tx_mac_bytes", offsetof(struct ecore_eth_stats, tx_mac_bytes)},
+	{"tx_mac_unicast_packets",
+		offsetof(struct ecore_eth_stats, tx_mac_uc_packets)},
+	{"tx_mac_multicast_packets",
+		offsetof(struct ecore_eth_stats, tx_mac_mc_packets)},
+	{"tx_mac_broadcast_packets",
+		offsetof(struct ecore_eth_stats, tx_mac_bc_packets)},
+
+	{"lro_coalesced_packets",
+		offsetof(struct ecore_eth_stats, tpa_coalesced_pkts)},
+	{"lro_coalesced_events",
+		offsetof(struct ecore_eth_stats, tpa_coalesced_events)},
+	{"lro_aborts_num",
+		offsetof(struct ecore_eth_stats, tpa_aborts_num)},
+	{"lro_not_coalesced_packets",
+		offsetof(struct ecore_eth_stats, tpa_not_coalesced_pkts)},
+	{"lro_coalesced_bytes",
+		offsetof(struct ecore_eth_stats, tpa_coalesced_bytes)},
+};
 
 static void qede_interrupt_action(struct ecore_hwfn *p_hwfn)
 {
@@ -358,6 +505,21 @@ static int qede_dev_configure(struct rte_eth_dev *eth_dev)
 		return -EINVAL;
 	}
 
+	/* Check requirements for 100G mode */
+	if (edev->num_hwfns > 1) {
+		if (eth_dev->data->nb_rx_queues < 2) {
+			DP_NOTICE(edev, false,
+				  "100G mode requires minimum two queues\n");
+			return -EINVAL;
+		}
+
+		if ((eth_dev->data->nb_rx_queues % 2) != 0) {
+			DP_NOTICE(edev, false,
+				  "100G mode requires even number of queues\n");
+			return -EINVAL;
+		}
+	}
+
 	qdev->num_rss = eth_dev->data->nb_rx_queues;
 
 	/* Initial state */
@@ -540,6 +702,26 @@ static void qede_promiscuous_disable(struct rte_eth_dev *eth_dev)
 		qede_rx_mode_setting(eth_dev, QED_FILTER_RX_MODE_TYPE_REGULAR);
 }
 
+static void qede_poll_sp_sb_cb(void *param)
+{
+	struct rte_eth_dev *eth_dev = (struct rte_eth_dev *)param;
+	struct qede_dev *qdev = QEDE_INIT_QDEV(eth_dev);
+	struct ecore_dev *edev = QEDE_INIT_EDEV(qdev);
+	int rc;
+
+	qede_interrupt_action(ECORE_LEADING_HWFN(edev));
+	qede_interrupt_action(&edev->hwfns[1]);
+
+	rc = rte_eal_alarm_set(timer_period * US_PER_S,
+			       qede_poll_sp_sb_cb,
+			       (void *)eth_dev);
+	if (rc != 0) {
+		DP_ERR(edev, "Unable to start periodic"
+			     " timer rc %d\n", rc);
+		assert(false && "Unable to start periodic timer");
+	}
+}
+
 static void qede_dev_close(struct rte_eth_dev *eth_dev)
 {
 	struct qede_dev *qdev = eth_dev->data->dev_private;
@@ -571,6 +753,9 @@ static void qede_dev_close(struct rte_eth_dev *eth_dev)
 
 	rte_intr_callback_unregister(&eth_dev->pci_dev->intr_handle,
 				     qede_interrupt_handler, (void *)eth_dev);
+
+	if (edev->num_hwfns > 1)
+		rte_eal_alarm_cancel(qede_poll_sp_sb_cb, (void *)eth_dev);
 
 	qdev->state = QEDE_CLOSE;
 }
@@ -611,15 +796,52 @@ qede_get_stats(struct rte_eth_dev *eth_dev, struct rte_eth_stats *eth_stats)
 	    stats.tx_mcast_bytes + stats.tx_bcast_bytes;
 
 	eth_stats->oerrors = stats.tx_err_drop_pkts;
+}
 
-	DP_INFO(edev,
-		"no_buff_discards=%" PRIu64 ""
-		" mac_filter_discards=%" PRIu64 ""
-		" brb_truncates=%" PRIu64 ""
-		" brb_discards=%" PRIu64 "\n",
-		stats.no_buff_discards,
-		stats.mac_filter_discards,
-		stats.brb_truncates, stats.brb_discards);
+static int
+qede_get_xstats_names(__rte_unused struct rte_eth_dev *dev,
+		      struct rte_eth_xstat_name *xstats_names, unsigned limit)
+{
+	unsigned int i, stat_cnt = RTE_DIM(qede_xstats_strings);
+
+	if (xstats_names != NULL)
+		for (i = 0; i < stat_cnt; i++)
+			snprintf(xstats_names[i].name,
+				sizeof(xstats_names[i].name),
+				"%s",
+				qede_xstats_strings[i].name);
+
+	return stat_cnt;
+}
+
+static int
+qede_get_xstats(struct rte_eth_dev *dev, struct rte_eth_xstat *xstats,
+		unsigned int n)
+{
+	struct qede_dev *qdev = dev->data->dev_private;
+	struct ecore_dev *edev = &qdev->edev;
+	struct ecore_eth_stats stats;
+	unsigned int num = RTE_DIM(qede_xstats_strings);
+
+	if (n < num)
+		return num;
+
+	qdev->ops->get_vport_stats(edev, &stats);
+
+	for (num = 0; num < n; num++)
+		xstats[num].value = *(u64 *)(((char *)&stats) +
+					     qede_xstats_strings[num].offset);
+
+	return num;
+}
+
+static void
+qede_reset_xstats(struct rte_eth_dev *dev)
+{
+	struct qede_dev *qdev = dev->data->dev_private;
+	struct ecore_dev *edev = &qdev->edev;
+
+	ecore_reset_vport_stats(edev);
 }
 
 int qede_dev_set_link_state(struct rte_eth_dev *eth_dev, bool link_up)
@@ -753,6 +975,170 @@ qede_dev_supported_ptypes_get(struct rte_eth_dev *eth_dev)
 	return NULL;
 }
 
+int qede_rss_hash_update(struct rte_eth_dev *eth_dev,
+			 struct rte_eth_rss_conf *rss_conf)
+{
+	struct qed_update_vport_params vport_update_params;
+	struct qede_dev *qdev = eth_dev->data->dev_private;
+	struct ecore_dev *edev = &qdev->edev;
+	uint8_t rss_caps;
+	uint32_t *key = (uint32_t *)rss_conf->rss_key;
+	uint64_t hf = rss_conf->rss_hf;
+	int i;
+
+	if (hf == 0)
+		DP_ERR(edev, "hash function 0 will disable RSS\n");
+
+	rss_caps = 0;
+	rss_caps |= (hf & ETH_RSS_IPV4)              ? ECORE_RSS_IPV4 : 0;
+	rss_caps |= (hf & ETH_RSS_IPV6)              ? ECORE_RSS_IPV6 : 0;
+	rss_caps |= (hf & ETH_RSS_IPV6_EX)           ? ECORE_RSS_IPV6 : 0;
+	rss_caps |= (hf & ETH_RSS_NONFRAG_IPV4_TCP)  ? ECORE_RSS_IPV4_TCP : 0;
+	rss_caps |= (hf & ETH_RSS_NONFRAG_IPV6_TCP)  ? ECORE_RSS_IPV6_TCP : 0;
+	rss_caps |= (hf & ETH_RSS_IPV6_TCP_EX)       ? ECORE_RSS_IPV6_TCP : 0;
+
+	/* If the mapping doesn't fit any supported, return */
+	if (rss_caps == 0 && hf != 0)
+		return -EINVAL;
+
+	memset(&vport_update_params, 0, sizeof(vport_update_params));
+
+	if (key != NULL)
+		memcpy(qdev->rss_params.rss_key, rss_conf->rss_key,
+		       rss_conf->rss_key_len);
+
+	qdev->rss_params.rss_caps = rss_caps;
+	memcpy(&vport_update_params.rss_params, &qdev->rss_params,
+	       sizeof(vport_update_params.rss_params));
+	vport_update_params.update_rss_flg = 1;
+	vport_update_params.vport_id = 0;
+
+	return qdev->ops->vport_update(edev, &vport_update_params);
+}
+
+int qede_rss_hash_conf_get(struct rte_eth_dev *eth_dev,
+			   struct rte_eth_rss_conf *rss_conf)
+{
+	struct qede_dev *qdev = eth_dev->data->dev_private;
+	uint64_t hf;
+
+	if (rss_conf->rss_key_len < sizeof(qdev->rss_params.rss_key))
+		return -EINVAL;
+
+	if (rss_conf->rss_key)
+		memcpy(rss_conf->rss_key, qdev->rss_params.rss_key,
+		       sizeof(qdev->rss_params.rss_key));
+
+	hf = 0;
+	hf |= (qdev->rss_params.rss_caps & ECORE_RSS_IPV4)     ?
+			ETH_RSS_IPV4 : 0;
+	hf |= (qdev->rss_params.rss_caps & ECORE_RSS_IPV6)     ?
+			ETH_RSS_IPV6 : 0;
+	hf |= (qdev->rss_params.rss_caps & ECORE_RSS_IPV6)     ?
+			ETH_RSS_IPV6_EX : 0;
+	hf |= (qdev->rss_params.rss_caps & ECORE_RSS_IPV4_TCP) ?
+			ETH_RSS_NONFRAG_IPV4_TCP : 0;
+	hf |= (qdev->rss_params.rss_caps & ECORE_RSS_IPV6_TCP) ?
+			ETH_RSS_NONFRAG_IPV6_TCP : 0;
+	hf |= (qdev->rss_params.rss_caps & ECORE_RSS_IPV6_TCP) ?
+			ETH_RSS_IPV6_TCP_EX : 0;
+
+	rss_conf->rss_hf = hf;
+
+	return 0;
+}
+
+int qede_rss_reta_update(struct rte_eth_dev *eth_dev,
+			 struct rte_eth_rss_reta_entry64 *reta_conf,
+			 uint16_t reta_size)
+{
+	struct qed_update_vport_params vport_update_params;
+	struct qede_dev *qdev = eth_dev->data->dev_private;
+	struct ecore_dev *edev = &qdev->edev;
+	uint16_t i, idx, shift;
+
+	if (reta_size > ETH_RSS_RETA_SIZE_128) {
+		DP_ERR(edev, "reta_size %d is not supported by hardware\n",
+		       reta_size);
+		return -EINVAL;
+	}
+
+	memset(&vport_update_params, 0, sizeof(vport_update_params));
+	memcpy(&vport_update_params.rss_params, &qdev->rss_params,
+	       sizeof(vport_update_params.rss_params));
+
+	for (i = 0; i < reta_size; i++) {
+		idx = i / RTE_RETA_GROUP_SIZE;
+		shift = i % RTE_RETA_GROUP_SIZE;
+		if (reta_conf[idx].mask & (1ULL << shift)) {
+			uint8_t entry = reta_conf[idx].reta[shift];
+			qdev->rss_params.rss_ind_table[i] = entry;
+		}
+	}
+
+	vport_update_params.update_rss_flg = 1;
+	vport_update_params.vport_id = 0;
+
+	return qdev->ops->vport_update(edev, &vport_update_params);
+}
+
+int qede_rss_reta_query(struct rte_eth_dev *eth_dev,
+			struct rte_eth_rss_reta_entry64 *reta_conf,
+			uint16_t reta_size)
+{
+	struct qede_dev *qdev = eth_dev->data->dev_private;
+	uint16_t i, idx, shift;
+
+	if (reta_size > ETH_RSS_RETA_SIZE_128) {
+		struct ecore_dev *edev = &qdev->edev;
+		DP_ERR(edev, "reta_size %d is not supported\n",
+		       reta_size);
+	}
+
+	for (i = 0; i < reta_size; i++) {
+		idx = i / RTE_RETA_GROUP_SIZE;
+		shift = i % RTE_RETA_GROUP_SIZE;
+		if (reta_conf[idx].mask & (1ULL << shift)) {
+			uint8_t entry = qdev->rss_params.rss_ind_table[i];
+			reta_conf[idx].reta[shift] = entry;
+		}
+	}
+
+	return 0;
+}
+
+int qede_set_mtu(struct rte_eth_dev *dev, uint16_t mtu)
+{
+	uint32_t frame_size;
+	struct qede_dev *qdev = dev->data->dev_private;
+	struct rte_eth_dev_info dev_info = {0};
+
+	qede_dev_info_get(dev, &dev_info);
+
+	/* VLAN_TAG = 4 */
+	frame_size = mtu + ETHER_HDR_LEN + ETHER_CRC_LEN + 4;
+
+	if ((mtu < ETHER_MIN_MTU) || (frame_size > dev_info.max_rx_pktlen))
+		return -EINVAL;
+
+	if (!dev->data->scattered_rx &&
+	    frame_size > dev->data->min_rx_buf_size - RTE_PKTMBUF_HEADROOM)
+		return -EINVAL;
+
+	if (frame_size > ETHER_MAX_LEN)
+		dev->data->dev_conf.rxmode.jumbo_frame = 1;
+	else
+		dev->data->dev_conf.rxmode.jumbo_frame = 0;
+
+	/* update max frame size */
+	dev->data->dev_conf.rxmode.max_rx_pkt_len = frame_size;
+	qdev->mtu = mtu;
+	qede_dev_stop(dev);
+	qede_dev_start(dev);
+
+	return 0;
+}
+
 static const struct eth_dev_ops qede_eth_dev_ops = {
 	.dev_configure = qede_dev_configure,
 	.dev_infos_get = qede_dev_info_get,
@@ -772,6 +1158,9 @@ static const struct eth_dev_ops qede_eth_dev_ops = {
 	.dev_close = qede_dev_close,
 	.stats_get = qede_get_stats,
 	.stats_reset = qede_reset_stats,
+	.xstats_get = qede_get_xstats,
+	.xstats_reset = qede_reset_xstats,
+	.xstats_get_names = qede_get_xstats_names,
 	.mac_addr_add = qede_mac_addr_add,
 	.mac_addr_remove = qede_mac_addr_remove,
 	.mac_addr_set = qede_mac_addr_set,
@@ -780,6 +1169,11 @@ static const struct eth_dev_ops qede_eth_dev_ops = {
 	.flow_ctrl_set = qede_flow_ctrl_set,
 	.flow_ctrl_get = qede_flow_ctrl_get,
 	.dev_supported_ptypes_get = qede_dev_supported_ptypes_get,
+	.rss_hash_update = qede_rss_hash_update,
+	.rss_hash_conf_get = qede_rss_hash_conf_get,
+	.reta_update  = qede_rss_reta_update,
+	.reta_query  = qede_rss_reta_query,
+	.mtu_set = qede_set_mtu,
 };
 
 static const struct eth_dev_ops qede_eth_vf_dev_ops = {
@@ -801,9 +1195,17 @@ static const struct eth_dev_ops qede_eth_vf_dev_ops = {
 	.dev_close = qede_dev_close,
 	.stats_get = qede_get_stats,
 	.stats_reset = qede_reset_stats,
+	.xstats_get = qede_get_xstats,
+	.xstats_reset = qede_reset_xstats,
+	.xstats_get_names = qede_get_xstats_names,
 	.vlan_offload_set = qede_vlan_offload_set,
 	.vlan_filter_set = qede_vlan_filter_set,
 	.dev_supported_ptypes_get = qede_dev_supported_ptypes_get,
+	.rss_hash_update = qede_rss_hash_update,
+	.rss_hash_conf_get = qede_rss_hash_conf_get,
+	.reta_update  = qede_rss_reta_update,
+	.reta_query  = qede_rss_reta_query,
+	.mtu_set = qede_set_mtu,
 };
 
 static void qede_update_pf_params(struct ecore_dev *edev)
@@ -896,9 +1298,26 @@ static int qede_common_dev_init(struct rte_eth_dev *eth_dev, bool is_vf)
 	params.drv_eng = QEDE_ENGINEERING_VERSION;
 	strncpy((char *)params.name, "qede LAN", QED_DRV_VER_STR_SIZE);
 
+	/* For CMT mode device do periodic polling for slowpath events.
+	 * This is required since uio device uses only one MSI-x
+	 * interrupt vector but we need one for each engine.
+	 */
+	if (edev->num_hwfns > 1) {
+		rc = rte_eal_alarm_set(timer_period * US_PER_S,
+				       qede_poll_sp_sb_cb,
+				       (void *)eth_dev);
+		if (rc != 0) {
+			DP_ERR(edev, "Unable to start periodic"
+				     " timer rc %d\n", rc);
+			return -EINVAL;
+		}
+	}
+
 	rc = qed_ops->common->slowpath_start(edev, &params);
 	if (rc) {
 		DP_ERR(edev, "Cannot start slowpath rc = %d\n", rc);
+		rte_eal_alarm_cancel(qede_poll_sp_sb_cb,
+				     (void *)eth_dev);
 		return -ENODEV;
 	}
 
@@ -907,6 +1326,8 @@ static int qede_common_dev_init(struct rte_eth_dev *eth_dev, bool is_vf)
 		DP_ERR(edev, "Cannot get device_info rc %d\n", rc);
 		qed_ops->common->slowpath_stop(edev);
 		qed_ops->common->remove(edev);
+		rte_eal_alarm_cancel(qede_poll_sp_sb_cb,
+				     (void *)eth_dev);
 		return -ENODEV;
 	}
 
@@ -932,6 +1353,8 @@ static int qede_common_dev_init(struct rte_eth_dev *eth_dev, bool is_vf)
 		DP_ERR(edev, "Failed to allocate MAC address\n");
 		qed_ops->common->slowpath_stop(edev);
 		qed_ops->common->remove(edev);
+		rte_eal_alarm_cancel(qede_poll_sp_sb_cb,
+				     (void *)eth_dev);
 		return -ENOMEM;
 	}
 
@@ -1047,6 +1470,9 @@ static struct rte_pci_id pci_id_qede_map[] = {
 	{
 		QEDE_RTE_PCI_DEVICE(PCI_DEVICE_ID_57980S_25)
 	},
+	{
+		QEDE_RTE_PCI_DEVICE(PCI_DEVICE_ID_57980S_100)
+	},
 	{.vendor_id = 0,}
 };
 
@@ -1102,5 +1528,7 @@ static struct rte_driver rte_qede_driver = {
 	.init = rte_qedevf_pmd_init
 };
 
-PMD_REGISTER_DRIVER(rte_qede_driver);
-PMD_REGISTER_DRIVER(rte_qedevf_driver);
+PMD_REGISTER_DRIVER(rte_qede_driver, qede);
+DRIVER_REGISTER_PCI_TABLE(qede, pci_id_qede_map);
+PMD_REGISTER_DRIVER(rte_qedevf_driver, qedevf);
+DRIVER_REGISTER_PCI_TABLE(qedevf, pci_id_qedevf_map);

@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
+ *   Copyright(c) 2010-2016 Intel Corporation. All rights reserved.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -102,6 +102,8 @@ struct fwd_stream {
 	portid_t   tx_port;   /**< forwarding port of received packets */
 	queueid_t  tx_queue;  /**< TX queue to send forwarded packets */
 	streamid_t peer_addr; /**< index of peer ethernet address of packets */
+
+	unsigned int retry_enabled;
 
 	/* "read-write" results */
 	unsigned int rx_packets;  /**< received packets */
@@ -220,9 +222,14 @@ struct fwd_engine {
 	packet_fwd_t     packet_fwd;     /**< Mandatory. */
 };
 
+#define BURST_TX_WAIT_US 1
+#define BURST_TX_RETRIES 64
+
+extern uint32_t burst_tx_delay_time;
+extern uint32_t burst_tx_retry_num;
+
 extern struct fwd_engine io_fwd_engine;
 extern struct fwd_engine mac_fwd_engine;
-extern struct fwd_engine mac_retry_fwd_engine;
 extern struct fwd_engine mac_swap_engine;
 extern struct fwd_engine flow_gen_engine;
 extern struct fwd_engine rx_only_engine;
@@ -380,6 +387,7 @@ extern int8_t tx_wthresh;
 
 extern struct fwd_config cur_fwd_config;
 extern struct fwd_engine *cur_fwd_eng;
+extern uint32_t retry_enabled;
 extern struct fwd_lcore  **fwd_lcores;
 extern struct fwd_stream **fwd_streams;
 
@@ -472,7 +480,7 @@ void port_infos_display(portid_t port_id);
 void rx_queue_infos_display(portid_t port_idi, uint16_t queue_id);
 void tx_queue_infos_display(portid_t port_idi, uint16_t queue_id);
 void fwd_lcores_config_display(void);
-void fwd_config_display(void);
+void pkt_fwd_config_display(struct fwd_config *cfg);
 void rxtx_config_display(void);
 void fwd_config_setup(void);
 void set_def_fwd_config(void);
@@ -500,6 +508,7 @@ void set_fwd_lcores_number(uint16_t nb_lc);
 void set_fwd_ports_list(unsigned int *portlist, unsigned int nb_pt);
 void set_fwd_ports_mask(uint64_t portmask);
 void set_fwd_ports_number(uint16_t nb_pt);
+int port_is_forwarding(portid_t port_id);
 
 void rx_vlan_strip_set(portid_t port_id, int on);
 void rx_vlan_strip_set_on_queue(portid_t port_id, uint16_t queue_id, int on);
@@ -523,6 +532,7 @@ void show_tx_pkt_segments(void);
 void set_tx_pkt_split(const char *name);
 void set_nb_pkt_per_burst(uint16_t pkt_burst);
 char *list_pkt_forwarding_modes(void);
+char *list_pkt_forwarding_retry_modes(void);
 void set_pkt_forwarding_mode(const char *fwd_mode);
 void start_packet_forwarding(int with_tx_first);
 void stop_packet_forwarding(void);
@@ -531,6 +541,8 @@ void dev_set_link_down(portid_t pid);
 void init_port_config(void);
 void set_port_slave_flag(portid_t slave_pid);
 void clear_port_slave_flag(portid_t slave_pid);
+uint8_t port_is_bonding_slave(portid_t slave_pid);
+
 int init_port_dcb_config(portid_t pid, enum dcb_mode_enable dcb_mode,
 		     enum rte_eth_nb_tcs num_tcs,
 		     uint8_t pfc_en);

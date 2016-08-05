@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
+ *   Copyright(c) 2010-2016 Intel Corporation. All rights reserved.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -111,7 +111,10 @@ static int i40evf_dev_link_update(struct rte_eth_dev *dev,
 static void i40evf_dev_stats_get(struct rte_eth_dev *dev,
 				struct rte_eth_stats *stats);
 static int i40evf_dev_xstats_get(struct rte_eth_dev *dev,
-				 struct rte_eth_xstats *xstats, unsigned n);
+				 struct rte_eth_xstat *xstats, unsigned n);
+static int i40evf_dev_xstats_get_names(struct rte_eth_dev *dev,
+				       struct rte_eth_xstat_name *xstats_names,
+				       unsigned limit);
 static void i40evf_dev_xstats_reset(struct rte_eth_dev *dev);
 static int i40evf_vlan_filter_set(struct rte_eth_dev *dev,
 				  uint16_t vlan_id, int on);
@@ -196,6 +199,7 @@ static const struct eth_dev_ops i40evf_eth_dev_ops = {
 	.link_update          = i40evf_dev_link_update,
 	.stats_get            = i40evf_dev_stats_get,
 	.xstats_get           = i40evf_dev_xstats_get,
+	.xstats_get_names     = i40evf_dev_xstats_get_names,
 	.xstats_reset         = i40evf_dev_xstats_reset,
 	.dev_close            = i40evf_dev_close,
 	.dev_infos_get        = i40evf_dev_info_get,
@@ -330,8 +334,7 @@ i40evf_execute_vf_cmd(struct rte_eth_dev *dev, struct vf_cmd_info *args)
 	struct i40e_vf *vf = I40EVF_DEV_PRIVATE_TO_VF(dev->data->dev_private);
 	struct i40evf_arq_msg_info info;
 	enum i40evf_aq_result ret;
-	int err = -1;
-	int i = 0;
+	int err, i = 0;
 
 	if (_atomic_set_cmd(vf, args->ops))
 		return -1;
@@ -352,19 +355,19 @@ i40evf_execute_vf_cmd(struct rte_eth_dev *dev, struct vf_cmd_info *args)
 	switch (args->ops) {
 	case I40E_VIRTCHNL_OP_RESET_VF:
 		/*no need to process in this function */
+		err = 0;
 		break;
 	case I40E_VIRTCHNL_OP_VERSION:
 	case I40E_VIRTCHNL_OP_GET_VF_RESOURCES:
 		/* for init adminq commands, need to poll the response */
+		err = -1;
 		do {
 			ret = i40evf_read_pfmsg(dev, &info);
 			if (ret == I40EVF_MSG_CMD) {
 				err = 0;
 				break;
-			} else if (ret == I40EVF_MSG_ERR) {
-				err = -1;
+			} else if (ret == I40EVF_MSG_ERR)
 				break;
-			}
 			rte_delay_ms(ASQ_DELAY_MS);
 			/* If don't read msg or read sys event, continue */
 		} while (i++ < MAX_TRY_TIMES);
@@ -373,6 +376,7 @@ i40evf_execute_vf_cmd(struct rte_eth_dev *dev, struct vf_cmd_info *args)
 
 	default:
 		/* for other adminq in running time, waiting the cmd done flag */
+		err = -1;
 		do {
 			if (vf->pend_cmd == I40E_VIRTCHNL_OP_UNKNOWN) {
 				err = 0;
@@ -984,8 +988,23 @@ i40evf_dev_xstats_reset(struct rte_eth_dev *dev)
 	vf->vsi.eth_stats_offset = vf->vsi.eth_stats;
 }
 
+static int i40evf_dev_xstats_get_names(__rte_unused struct rte_eth_dev *dev,
+				      struct rte_eth_xstat_name *xstats_names,
+				      __rte_unused unsigned limit)
+{
+	unsigned i;
+
+	if (xstats_names != NULL)
+		for (i = 0; i < I40EVF_NB_XSTATS; i++) {
+			snprintf(xstats_names[i].name,
+				sizeof(xstats_names[i].name),
+				"%s", rte_i40evf_stats_strings[i].name);
+		}
+	return I40EVF_NB_XSTATS;
+}
+
 static int i40evf_dev_xstats_get(struct rte_eth_dev *dev,
-				 struct rte_eth_xstats *xstats, unsigned n)
+				 struct rte_eth_xstat *xstats, unsigned n)
 {
 	int ret;
 	unsigned i;
@@ -1003,8 +1022,7 @@ static int i40evf_dev_xstats_get(struct rte_eth_dev *dev,
 
 	/* loop over xstats array and values from pstats */
 	for (i = 0; i < I40EVF_NB_XSTATS; i++) {
-		snprintf(xstats[i].name, sizeof(xstats[i].name),
-			 "%s", rte_i40evf_stats_strings[i].name);
+		xstats[i].id = i;
 		xstats[i].value = *(uint64_t *)(((char *)pstats) +
 			rte_i40evf_stats_strings[i].offset);
 	}
@@ -1092,9 +1110,12 @@ i40evf_get_link_status(struct rte_eth_dev *dev, struct rte_eth_link *link)
 }
 
 static const struct rte_pci_id pci_id_i40evf_map[] = {
-#define RTE_PCI_DEV_ID_DECL_I40EVF(vend, dev) {RTE_PCI_DEVICE(vend, dev)},
-#include "rte_pci_dev_ids.h"
-{ .vendor_id = 0, /* sentinel */ },
+	{ RTE_PCI_DEVICE(I40E_INTEL_VENDOR_ID, I40E_DEV_ID_VF) },
+	{ RTE_PCI_DEVICE(I40E_INTEL_VENDOR_ID, I40E_DEV_ID_VF_HV) },
+	{ RTE_PCI_DEVICE(I40E_INTEL_VENDOR_ID, I40E_DEV_ID_X722_A0_VF) },
+	{ RTE_PCI_DEVICE(I40E_INTEL_VENDOR_ID, I40E_DEV_ID_X722_VF) },
+	{ RTE_PCI_DEVICE(I40E_INTEL_VENDOR_ID, I40E_DEV_ID_X722_VF_HV) },
+	{ .vendor_id = 0, /* sentinel */ },
 };
 
 static inline int
@@ -1563,7 +1584,8 @@ static struct rte_driver rte_i40evf_driver = {
 	.init = rte_i40evf_pmd_init,
 };
 
-PMD_REGISTER_DRIVER(rte_i40evf_driver);
+PMD_REGISTER_DRIVER(rte_i40evf_driver, i40evf);
+DRIVER_REGISTER_PCI_TABLE(i40evf, pci_id_i40evf_map);
 
 static int
 i40evf_dev_configure(struct rte_eth_dev *dev)
@@ -2359,12 +2381,15 @@ i40evf_get_rss_lut(struct i40e_vsi *vsi, uint8_t *lut, uint16_t lut_size)
 static int
 i40evf_set_rss_lut(struct i40e_vsi *vsi, uint8_t *lut, uint16_t lut_size)
 {
-	struct i40e_vf *vf = I40E_VSI_TO_VF(vsi);
-	struct i40e_hw *hw = I40E_VSI_TO_HW(vsi);
+	struct i40e_vf *vf;
+	struct i40e_hw *hw;
 	int ret;
 
 	if (!vsi || !lut)
 		return -EINVAL;
+
+	vf = I40E_VSI_TO_VF(vsi);
+	hw = I40E_VSI_TO_HW(vsi);
 
 	if (vf->flags & I40E_FLAG_RSS_AQ_CAPABLE) {
 		ret = i40e_aq_set_rss_lut(hw, vsi->vsi_id, FALSE,

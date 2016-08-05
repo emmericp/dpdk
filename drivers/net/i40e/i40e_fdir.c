@@ -94,7 +94,9 @@
 		I40E_PRTQF_FLX_PIT_SOURCE_OFF_MASK) | \
 	(((fsize) << I40E_PRTQF_FLX_PIT_FSIZE_SHIFT) & \
 			I40E_PRTQF_FLX_PIT_FSIZE_MASK) | \
-	((((dst_offset) + I40E_FLX_OFFSET_IN_FIELD_VECTOR) << \
+	((((dst_offset) == NONUSE_FLX_PIT_DEST_OFF ? \
+			NONUSE_FLX_PIT_DEST_OFF : \
+			((dst_offset) + I40E_FLX_OFFSET_IN_FIELD_VECTOR)) << \
 			I40E_PRTQF_FLX_PIT_DEST_OFF_SHIFT) & \
 			I40E_PRTQF_FLX_PIT_DEST_OFF_MASK))
 
@@ -1141,7 +1143,8 @@ i40e_fdir_filter_programming(struct i40e_pf *pf,
 	fdirdp->dtype_cmd_cntindex |=
 			rte_cpu_to_le_32(I40E_TXD_FLTR_QW1_CNT_ENA_MASK);
 	fdirdp->dtype_cmd_cntindex |=
-			rte_cpu_to_le_32((pf->fdir.match_counter_index <<
+			rte_cpu_to_le_32(
+			((uint32_t)pf->fdir.match_counter_index <<
 			I40E_TXD_FLTR_QW1_CNTINDEX_SHIFT) &
 			I40E_TXD_FLTR_QW1_CNTINDEX_MASK);
 

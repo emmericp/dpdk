@@ -43,5 +43,6 @@ DPDK documentation
    sample_app_ug/index
    testpmd_app_ug/index
    faq/index
+   howto/index
    rel_notes/index
    contributing/index

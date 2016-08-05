@@ -67,6 +67,8 @@ STATIC enum i40e_status_code i40e_set_mac_type(struct i40e_hw *hw)
 		case I40E_DEV_ID_10G_BASE_T4:
 		case I40E_DEV_ID_20G_KR2:
 		case I40E_DEV_ID_20G_KR2_A:
+		case I40E_DEV_ID_25G_B:
+		case I40E_DEV_ID_25G_SFP28:
 			hw->mac.type = I40E_MAC_XL710;
 			break;
 #ifdef X722_SUPPORT
@@ -78,6 +80,8 @@ STATIC enum i40e_status_code i40e_set_mac_type(struct i40e_hw *hw)
 		case I40E_DEV_ID_SFP_X722:
 		case I40E_DEV_ID_1G_BASE_T_X722:
 		case I40E_DEV_ID_10G_BASE_T_X722:
+		case I40E_DEV_ID_SFP_I_X722:
+		case I40E_DEV_ID_QSFP_I_X722:
 			hw->mac.type = I40E_MAC_X722;
 			break;
 #endif
@@ -371,14 +375,16 @@ void i40e_debug_aq(struct i40e_hw *hw, enum i40e_debug_mask mask, void *desc,
 		/* the most we could have left is 16 bytes, pad with zeros */
 		if (i < len) {
 			char d_buf[16];
-			int j;
+			int j, i_sav;
 
+			i_sav = i;
 			memset(d_buf, 0, sizeof(d_buf));
 			for (j = 0; i < len; j++, i++)
 				d_buf[j] = buf[i];
 			i40e_debug(hw, mask,
 				   "\t0x%04X  %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X %02X\n",
-				   i, d_buf[0], d_buf[1], d_buf[2], d_buf[3],
+				   i_sav, d_buf[0], d_buf[1],
+				   d_buf[2], d_buf[3],
 				   d_buf[4], d_buf[5], d_buf[6], d_buf[7],
 				   d_buf[8], d_buf[9], d_buf[10], d_buf[11],
 				   d_buf[12], d_buf[13], d_buf[14], d_buf[15]);
@@ -1317,8 +1323,7 @@ enum i40e_status_code i40e_pf_reset(struct i40e_hw *hw)
 			I40E_GLGEN_RSTCTL_GRSTDEL_MASK) >>
 			I40E_GLGEN_RSTCTL_GRSTDEL_SHIFT;
 
-	/* It can take upto 15 secs for GRST steady state */
-	grst_del = grst_del * 20; /* bump it to 16 secs max to be safe */
+	grst_del = grst_del * 20;
 
 	for (cnt = 0; cnt < grst_del; cnt++) {
 		reg = rd32(hw, I40E_GLGEN_RSTAT);
@@ -2215,10 +2220,12 @@ enum i40e_status_code i40e_aq_set_default_vsi(struct i40e_hw *hw,
  * @seid: vsi number
  * @set: set unicast promiscuous enable/disable
  * @cmd_details: pointer to command details structure or NULL
+ * @rx_only_promisc: flag to decide if egress traffic gets mirrored in promisc
  **/
 enum i40e_status_code i40e_aq_set_vsi_unicast_promiscuous(struct i40e_hw *hw,
 				u16 seid, bool set,
-				struct i40e_asq_cmd_details *cmd_details)
+				struct i40e_asq_cmd_details *cmd_details,
+				bool rx_only_promisc)
 {
 	struct i40e_aq_desc desc;
 	struct i40e_aqc_set_vsi_promiscuous_modes *cmd =
@@ -2231,8 +2238,9 @@ enum i40e_status_code i40e_aq_set_vsi_unicast_promiscuous(struct i40e_hw *hw,
 
 	if (set) {
 		flags |= I40E_AQC_SET_VSI_PROMISC_UNICAST;
-		if (((hw->aq.api_maj_ver == 1) && (hw->aq.api_min_ver >= 5)) ||
-		     (hw->aq.api_maj_ver > 1))
+		if (rx_only_promisc &&
+		    (((hw->aq.api_maj_ver == 1) && (hw->aq.api_min_ver >= 5)) ||
+		     (hw->aq.api_maj_ver > 1)))
 			flags |= I40E_AQC_SET_VSI_PROMISC_TX;
 	}
 
@@ -3040,10 +3048,7 @@ enum i40e_status_code i40e_aq_delete_mirrorrule(struct i40e_hw *hw, u16 sw_seid,
 			u16 *rules_used, u16 *rules_free)
 {
 	/* Rule ID has to be valid except rule_type: INGRESS VLAN mirroring */
-	if (rule_type != I40E_AQC_MIRROR_RULE_TYPE_VLAN) {
-		if (!rule_id)
-			return I40E_ERR_PARAM;
-	} else {
+	if (rule_type == I40E_AQC_MIRROR_RULE_TYPE_VLAN) {
 		/* count and mr_list shall be valid for rule_type INGRESS VLAN
 		 * mirroring. For other rule_type, count and rule_type should
 		 * not matter.
@@ -3233,67 +3238,6 @@ enum i40e_status_code i40e_aq_debug_write_register(struct i40e_hw *hw,
 	cmd->address = CPU_TO_LE32(reg_addr);
 	cmd->value_high = CPU_TO_LE32((u32)(reg_val >> 32));
 	cmd->value_low = CPU_TO_LE32((u32)(reg_val & 0xFFFFFFFF));
-
-	status = i40e_asq_send_command(hw, &desc, NULL, 0, cmd_details);
-
-	return status;
-}
-
-/**
- * i40e_aq_get_hmc_resource_profile
- * @hw: pointer to the hw struct
- * @profile: type of profile the HMC is to be set as
- * @pe_vf_enabled_count: the number of PE enabled VFs the system has
- * @cmd_details: pointer to command details structure or NULL
- *
- * query the HMC profile of the device.
- **/
-enum i40e_status_code i40e_aq_get_hmc_resource_profile(struct i40e_hw *hw,
-				enum i40e_aq_hmc_profile *profile,
-				u8 *pe_vf_enabled_count,
-				struct i40e_asq_cmd_details *cmd_details)
-{
-	struct i40e_aq_desc desc;
-	struct i40e_aq_get_set_hmc_resource_profile *resp =
-		(struct i40e_aq_get_set_hmc_resource_profile *)&desc.params.raw;
-	enum i40e_status_code status;
-
-	i40e_fill_default_direct_cmd_desc(&desc,
-				i40e_aqc_opc_query_hmc_resource_profile);
-	status = i40e_asq_send_command(hw, &desc, NULL, 0, cmd_details);
-
-	*profile = (enum i40e_aq_hmc_profile)(resp->pm_profile &
-		   I40E_AQ_GET_HMC_RESOURCE_PROFILE_PM_MASK);
-	*pe_vf_enabled_count = resp->pe_vf_enabled &
-			       I40E_AQ_GET_HMC_RESOURCE_PROFILE_COUNT_MASK;
-
-	return status;
-}
-
-/**
- * i40e_aq_set_hmc_resource_profile
- * @hw: pointer to the hw struct
- * @profile: type of profile the HMC is to be set as
- * @pe_vf_enabled_count: the number of PE enabled VFs the system has
- * @cmd_details: pointer to command details structure or NULL
- *
- * set the HMC profile of the device.
- **/
-enum i40e_status_code i40e_aq_set_hmc_resource_profile(struct i40e_hw *hw,
-				enum i40e_aq_hmc_profile profile,
-				u8 pe_vf_enabled_count,
-				struct i40e_asq_cmd_details *cmd_details)
-{
-	struct i40e_aq_desc desc;
-	struct i40e_aq_get_set_hmc_resource_profile *cmd =
-		(struct i40e_aq_get_set_hmc_resource_profile *)&desc.params.raw;
-	enum i40e_status_code status;
-
-	i40e_fill_default_direct_cmd_desc(&desc,
-					i40e_aqc_opc_set_hmc_resource_profile);
-
-	cmd->pm_profile = (u8)profile;
-	cmd->pe_vf_enabled = pe_vf_enabled_count;
 
 	status = i40e_asq_send_command(hw, &desc, NULL, 0, cmd_details);
 
@@ -3728,7 +3672,7 @@ STATIC void i40e_parse_discover_capabilities(struct i40e_hw *hw, void *buff,
 			p->num_msix_vectors = number;
 			i40e_debug(hw, I40E_DEBUG_INIT,
 				   "HW Capability: MSIX vector count = %d\n",
-				   p->num_msix_vectors_vf);
+				   p->num_msix_vectors);
 			break;
 		case I40E_AQ_CAP_ID_VF_MSIX:
 			p->num_msix_vectors_vf = number;
@@ -3817,6 +3761,12 @@ STATIC void i40e_parse_discover_capabilities(struct i40e_hw *hw, void *buff,
 			i40e_debug(hw, I40E_DEBUG_INIT,
 				   "HW Capability: wr_csr_prot = 0x%llX\n\n",
 				   (p->wr_csr_prot & 0xffff));
+			break;
+		case I40E_AQ_CAP_ID_NVM_MGMT:
+			if (number & I40E_NVM_MGMT_SEC_REV_DISABLED)
+				p->sec_rev_disabled = true;
+			if (number & I40E_NVM_MGMT_UPDATE_DISABLED)
+				p->update_disabled = true;
 			break;
 #ifdef X722_SUPPORT
 		case I40E_AQ_CAP_ID_WOL_AND_PROXY:
@@ -4486,7 +4436,7 @@ enum i40e_status_code i40e_aq_delete_element(struct i40e_hw *hw, u16 seid,
 }
 
 /**
- * i40_aq_add_pvirt - Instantiate a Port Virtualizer on a port
+ * i40e_aq_add_pvirt - Instantiate a Port Virtualizer on a port
  * @hw: pointer to the hw struct
  * @flags: component flags
  * @mac_seid: uplink seid (MAC SEID)
@@ -5484,6 +5434,35 @@ void i40e_add_filter_to_drop_tx_flow_control_frames(struct i40e_hw *hw,
 }
 
 /**
+ * i40e_fix_up_geneve_vni - adjust Geneve VNI for HW issue
+ * @filters: list of cloud filters
+ * @filter_count: length of list
+ *
+ * There's an issue in the device where the Geneve VNI layout needs
+ * to be shifted 1 byte over from the VxLAN VNI
+ **/
+STATIC void i40e_fix_up_geneve_vni(
+	struct i40e_aqc_add_remove_cloud_filters_element_data *filters,
+	u8 filter_count)
+{
+	struct i40e_aqc_add_remove_cloud_filters_element_data *f = filters;
+	int i;
+
+	for (i = 0; i < filter_count; i++) {
+		u16 tnl_type;
+		u32 ti;
+
+		tnl_type = (le16_to_cpu(f[i].flags) &
+			   I40E_AQC_ADD_CLOUD_TNL_TYPE_MASK) >>
+			   I40E_AQC_ADD_CLOUD_TNL_TYPE_SHIFT;
+		if (tnl_type == I40E_AQC_ADD_CLOUD_TNL_TYPE_GENEVE) {
+			ti = le32_to_cpu(f[i].tenant_id);
+			f[i].tenant_id = cpu_to_le32(ti << 8);
+		}
+	}
+}
+
+/**
  * i40e_aq_add_cloud_filters
  * @hw: pointer to the hardware structure
  * @seid: VSI seid to add cloud filters from
@@ -5503,8 +5482,8 @@ enum i40e_status_code i40e_aq_add_cloud_filters(struct i40e_hw *hw,
 	struct i40e_aq_desc desc;
 	struct i40e_aqc_add_remove_cloud_filters *cmd =
 	(struct i40e_aqc_add_remove_cloud_filters *)&desc.params.raw;
-	u16 buff_len;
 	enum i40e_status_code status;
+	u16 buff_len;
 
 	i40e_fill_default_direct_cmd_desc(&desc,
 					  i40e_aqc_opc_add_cloud_filters);
@@ -5514,6 +5493,8 @@ enum i40e_status_code i40e_aq_add_cloud_filters(struct i40e_hw *hw,
 	desc.flags |= CPU_TO_LE16((u16)(I40E_AQ_FLAG_BUF | I40E_AQ_FLAG_RD));
 	cmd->num_filters = filter_count;
 	cmd->seid = CPU_TO_LE16(seid);
+
+	i40e_fix_up_geneve_vni(filters, filter_count);
 
 	status = i40e_asq_send_command(hw, &desc, filters, buff_len, NULL);
 
@@ -5551,6 +5532,8 @@ enum i40e_status_code i40e_aq_remove_cloud_filters(struct i40e_hw *hw,
 	desc.flags |= CPU_TO_LE16((u16)(I40E_AQ_FLAG_BUF | I40E_AQ_FLAG_RD));
 	cmd->num_filters = filter_count;
 	cmd->seid = CPU_TO_LE16(seid);
+
+	i40e_fix_up_geneve_vni(filters, filter_count);
 
 	status = i40e_asq_send_command(hw, &desc, filters, buff_len, NULL);
 

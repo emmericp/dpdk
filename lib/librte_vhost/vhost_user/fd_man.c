@@ -71,20 +71,22 @@ fdset_find_free_slot(struct fdset *pfdset)
 	return fdset_find_fd(pfdset, -1);
 }
 
-static void
+static int
 fdset_add_fd(struct fdset  *pfdset, int idx, int fd,
 	fd_cb rcb, fd_cb wcb, void *dat)
 {
 	struct fdentry *pfdentry;
 
-	if (pfdset == NULL || idx >= MAX_FDS)
-		return;
+	if (pfdset == NULL || idx >= MAX_FDS || fd >= FD_SETSIZE)
+		return -1;
 
 	pfdentry = &pfdset->fd[idx];
 	pfdentry->fd = fd;
 	pfdentry->rcb = rcb;
 	pfdentry->wcb = wcb;
 	pfdentry->dat = dat;
+
+	return 0;
 }
 
 /**
@@ -130,8 +132,10 @@ fdset_init(struct fdset *pfdset)
 	if (pfdset == NULL)
 		return;
 
-	for (i = 0; i < MAX_FDS; i++)
+	for (i = 0; i < MAX_FDS; i++) {
 		pfdset->fd[i].fd = -1;
+		pfdset->fd[i].dat = NULL;
+	}
 	pfdset->num = 0;
 }
 
@@ -150,12 +154,11 @@ fdset_add(struct fdset *pfdset, int fd, fd_cb rcb, fd_cb wcb, void *dat)
 
 	/* Find a free slot in the list. */
 	i = fdset_find_free_slot(pfdset);
-	if (i == -1) {
+	if (i == -1 || fdset_add_fd(pfdset, i, fd, rcb, wcb, dat) < 0) {
 		pthread_mutex_unlock(&pfdset->fd_mutex);
 		return -2;
 	}
 
-	fdset_add_fd(pfdset, i, fd, rcb, wcb, dat);
 	pfdset->num++;
 
 	pthread_mutex_unlock(&pfdset->fd_mutex);
@@ -165,14 +168,16 @@ fdset_add(struct fdset *pfdset, int fd, fd_cb rcb, fd_cb wcb, void *dat)
 
 /**
  *  Unregister the fd from the fdset.
+ *  Returns context of a given fd or NULL.
  */
-void
+void *
 fdset_del(struct fdset *pfdset, int fd)
 {
 	int i;
+	void *dat = NULL;
 
 	if (pfdset == NULL || fd == -1)
-		return;
+		return NULL;
 
 	do {
 		pthread_mutex_lock(&pfdset->fd_mutex);
@@ -180,13 +185,17 @@ fdset_del(struct fdset *pfdset, int fd)
 		i = fdset_find_fd(pfdset, fd);
 		if (i != -1 && pfdset->fd[i].busy == 0) {
 			/* busy indicates r/wcb is executing! */
+			dat = pfdset->fd[i].dat;
 			pfdset->fd[i].fd = -1;
 			pfdset->fd[i].rcb = pfdset->fd[i].wcb = NULL;
+			pfdset->fd[i].dat = NULL;
 			pfdset->num--;
 			i = -1;
 		}
 		pthread_mutex_unlock(&pfdset->fd_mutex);
 	} while (i != -1);
+
+	return dat;
 }
 
 /**
@@ -202,6 +211,7 @@ fdset_del_slot(struct fdset *pfdset, int index)
 
 	pfdset->fd[index].fd = -1;
 	pfdset->fd[index].rcb = pfdset->fd[index].wcb = NULL;
+	pfdset->fd[index].dat = NULL;
 	pfdset->num--;
 
 	pthread_mutex_unlock(&pfdset->fd_mutex);

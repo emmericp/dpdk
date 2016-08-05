@@ -83,14 +83,7 @@ test_logs(void)
 	RTE_LOG(ERR, TESTAPP1, "error message\n");
 	RTE_LOG(ERR, TESTAPP2, "error message (not displayed)\n");
 
-	/* print again the previous logs */
-	rte_log_dump_history(stdout);
-
 	return 0;
 }
 
-static struct test_command logs_cmd = {
-	.command = "logs_autotest",
-	.callback = test_logs,
-};
-REGISTER_TEST_COMMAND(logs_cmd);
+REGISTER_TEST_COMMAND(logs_autotest, test_logs);

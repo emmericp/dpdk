@@ -84,10 +84,22 @@ C_TO_O = $(CC) -Wp,-MD,$(call obj2dep,$(@)).tmp $(CFLAGS) \
 C_TO_O_STR = $(subst ','\'',$(C_TO_O)) #'# fix syntax highlight
 C_TO_O_DISP = $(if $(V),"$(C_TO_O_STR)","  CC $(@)")
 endif
+PMDINFO_GEN = $(RTE_SDK_BIN)/app/dpdk-pmdinfogen $@ $@.pmd.c
+PMDINFO_CC = $(CC) $(CFLAGS) -c -o $@.pmd.o $@.pmd.c
+PMDINFO_LD = $(CROSS)ld $(LDFLAGS) -r -o $@.o $@.pmd.o $@
+PMDINFO_TO_O = if grep -q 'PMD_REGISTER_DRIVER(.*)' $<; then \
+	echo "$(if $V,$(PMDINFO_GEN),  PMDINFO $@.pmd.c)" && \
+	$(PMDINFO_GEN) && \
+	echo "$(if $V,$(PMDINFO_CC),  CC $@.pmd.o)" && \
+	$(PMDINFO_CC) && \
+	echo "$(if $V,$(PMDINFO_LD),  LD $@)" && \
+	$(PMDINFO_LD) && \
+	mv -f $@.o $@; fi
 C_TO_O_CMD = 'cmd_$@ = $(C_TO_O_STR)'
 C_TO_O_DO = @set -e; \
 	echo $(C_TO_O_DISP); \
 	$(C_TO_O) && \
+	$(PMDINFO_TO_O) && \
 	echo $(C_TO_O_CMD) > $(call obj2cmd,$(@)) && \
 	sed 's,'$@':,dep_'$@' =,' $(call obj2dep,$(@)).tmp > $(call obj2dep,$(@)) && \
 	rm -f $(call obj2dep,$(@)).tmp

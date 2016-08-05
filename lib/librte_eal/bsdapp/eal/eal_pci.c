@@ -278,6 +278,11 @@ pci_scan_one(int dev_pci_fd, struct pci_conf *conf)
 	/* get subsystem_device id */
 	dev->id.subsystem_device_id = conf->pc_subdevice;
 
+	/* get class id */
+	dev->id.class_id = (conf->pc_class << 16) |
+			   (conf->pc_subclass << 8) |
+			   (conf->pc_progif);
+
 	/* TODO: get max_vfs */
 	dev->max_vfs = 0;
 
@@ -422,7 +427,7 @@ int rte_eal_pci_read_config(const struct rte_pci_device *dev,
 		goto error;
 	}
 
-	fd = open("/dev/pci", O_RDONLY);
+	fd = open("/dev/pci", O_RDWR);
 	if (fd < 0) {
 		RTE_LOG(ERR, EAL, "%s(): error opening /dev/pci\n", __func__);
 		goto error;
@@ -466,7 +471,7 @@ int rte_eal_pci_write_config(const struct rte_pci_device *dev,
 
 	memcpy(&pi.pi_data, buf, len);
 
-	fd = open("/dev/pci", O_RDONLY);
+	fd = open("/dev/pci", O_RDWR);
 	if (fd < 0) {
 		RTE_LOG(ERR, EAL, "%s(): error opening /dev/pci\n", __func__);
 		goto error;

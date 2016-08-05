@@ -311,6 +311,7 @@ reply_to_icmp_echo_rqsts(struct fwd_stream *fs)
 	struct ipv4_hdr *ip_h;
 	struct icmp_hdr *icmp_h;
 	struct ether_addr eth_addr;
+	uint32_t retry;
 	uint32_t ip_addr;
 	uint16_t nb_rx;
 	uint16_t nb_tx;
@@ -346,6 +347,9 @@ reply_to_icmp_echo_rqsts(struct fwd_stream *fs)
 	fs->rx_packets += nb_rx;
 	nb_replies = 0;
 	for (i = 0; i < nb_rx; i++) {
+		if (likely(i < nb_rx - 1))
+			rte_prefetch0(rte_pktmbuf_mtod(pkts_burst[i + 1],
+						       void *));
 		pkt = pkts_burst[i];
 		eth_h = rte_pktmbuf_mtod(pkt, struct ether_hdr *);
 		eth_type = RTE_BE_TO_CPU_16(eth_h->ether_type);
@@ -515,6 +519,20 @@ reply_to_icmp_echo_rqsts(struct fwd_stream *fs)
 	if (nb_replies > 0) {
 		nb_tx = rte_eth_tx_burst(fs->tx_port, fs->tx_queue, pkts_burst,
 					 nb_replies);
+		/*
+		 * Retry if necessary
+		 */
+		if (unlikely(nb_tx < nb_replies) && fs->retry_enabled) {
+			retry = 0;
+			while (nb_tx < nb_replies &&
+					retry++ < burst_tx_retry_num) {
+				rte_delay_us(burst_tx_delay_time);
+				nb_tx += rte_eth_tx_burst(fs->tx_port,
+						fs->tx_queue,
+						&pkts_burst[nb_tx],
+						nb_replies - nb_tx);
+			}
+		}
 		fs->tx_packets += nb_tx;
 #ifdef RTE_TEST_PMD_RECORD_BURST_STATS
 		fs->tx_burst_stats.pkt_burst_spread[nb_tx]++;

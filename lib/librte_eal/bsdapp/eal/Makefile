@@ -40,8 +40,6 @@ VPATH += $(RTE_SDK)/lib/librte_eal/common/arch/$(ARCH_DIR)
 CFLAGS += -I$(SRCDIR)/include
 CFLAGS += -I$(RTE_SDK)/lib/librte_eal/common
 CFLAGS += -I$(RTE_SDK)/lib/librte_eal/common/include
-CFLAGS += -I$(RTE_SDK)/lib/librte_ring
-CFLAGS += -I$(RTE_SDK)/lib/librte_mempool
 CFLAGS += $(WERROR_FLAGS) -O3
 
 LDLIBS += -lexecinfo
@@ -50,7 +48,7 @@ LDLIBS += -lgcc_s
 
 EXPORT_MAP := rte_eal_version.map
 
-LIBABIVER := 2
+LIBABIVER := 3
 
 # specific to linuxapp exec-env
 SRCS-$(CONFIG_RTE_EXEC_ENV_BSDAPP) := eal.c
@@ -91,6 +89,7 @@ SRCS-$(CONFIG_RTE_EXEC_ENV_BSDAPP) += rte_keepalive.c
 
 # from arch dir
 SRCS-$(CONFIG_RTE_EXEC_ENV_BSDAPP) += rte_cpuflags.c
+SRCS-$(CONFIG_RTE_ARCH_X86) += rte_spinlock.c
 
 CFLAGS_eal_common_cpuflags.o := $(CPUFLAGS_LIST)
 

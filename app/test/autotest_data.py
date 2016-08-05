@@ -94,21 +94,9 @@ parallel_test_group_list = [
 		 "Report" :	None,
 		},
 		{
-		 "Name" :	"Dump log history",
-		 "Command" :	"dump_log_history",
-		 "Func" :	dump_autotest,
-		 "Report" :	None,
-		},
-		{
-		 "Name" :	"Dump rings",
-		 "Command" :	"dump_ring",
-		 "Func" :	dump_autotest,
-		 "Report" :	None,
-		},
-		{
-		 "Name" :	"Dump mempools",
-		 "Command" :	"dump_mempool",
-		 "Func" :	dump_autotest,
+		 "Name" :	"Resource autotest",
+		 "Command" :	"resource_autotest",
+		 "Func" :	default_autotest,
 		 "Report" :	None,
 		},
 	]
@@ -170,7 +158,7 @@ parallel_test_group_list = [
 },
 {
 	"Prefix":	"group_3",
-	"Memory" :	per_sockets(390),
+	"Memory" :	per_sockets(512),
 	"Tests" :
 	[
 		{
@@ -299,7 +287,7 @@ parallel_test_group_list = [
 },
 {
 	"Prefix":	"group_6",
-	"Memory" :	per_sockets(128),
+	"Memory" :	per_sockets(512),
 	"Tests" :
 	[
 		{

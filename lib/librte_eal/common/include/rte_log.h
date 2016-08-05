@@ -179,39 +179,6 @@ int rte_log_cur_msg_loglevel(void);
 int rte_log_cur_msg_logtype(void);
 
 /**
- * Enable or disable the history (enabled by default)
- *
- * @param enable
- *   true to enable, or 0 to disable history.
- */
-void rte_log_set_history(int enable);
-
-/**
- * Dump the log history to a file
- *
- * @param f
- *   A pointer to a file for output
- */
-void rte_log_dump_history(FILE *f);
-
-/**
- * Add a log message to the history.
- *
- * This function can be called from a user-defined log stream. It adds
- * the given message in the history that can be dumped using
- * rte_log_dump_history().
- *
- * @param buf
- *   A data buffer containing the message to be saved in the history.
- * @param size
- *   The length of the data buffer.
- * @return
- *   - 0: Success.
- *   - (-ENOBUFS) if there is no room to store the message.
- */
-int rte_log_add_in_history(const char *buf, size_t size);
-
-/**
  * Generates a log message.
  *
  * The message will be sent in the stream defined by the previous call

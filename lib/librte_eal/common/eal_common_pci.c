@@ -85,6 +85,19 @@
 struct pci_driver_list pci_driver_list;
 struct pci_device_list pci_device_list;
 
+#define SYSFS_PCI_DEVICES "/sys/bus/pci/devices"
+
+const char *pci_get_sysfs_path(void)
+{
+	const char *path = NULL;
+
+	path = getenv("SYSFS_PCI_DEVICES");
+	if (path == NULL)
+		return SYSFS_PCI_DEVICES;
+
+	return path;
+}
+
 static struct rte_devargs *pci_devargs_lookup(struct rte_pci_device *dev)
 {
 	struct rte_devargs *devargs;
@@ -162,6 +175,9 @@ rte_eal_pci_probe_one_driver(struct rte_pci_driver *dr, struct rte_pci_device *d
 		if (id_table->subsystem_device_id != dev->id.subsystem_device_id &&
 				id_table->subsystem_device_id != PCI_ANY_ID)
 			continue;
+		if (id_table->class_id != dev->id.class_id &&
+				id_table->class_id != RTE_CLASS_ANY_ID)
+			continue;
 
 		struct rte_pci_addr *loc = &dev->addr;
 
@@ -172,7 +188,7 @@ rte_eal_pci_probe_one_driver(struct rte_pci_driver *dr, struct rte_pci_device *d
 		/* no initialization when blacklisted, return without error */
 		if (dev->devargs != NULL &&
 			dev->devargs->type == RTE_DEVTYPE_BLACKLISTED_PCI) {
-			RTE_LOG(DEBUG, EAL, "  Device is blacklisted, not initializing\n");
+			RTE_LOG(INFO, EAL, "  Device is blacklisted, not initializing\n");
 			return 1;
 		}
 

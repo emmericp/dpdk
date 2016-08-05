@@ -60,17 +60,18 @@ static const char default_cdev[] = "vhost-net";
 static struct fuse_session *session;
 
 /*
- * Returns vhost_device_ctx from given fuse_req_t. The index is populated later
- * when the device is added to the device linked list.
+ * Returns vhost_cuse_device_ctx from given fuse_req_t. The
+ * index is populated later when the device is added to the
+ * device linked list.
  */
-static struct vhost_device_ctx
+static struct vhost_cuse_device_ctx
 fuse_req_to_vhost_ctx(fuse_req_t req, struct fuse_file_info *fi)
 {
-	struct vhost_device_ctx ctx;
+	struct vhost_cuse_device_ctx ctx;
 	struct fuse_ctx const *const req_ctx = fuse_req_ctx(req);
 
 	ctx.pid = req_ctx->pid;
-	ctx.fh = fi->fh;
+	ctx.vid = (int)fi->fh;
 
 	return ctx;
 }
@@ -82,19 +83,18 @@ fuse_req_to_vhost_ctx(fuse_req_t req, struct fuse_file_info *fi)
 static void
 vhost_net_open(fuse_req_t req, struct fuse_file_info *fi)
 {
-	struct vhost_device_ctx ctx = fuse_req_to_vhost_ctx(req, fi);
-	int err = 0;
+	int vid = 0;
 
-	err = vhost_new_device(ctx);
-	if (err == -1) {
+	vid = vhost_new_device();
+	if (vid == -1) {
 		fuse_reply_err(req, EPERM);
 		return;
 	}
 
-	fi->fh = err;
+	fi->fh = vid;
 
 	RTE_LOG(INFO, VHOST_CONFIG,
-		"(%"PRIu64") Device configuration started\n", fi->fh);
+		"(%d) device configuration started\n", vid);
 	fuse_reply_open(req, fi);
 }
 
@@ -105,19 +105,19 @@ static void
 vhost_net_release(fuse_req_t req, struct fuse_file_info *fi)
 {
 	int err = 0;
-	struct vhost_device_ctx ctx = fuse_req_to_vhost_ctx(req, fi);
+	struct vhost_cuse_device_ctx ctx = fuse_req_to_vhost_ctx(req, fi);
 
-	vhost_destroy_device(ctx);
-	RTE_LOG(INFO, VHOST_CONFIG, "(%"PRIu64") Device released\n", ctx.fh);
+	vhost_destroy_device(ctx.vid);
+	RTE_LOG(INFO, VHOST_CONFIG, "(%d) device released\n", ctx.vid);
 	fuse_reply_err(req, err);
 }
 
 /*
  * Boilerplate code for CUSE IOCTL
- * Implicit arguments: ctx, req, result.
+ * Implicit arguments: vid, req, result.
  */
 #define VHOST_IOCTL(func) do {	\
-	result = (func)(ctx);	\
+	result = (func)(vid);	\
 	fuse_reply_ioctl(req, result, NULL, 0);	\
 } while (0)
 
@@ -134,41 +134,41 @@ vhost_net_release(fuse_req_t req, struct fuse_file_info *fi)
 
 /*
  * Boilerplate code for CUSE Read IOCTL
- * Implicit arguments: ctx, req, result, in_bufsz, in_buf.
+ * Implicit arguments: vid, req, result, in_bufsz, in_buf.
  */
 #define VHOST_IOCTL_R(type, var, func) do {	\
 	if (!in_bufsz) {	\
 		VHOST_IOCTL_RETRY(sizeof(type), 0);\
 	} else {	\
 		(var) = *(const type*)in_buf;	\
-		result = func(ctx, &(var));	\
+		result = func(vid, &(var));	\
 		fuse_reply_ioctl(req, result, NULL, 0);\
 	}	\
 } while (0)
 
 /*
  * Boilerplate code for CUSE Write IOCTL
- * Implicit arguments: ctx, req, result, out_bufsz.
+ * Implicit arguments: vid, req, result, out_bufsz.
  */
 #define VHOST_IOCTL_W(type, var, func) do {	\
 	if (!out_bufsz) {	\
 		VHOST_IOCTL_RETRY(0, sizeof(type));\
 	} else {	\
-		result = (func)(ctx, &(var));\
+		result = (func)(vid, &(var));\
 		fuse_reply_ioctl(req, result, &(var), sizeof(type));\
 	} \
 } while (0)
 
 /*
  * Boilerplate code for CUSE Read/Write IOCTL
- * Implicit arguments: ctx, req, result, in_bufsz, in_buf.
+ * Implicit arguments: vid, req, result, in_bufsz, in_buf.
  */
 #define VHOST_IOCTL_RW(type1, var1, type2, var2, func) do {	\
 	if (!in_bufsz) {	\
 		VHOST_IOCTL_RETRY(sizeof(type1), sizeof(type2));\
 	} else {	\
 		(var1) = *(const type1*) (in_buf);	\
-		result = (func)(ctx, (var1), &(var2));	\
+		result = (func)(vid, (var1), &(var2));	\
 		fuse_reply_ioctl(req, result, &(var2), sizeof(type2));\
 	}	\
 } while (0)
@@ -183,18 +183,19 @@ vhost_net_ioctl(fuse_req_t req, int cmd, void *arg,
 		struct fuse_file_info *fi, __rte_unused unsigned flags,
 		const void *in_buf, size_t in_bufsz, size_t out_bufsz)
 {
-	struct vhost_device_ctx ctx = fuse_req_to_vhost_ctx(req, fi);
+	struct vhost_cuse_device_ctx ctx = fuse_req_to_vhost_ctx(req, fi);
 	struct vhost_vring_file file;
 	struct vhost_vring_state state;
 	struct vhost_vring_addr addr;
 	uint64_t features;
 	uint32_t index;
 	int result = 0;
+	int vid = ctx.vid;
 
 	switch (cmd) {
 	case VHOST_NET_SET_BACKEND:
 		LOG_DEBUG(VHOST_CONFIG,
-			"(%"PRIu64") IOCTL: VHOST_NET_SET_BACKEND\n", ctx.fh);
+			"(%d) IOCTL: VHOST_NET_SET_BACKEND\n", ctx.vid);
 		if (!in_buf) {
 			VHOST_IOCTL_RETRY(sizeof(file), 0);
 			break;
@@ -206,32 +207,32 @@ vhost_net_ioctl(fuse_req_t req, int cmd, void *arg,
 
 	case VHOST_GET_FEATURES:
 		LOG_DEBUG(VHOST_CONFIG,
-			"(%"PRIu64") IOCTL: VHOST_GET_FEATURES\n", ctx.fh);
+			"(%d) IOCTL: VHOST_GET_FEATURES\n", vid);
 		VHOST_IOCTL_W(uint64_t, features, vhost_get_features);
 		break;
 
 	case VHOST_SET_FEATURES:
 		LOG_DEBUG(VHOST_CONFIG,
-			"(%"PRIu64") IOCTL: VHOST_SET_FEATURES\n", ctx.fh);
+			"(%d) IOCTL: VHOST_SET_FEATURES\n", vid);
 		VHOST_IOCTL_R(uint64_t, features, vhost_set_features);
 		break;
 
 	case VHOST_RESET_OWNER:
 		LOG_DEBUG(VHOST_CONFIG,
-			"(%"PRIu64") IOCTL: VHOST_RESET_OWNER\n", ctx.fh);
+			"(%d) IOCTL: VHOST_RESET_OWNER\n", vid);
 		VHOST_IOCTL(vhost_reset_owner);
 		break;
 
 	case VHOST_SET_OWNER:
 		LOG_DEBUG(VHOST_CONFIG,
-			"(%"PRIu64") IOCTL: VHOST_SET_OWNER\n", ctx.fh);
+			"(%d) IOCTL: VHOST_SET_OWNER\n", vid);
 		VHOST_IOCTL(vhost_set_owner);
 		break;
 
 	case VHOST_SET_MEM_TABLE:
 		/*TODO fix race condition.*/
 		LOG_DEBUG(VHOST_CONFIG,
-			"(%"PRIu64") IOCTL: VHOST_SET_MEM_TABLE\n", ctx.fh);
+			"(%d) IOCTL: VHOST_SET_MEM_TABLE\n", vid);
 		static struct vhost_memory mem_temp;
 
 		switch (in_bufsz) {
@@ -264,28 +265,28 @@ vhost_net_ioctl(fuse_req_t req, int cmd, void *arg,
 
 	case VHOST_SET_VRING_NUM:
 		LOG_DEBUG(VHOST_CONFIG,
-			"(%"PRIu64") IOCTL: VHOST_SET_VRING_NUM\n", ctx.fh);
+			"(%d) IOCTL: VHOST_SET_VRING_NUM\n", vid);
 		VHOST_IOCTL_R(struct vhost_vring_state, state,
 			vhost_set_vring_num);
 		break;
 
 	case VHOST_SET_VRING_BASE:
 		LOG_DEBUG(VHOST_CONFIG,
-			"(%"PRIu64") IOCTL: VHOST_SET_VRING_BASE\n", ctx.fh);
+			"(%d) IOCTL: VHOST_SET_VRING_BASE\n", vid);
 		VHOST_IOCTL_R(struct vhost_vring_state, state,
 			vhost_set_vring_base);
 		break;
 
 	case VHOST_GET_VRING_BASE:
 		LOG_DEBUG(VHOST_CONFIG,
-			"(%"PRIu64") IOCTL: VHOST_GET_VRING_BASE\n", ctx.fh);
+			"(%d) IOCTL: VHOST_GET_VRING_BASE\n", vid);
 		VHOST_IOCTL_RW(uint32_t, index,
 			struct vhost_vring_state, state, vhost_get_vring_base);
 		break;
 
 	case VHOST_SET_VRING_ADDR:
 		LOG_DEBUG(VHOST_CONFIG,
-			"(%"PRIu64") IOCTL: VHOST_SET_VRING_ADDR\n", ctx.fh);
+			"(%d) IOCTL: VHOST_SET_VRING_ADDR\n", vid);
 		VHOST_IOCTL_R(struct vhost_vring_addr, addr,
 			vhost_set_vring_addr);
 		break;
@@ -294,12 +295,10 @@ vhost_net_ioctl(fuse_req_t req, int cmd, void *arg,
 	case VHOST_SET_VRING_CALL:
 		if (cmd == VHOST_SET_VRING_KICK)
 			LOG_DEBUG(VHOST_CONFIG,
-				"(%"PRIu64") IOCTL: VHOST_SET_VRING_KICK\n",
-			ctx.fh);
+				"(%d) IOCTL: VHOST_SET_VRING_KICK\n", vid);
 		else
 			LOG_DEBUG(VHOST_CONFIG,
-				"(%"PRIu64") IOCTL: VHOST_SET_VRING_CALL\n",
-			ctx.fh);
+				"(%d) IOCTL: VHOST_SET_VRING_CALL\n", vid);
 		if (!in_buf)
 			VHOST_IOCTL_RETRY(sizeof(struct vhost_vring_file), 0);
 		else {
@@ -315,10 +314,10 @@ vhost_net_ioctl(fuse_req_t req, int cmd, void *arg,
 			}
 			file.fd = fd;
 			if (cmd == VHOST_SET_VRING_KICK) {
-				result = vhost_set_vring_kick(ctx, &file);
+				result = vhost_set_vring_kick(vid, &file);
 				fuse_reply_ioctl(req, result, NULL, 0);
 			} else {
-				result = vhost_set_vring_call(ctx, &file);
+				result = vhost_set_vring_call(vid, &file);
 				fuse_reply_ioctl(req, result, NULL, 0);
 			}
 		}
@@ -326,17 +325,17 @@ vhost_net_ioctl(fuse_req_t req, int cmd, void *arg,
 
 	default:
 		RTE_LOG(ERR, VHOST_CONFIG,
-			"(%"PRIu64") IOCTL: DOESN NOT EXIST\n", ctx.fh);
+			"(%d) IOCTL: DOESN NOT EXIST\n", vid);
 		result = -1;
 		fuse_reply_ioctl(req, result, NULL, 0);
 	}
 
 	if (result < 0)
 		LOG_DEBUG(VHOST_CONFIG,
-			"(%"PRIu64") IOCTL: FAIL\n", ctx.fh);
+			"(%d) IOCTL: FAIL\n", vid);
 	else
 		LOG_DEBUG(VHOST_CONFIG,
-			"(%"PRIu64") IOCTL: SUCCESS\n", ctx.fh);
+			"(%d) IOCTL: SUCCESS\n", vid);
 }
 
 /*
@@ -353,7 +352,7 @@ static const struct cuse_lowlevel_ops vhost_net_ops = {
  * vhost_net_device_ops are also passed when the device is registered in app.
  */
 int
-rte_vhost_driver_register(const char *dev_name)
+rte_vhost_driver_register(const char *dev_name, uint64_t flags)
 {
 	struct cuse_info cuse_info;
 	char device_name[PATH_MAX] = "";
@@ -364,6 +363,12 @@ rte_vhost_driver_register(const char *dev_name)
 	char fuse_opt_fore[] = FUSE_OPT_FORE;
 	char fuse_opt_nomulti[] = FUSE_OPT_NOMULTI;
 	char *fuse_argv[] = {fuse_opt_dummy, fuse_opt_fore, fuse_opt_nomulti};
+
+	if (flags) {
+		RTE_LOG(ERR, VHOST_CONFIG,
+			"vhost-cuse does not support any flags so far\n");
+		return -1;
+	}
 
 	if (access(cuse_device_name, R_OK | W_OK) < 0) {
 		RTE_LOG(ERR, VHOST_CONFIG,

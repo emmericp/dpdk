@@ -83,7 +83,7 @@
 #define MAX_PKT_BURST			(512)
 #define DEF_PKT_BURST			(16)
 
-#define BONDED_DEV_NAME			("unit_test_bonded_device")
+#define BONDED_DEV_NAME			("unit_test_bond_dev")
 
 #define INVALID_SOCKET_ID		(-1)
 #define INVALID_PORT_ID			(-1)
@@ -5002,8 +5002,4 @@ test_link_bonding(void)
 	return unit_test_suite_runner(&link_bonding_test_suite);
 }
 
-static struct test_command link_bonding_cmd = {
-	.command = "link_bonding_autotest",
-	.callback = test_link_bonding,
-};
-REGISTER_TEST_COMMAND(link_bonding_cmd);
+REGISTER_TEST_COMMAND(link_bonding_autotest, test_link_bonding);

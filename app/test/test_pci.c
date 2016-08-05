@@ -43,6 +43,7 @@
 #include <rte_devargs.h>
 
 #include "test.h"
+#include "resource.h"
 
 /* Generic maximum number of drivers to have room to allocate all drivers */
 #define NUM_MAX_DRIVERS 256
@@ -66,21 +67,14 @@ static int my_driver_init(struct rte_pci_driver *dr,
 
 /* IXGBE NICS */
 struct rte_pci_id my_driver_id[] = {
-
-#define RTE_PCI_DEV_ID_DECL_IXGBE(vend, dev) {RTE_PCI_DEVICE(vend, dev)},
-#include <rte_pci_dev_ids.h>
-
-{ .vendor_id = 0, /* sentinel */ },
+	{RTE_PCI_DEVICE(0x0001, 0x1234)},
+	{ .vendor_id = 0, /* sentinel */ },
 };
 
 struct rte_pci_id my_driver_id2[] = {
-
-/* IGB & EM NICS */
-#define RTE_PCI_DEV_ID_DECL_EM(vend, dev) {RTE_PCI_DEVICE(vend, dev)},
-#define RTE_PCI_DEV_ID_DECL_IGB(vend, dev) {RTE_PCI_DEVICE(vend, dev)},
-#include <rte_pci_dev_ids.h>
-
-{ .vendor_id = 0, /* sentinel */ },
+	{RTE_PCI_DEVICE(0x0001, 0x4444)},
+	{RTE_PCI_DEVICE(0x0002, 0xabcd)},
+	{ .vendor_id = 0, /* sentinel */ },
 };
 
 struct rte_pci_driver my_driver = {
@@ -144,22 +138,101 @@ static void free_devargs_list(void)
 	}
 }
 
-int
-test_pci(void)
-{
-	struct rte_devargs_list save_devargs_list;
-	struct rte_pci_driver *dr = NULL;
-	struct rte_pci_driver *save_pci_driver_list[NUM_MAX_DRIVERS];
-	unsigned i, num_drivers = 0;
+/* backup real devices & drivers (not used for testing) */
+struct pci_driver_list real_pci_driver_list =
+	TAILQ_HEAD_INITIALIZER(real_pci_driver_list);
+struct pci_device_list real_pci_device_list =
+	TAILQ_HEAD_INITIALIZER(real_pci_device_list);
 
-	printf("Dump all devices\n");
+REGISTER_LINKED_RESOURCE(test_pci_sysfs);
+
+static int
+test_pci_setup(void)
+{
+	struct rte_pci_device *dev;
+	struct rte_pci_driver *dr;
+	const struct resource *r;
+	int ret;
+
+	r = resource_find("test_pci_sysfs");
+	TEST_ASSERT_NOT_NULL(r, "missing resource test_pci_sysfs");
+
+	ret = resource_untar(r);
+	TEST_ASSERT_SUCCESS(ret, "failed to untar %s", r->name);
+
+	ret = setenv("SYSFS_PCI_DEVICES", "test_pci_sysfs/bus/pci/devices", 1);
+	TEST_ASSERT_SUCCESS(ret, "failed to setenv");
+
+	/* Unregister original devices & drivers lists */
+	while (!TAILQ_EMPTY(&pci_driver_list)) {
+		dr = TAILQ_FIRST(&pci_driver_list);
+		rte_eal_pci_unregister(dr);
+		TAILQ_INSERT_TAIL(&real_pci_driver_list, dr, next);
+	}
+
+	while (!TAILQ_EMPTY(&pci_device_list)) {
+		dev = TAILQ_FIRST(&pci_device_list);
+		TAILQ_REMOVE(&pci_device_list, dev, next);
+		TAILQ_INSERT_TAIL(&real_pci_device_list, dev, next);
+	}
+
+	ret = rte_eal_pci_scan();
+	TEST_ASSERT_SUCCESS(ret, "failed to scan PCI bus");
 	rte_eal_pci_dump(stdout);
 
-	/* Unregister all previous drivers */
-	TAILQ_FOREACH(dr, &pci_driver_list, next) {
-		rte_eal_pci_unregister(dr);
-		save_pci_driver_list[num_drivers++] = dr;
+	return 0;
+}
+
+static int
+test_pci_cleanup(void)
+{
+	struct rte_pci_device *dev;
+	struct rte_pci_driver *dr;
+	const struct resource *r;
+	int ret;
+
+	unsetenv("SYSFS_PCI_DEVICES");
+
+	r = resource_find("test_pci_sysfs");
+	TEST_ASSERT_NOT_NULL(r, "missing resource test_pci_sysfs");
+
+	ret = resource_rm_by_tar(r);
+	TEST_ASSERT_SUCCESS(ret, "Failed to delete resource %s", r->name);
+
+	/*
+	 * FIXME: there is no API in DPDK to free a rte_pci_device so we
+	 * cannot free the devices in the right way. Let's assume that we
+	 * don't care for tests.
+	 */
+	while (!TAILQ_EMPTY(&pci_device_list)) {
+		dev = TAILQ_FIRST(&pci_device_list);
+		TAILQ_REMOVE(&pci_device_list, dev, next);
 	}
+
+	/* Restore original devices & drivers lists */
+	while (!TAILQ_EMPTY(&real_pci_driver_list)) {
+		dr = TAILQ_FIRST(&real_pci_driver_list);
+		TAILQ_REMOVE(&real_pci_driver_list, dr, next);
+		rte_eal_pci_register(dr);
+	}
+
+	while (!TAILQ_EMPTY(&real_pci_device_list)) {
+		dev = TAILQ_FIRST(&real_pci_device_list);
+		TAILQ_REMOVE(&real_pci_device_list, dev, next);
+		TAILQ_INSERT_TAIL(&pci_device_list, dev, next);
+	}
+
+	return 0;
+}
+
+static int
+test_pci_blacklist(void)
+{
+	struct rte_devargs_list save_devargs_list;
+
+	printf("Dump all devices\n");
+	TEST_ASSERT(TAILQ_EMPTY(&pci_driver_list),
+			"pci_driver_list not empty");
 
 	rte_eal_pci_register(&my_driver);
 	rte_eal_pci_register(&my_driver2);
@@ -196,15 +269,50 @@ test_pci(void)
 	rte_eal_pci_unregister(&my_driver);
 	rte_eal_pci_unregister(&my_driver2);
 
-	/* Restore original driver list */
-	for (i = 0; i < num_drivers; i++)
-		rte_eal_pci_register(save_pci_driver_list[i]);
+	return 0;
+}
+
+static int test_pci_sysfs(void)
+{
+	const char *orig;
+	const char *newpath;
+	int ret;
+
+	orig = pci_get_sysfs_path();
+	ret = setenv("SYSFS_PCI_DEVICES", "My Documents", 1);
+	TEST_ASSERT_SUCCESS(ret, "Failed setenv to My Documents");
+
+	newpath = pci_get_sysfs_path();
+	TEST_ASSERT(!strcmp(newpath, "My Documents"),
+			"pci_get_sysfs_path() should return 'My Documents' "
+			"but gives %s", newpath);
+
+	ret = setenv("SYSFS_PCI_DEVICES", orig, 1);
+	TEST_ASSERT_SUCCESS(ret, "Failed setenv back to '%s'", orig);
+
+	newpath = pci_get_sysfs_path();
+	TEST_ASSERT(!strcmp(orig, newpath),
+			"pci_get_sysfs_path returned unexpected path: "
+			"%s (expected: %s)", newpath, orig);
+	return 0;
+}
+
+int
+test_pci(void)
+{
+	if (test_pci_sysfs())
+		return -1;
+
+	if (test_pci_setup())
+		return -1;
+
+	if (test_pci_blacklist())
+		return -1;
+
+	if (test_pci_cleanup())
+		return -1;
 
 	return 0;
 }
 
-static struct test_command pci_cmd = {
-	.command = "pci_autotest",
-	.callback = test_pci,
-};
-REGISTER_TEST_COMMAND(pci_cmd);
+REGISTER_TEST_COMMAND(pci_autotest, test_pci);

@@ -71,8 +71,7 @@ struct device_statistics {
  * Device linked list structure for data path.
  */
 struct vhost_dev {
-	/**< Pointer to device created by vhost lib. */
-	struct virtio_net      *dev;
+	int vid;
 	/**< Number of memory regions for gpa to hpa translation. */
 	uint32_t nregions_hpa;
 	/**< Memory region information for gpa to hpa translation. */
@@ -116,6 +115,6 @@ struct virtio_net_data_ll {
 };
 
 uint32_t
-virtio_dev_rx(struct virtio_net *dev, struct rte_mbuf **pkts, uint32_t count);
+virtio_dev_rx(int vid, struct rte_mbuf **pkts, uint32_t count);
 
 #endif /* _MAIN_H_ */

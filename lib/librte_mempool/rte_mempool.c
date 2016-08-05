@@ -148,7 +148,7 @@ mempool_add_elem(struct rte_mempool *mp, void *obj, phys_addr_t physaddr)
 #endif
 
 	/* enqueue in ring */
-	rte_ring_sp_enqueue(mp->ring, obj);
+	rte_mempool_ops_enqueue_bulk(mp, &obj, 1);
 }
 
 /* call obj_cb() for each mempool element */
@@ -199,7 +199,11 @@ rte_mempool_calc_obj_size(uint32_t elt_size, uint32_t flags,
 		sz->header_size = RTE_ALIGN_CEIL(sz->header_size,
 			RTE_MEMPOOL_ALIGN);
 
+#ifdef RTE_LIBRTE_MEMPOOL_DEBUG
 	sz->trailer_size = sizeof(struct rte_mempool_objtlr);
+#else
+	sz->trailer_size = 0;
+#endif
 
 	/* element size is 8 bytes-aligned at least */
 	sz->elt_size = RTE_ALIGN_CEIL(elt_size, sizeof(uint64_t));
@@ -303,40 +307,6 @@ rte_mempool_xmem_usage(__rte_unused void *vaddr, uint32_t elt_num,
 	return (size_t)paddr_idx << pg_shift;
 }
 
-/* create the internal ring */
-static int
-rte_mempool_ring_create(struct rte_mempool *mp)
-{
-	int rg_flags = 0, ret;
-	char rg_name[RTE_RING_NAMESIZE];
-	struct rte_ring *r;
-
-	ret = snprintf(rg_name, sizeof(rg_name),
-		RTE_MEMPOOL_MZ_FORMAT, mp->name);
-	if (ret < 0 || ret >= (int)sizeof(rg_name))
-		return -ENAMETOOLONG;
-
-	/* ring flags */
-	if (mp->flags & MEMPOOL_F_SP_PUT)
-		rg_flags |= RING_F_SP_ENQ;
-	if (mp->flags & MEMPOOL_F_SC_GET)
-		rg_flags |= RING_F_SC_DEQ;
-
-	/* Allocate the ring that will be used to store objects.
-	 * Ring functions will return appropriate errors if we are
-	 * running as a secondary process etc., so no checks made
-	 * in this function for that condition.
-	 */
-	r = rte_ring_create(rg_name, rte_align32pow2(mp->size + 1),
-		mp->socket_id, rg_flags);
-	if (r == NULL)
-		return -rte_errno;
-
-	mp->ring = r;
-	mp->flags |= MEMPOOL_F_RING_CREATED;
-	return 0;
-}
-
 /* free a memchunk allocated with rte_memzone_reserve() */
 static void
 rte_mempool_memchunk_mz_free(__rte_unused struct rte_mempool_memhdr *memhdr,
@@ -354,7 +324,7 @@ rte_mempool_free_memchunks(struct rte_mempool *mp)
 	void *elt;
 
 	while (!STAILQ_EMPTY(&mp->elt_list)) {
-		rte_ring_sc_dequeue(mp->ring, &elt);
+		rte_mempool_ops_dequeue_bulk(mp, &elt, 1);
 		(void)elt;
 		STAILQ_REMOVE_HEAD(&mp->elt_list, next);
 		mp->populated_size--;
@@ -386,10 +356,11 @@ rte_mempool_populate_phys(struct rte_mempool *mp, char *vaddr,
 	int ret;
 
 	/* create the internal ring if not already done */
-	if ((mp->flags & MEMPOOL_F_RING_CREATED) == 0) {
-		ret = rte_mempool_ring_create(mp);
-		if (ret < 0)
+	if ((mp->flags & MEMPOOL_F_POOL_CREATED) == 0) {
+		ret = rte_mempool_ops_alloc(mp);
+		if (ret != 0)
 			return ret;
+		mp->flags |= MEMPOOL_F_POOL_CREATED;
 	}
 
 	/* mempool is already populated */
@@ -557,7 +528,11 @@ rte_mempool_populate_default(struct rte_mempool *mp)
 	if (mp->nb_mem_chunks != 0)
 		return -EEXIST;
 
-	if (rte_eal_has_hugepages()) {
+	if (rte_xen_dom0_supported()) {
+		pg_sz = RTE_PGSIZE_2M;
+		pg_shift = rte_bsf32(pg_sz);
+		align = pg_sz;
+	} else if (rte_eal_has_hugepages()) {
 		pg_shift = 0; /* not needed, zone is physically contiguous */
 		pg_sz = 0;
 		align = RTE_CACHE_LINE_SIZE;
@@ -703,8 +678,55 @@ rte_mempool_free(struct rte_mempool *mp)
 	rte_rwlock_write_unlock(RTE_EAL_TAILQ_RWLOCK);
 
 	rte_mempool_free_memchunks(mp);
-	rte_ring_free(mp->ring);
+	rte_mempool_ops_free(mp);
 	rte_memzone_free(mp->mz);
+}
+
+static void
+mempool_cache_init(struct rte_mempool_cache *cache, uint32_t size)
+{
+	cache->size = size;
+	cache->flushthresh = CALC_CACHE_FLUSHTHRESH(size);
+	cache->len = 0;
+}
+
+/*
+ * Create and initialize a cache for objects that are retrieved from and
+ * returned to an underlying mempool. This structure is identical to the
+ * local_cache[lcore_id] pointed to by the mempool structure.
+ */
+struct rte_mempool_cache *
+rte_mempool_cache_create(uint32_t size, int socket_id)
+{
+	struct rte_mempool_cache *cache;
+
+	if (size == 0 || size > RTE_MEMPOOL_CACHE_MAX_SIZE) {
+		rte_errno = EINVAL;
+		return NULL;
+	}
+
+	cache = rte_zmalloc_socket("MEMPOOL_CACHE", sizeof(*cache),
+				  RTE_CACHE_LINE_SIZE, socket_id);
+	if (cache == NULL) {
+		RTE_LOG(ERR, MEMPOOL, "Cannot allocate mempool cache.\n");
+		rte_errno = ENOMEM;
+		return NULL;
+	}
+
+	mempool_cache_init(cache, size);
+
+	return cache;
+}
+
+/*
+ * Free a cache. It's the responsibility of the user to make sure that any
+ * remaining objects in the cache are flushed to the corresponding
+ * mempool.
+ */
+void
+rte_mempool_cache_free(struct rte_mempool_cache *cache)
+{
+	rte_free(cache);
 }
 
 /* create an empty mempool */
@@ -721,6 +743,7 @@ rte_mempool_create_empty(const char *name, unsigned n, unsigned elt_size,
 	size_t mempool_size;
 	int mz_flags = RTE_MEMZONE_1GB|RTE_MEMZONE_SIZE_HINT_ONLY;
 	struct rte_mempool_objsz objsz;
+	unsigned lcore_id;
 	int ret;
 
 	/* compilation-time checks */
@@ -787,7 +810,7 @@ rte_mempool_create_empty(const char *name, unsigned n, unsigned elt_size,
 
 	/* init the mempool structure */
 	mp = mz->addr;
-	memset(mp, 0, sizeof(*mp));
+	memset(mp, 0, MEMPOOL_HEADER_SIZE(mp, cache_size));
 	ret = snprintf(mp->name, sizeof(mp->name), "%s", name);
 	if (ret < 0 || ret >= (int)sizeof(mp->name)) {
 		rte_errno = ENAMETOOLONG;
@@ -801,8 +824,8 @@ rte_mempool_create_empty(const char *name, unsigned n, unsigned elt_size,
 	mp->elt_size = objsz.elt_size;
 	mp->header_size = objsz.header_size;
 	mp->trailer_size = objsz.trailer_size;
+	/* Size of default caches, zero means disabled. */
 	mp->cache_size = cache_size;
-	mp->cache_flushthresh = CALC_CACHE_FLUSHTHRESH(cache_size);
 	mp->private_data_size = private_data_size;
 	STAILQ_INIT(&mp->elt_list);
 	STAILQ_INIT(&mp->mem_list);
@@ -814,7 +837,15 @@ rte_mempool_create_empty(const char *name, unsigned n, unsigned elt_size,
 	mp->local_cache = (struct rte_mempool_cache *)
 		RTE_PTR_ADD(mp, MEMPOOL_HEADER_SIZE(mp, 0));
 
+	/* Init all default caches. */
+	if (cache_size != 0) {
+		for (lcore_id = 0; lcore_id < RTE_MAX_LCORE; lcore_id++)
+			mempool_cache_init(&mp->local_cache[lcore_id],
+					   cache_size);
+	}
+
 	te->data = mp;
+
 	rte_rwlock_write_lock(RTE_EAL_TAILQ_RWLOCK);
 	TAILQ_INSERT_TAIL(mempool_list, te, next);
 	rte_rwlock_write_unlock(RTE_EAL_TAILQ_RWLOCK);
@@ -843,6 +874,19 @@ rte_mempool_create(const char *name, unsigned n, unsigned elt_size,
 		private_data_size, socket_id, flags);
 	if (mp == NULL)
 		return NULL;
+
+	/*
+	 * Since we have 4 combinations of the SP/SC/MP/MC examine the flags to
+	 * set the correct index into the table of ops structs.
+	 */
+	if (flags & (MEMPOOL_F_SP_PUT | MEMPOOL_F_SC_GET))
+		rte_mempool_set_ops_byname(mp, "ring_sp_sc", NULL);
+	else if (flags & MEMPOOL_F_SP_PUT)
+		rte_mempool_set_ops_byname(mp, "ring_sp_mc", NULL);
+	else if (flags & MEMPOOL_F_SC_GET)
+		rte_mempool_set_ops_byname(mp, "ring_mp_sc", NULL);
+	else
+		rte_mempool_set_ops_byname(mp, "ring_mp_mc", NULL);
 
 	/* call the mempool priv initializer */
 	if (mp_init)
@@ -924,13 +968,13 @@ rte_mempool_xmem_create(const char *name, unsigned n, unsigned elt_size,
 }
 
 /* Return the number of entries in the mempool */
-unsigned
-rte_mempool_count(const struct rte_mempool *mp)
+unsigned int
+rte_mempool_avail_count(const struct rte_mempool *mp)
 {
 	unsigned count;
 	unsigned lcore_id;
 
-	count = rte_ring_count(mp->ring);
+	count = rte_mempool_ops_get_count(mp);
 
 	if (mp->cache_size == 0)
 		return count;
@@ -947,6 +991,19 @@ rte_mempool_count(const struct rte_mempool *mp)
 	return count;
 }
 
+/* return the number of entries allocated from the mempool */
+unsigned int
+rte_mempool_in_use_count(const struct rte_mempool *mp)
+{
+	return mp->size - rte_mempool_avail_count(mp);
+}
+
+unsigned int
+rte_mempool_count(const struct rte_mempool *mp)
+{
+	return rte_mempool_avail_count(mp);
+}
+
 /* dump the cache status */
 static unsigned
 rte_mempool_dump_cache(FILE *f, const struct rte_mempool *mp)
@@ -955,7 +1012,7 @@ rte_mempool_dump_cache(FILE *f, const struct rte_mempool *mp)
 	unsigned count = 0;
 	unsigned cache_count;
 
-	fprintf(f, "  cache infos:\n");
+	fprintf(f, "  internal cache infos:\n");
 	fprintf(f, "    cache_size=%"PRIu32"\n", mp->cache_size);
 
 	if (mp->cache_size == 0)
@@ -963,7 +1020,8 @@ rte_mempool_dump_cache(FILE *f, const struct rte_mempool *mp)
 
 	for (lcore_id = 0; lcore_id < RTE_MAX_LCORE; lcore_id++) {
 		cache_count = mp->local_cache[lcore_id].len;
-		fprintf(f, "    cache_count[%u]=%u\n", lcore_id, cache_count);
+		fprintf(f, "    cache_count[%u]=%"PRIu32"\n",
+			lcore_id, cache_count);
 		count += cache_count;
 	}
 	fprintf(f, "    total_cache_count=%u\n", count);
@@ -1003,7 +1061,6 @@ void rte_mempool_check_cookies(const struct rte_mempool *mp,
 
 		if (free == 0) {
 			if (cookie != RTE_MEMPOOL_HEADER_COOKIE1) {
-				rte_log_set_history(0);
 				RTE_LOG(CRIT, MEMPOOL,
 					"obj=%p, mempool=%p, cookie=%" PRIx64 "\n",
 					obj, (const void *) mp, cookie);
@@ -1012,7 +1069,6 @@ void rte_mempool_check_cookies(const struct rte_mempool *mp,
 			hdr->cookie = RTE_MEMPOOL_HEADER_COOKIE2;
 		} else if (free == 1) {
 			if (cookie != RTE_MEMPOOL_HEADER_COOKIE2) {
-				rte_log_set_history(0);
 				RTE_LOG(CRIT, MEMPOOL,
 					"obj=%p, mempool=%p, cookie=%" PRIx64 "\n",
 					obj, (const void *) mp, cookie);
@@ -1022,7 +1078,6 @@ void rte_mempool_check_cookies(const struct rte_mempool *mp,
 		} else if (free == 2) {
 			if (cookie != RTE_MEMPOOL_HEADER_COOKIE1 &&
 			    cookie != RTE_MEMPOOL_HEADER_COOKIE2) {
-				rte_log_set_history(0);
 				RTE_LOG(CRIT, MEMPOOL,
 					"obj=%p, mempool=%p, cookie=%" PRIx64 "\n",
 					obj, (const void *) mp, cookie);
@@ -1032,7 +1087,6 @@ void rte_mempool_check_cookies(const struct rte_mempool *mp,
 		tlr = __mempool_get_trailer(obj);
 		cookie = tlr->cookie;
 		if (cookie != RTE_MEMPOOL_TRAILER_COOKIE) {
-			rte_log_set_history(0);
 			RTE_LOG(CRIT, MEMPOOL,
 				"obj=%p, mempool=%p, cookie=%" PRIx64 "\n",
 				obj, (const void *) mp, cookie);
@@ -1086,7 +1140,9 @@ mempool_audit_cache(const struct rte_mempool *mp)
 		return;
 
 	for (lcore_id = 0; lcore_id < RTE_MAX_LCORE; lcore_id++) {
-		if (mp->local_cache[lcore_id].len > mp->cache_flushthresh) {
+		const struct rte_mempool_cache *cache;
+		cache = &mp->local_cache[lcore_id];
+		if (cache->len > cache->flushthresh) {
 			RTE_LOG(CRIT, MEMPOOL, "badness on cache[%u]\n",
 				lcore_id);
 			rte_panic("MEMPOOL: invalid cache len\n");
@@ -1123,7 +1179,7 @@ rte_mempool_dump(FILE *f, struct rte_mempool *mp)
 
 	fprintf(f, "mempool <%s>@%p\n", mp->name, mp);
 	fprintf(f, "  flags=%x\n", mp->flags);
-	fprintf(f, "  ring=<%s>@%p\n", mp->ring->name, mp->ring);
+	fprintf(f, "  pool=%p\n", mp->pool_data);
 	fprintf(f, "  phys_addr=0x%" PRIx64 "\n", mp->mz->phys_addr);
 	fprintf(f, "  nb_mem_chunks=%u\n", mp->nb_mem_chunks);
 	fprintf(f, "  size=%"PRIu32"\n", mp->size);
@@ -1144,7 +1200,7 @@ rte_mempool_dump(FILE *f, struct rte_mempool *mp)
 	}
 
 	cache_count = rte_mempool_dump_cache(f, mp);
-	common_count = rte_ring_count(mp->ring);
+	common_count = rte_mempool_ops_get_count(mp);
 	if ((cache_count + common_count) > mp->size)
 		common_count = mp->size - cache_count;
 	fprintf(f, "  common_pool_count=%u\n", common_count);
@@ -1227,12 +1283,13 @@ void rte_mempool_walk(void (*func)(struct rte_mempool *, void *),
 {
 	struct rte_tailq_entry *te = NULL;
 	struct rte_mempool_list *mempool_list;
+	void *tmp_te;
 
 	mempool_list = RTE_TAILQ_CAST(rte_mempool_tailq.head, rte_mempool_list);
 
 	rte_rwlock_read_lock(RTE_EAL_MEMPOOL_RWLOCK);
 
-	TAILQ_FOREACH(te, mempool_list, next) {
+	TAILQ_FOREACH_SAFE(te, mempool_list, next, tmp_te) {
 		(*func)((struct rte_mempool *) te->data, arg);
 	}
 

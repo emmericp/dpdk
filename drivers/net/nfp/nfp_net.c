@@ -1800,7 +1800,7 @@ nfp_net_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 		if ((rxds->rxd.flags & PCIE_DESC_RX_VLAN) &&
 		    (hw->ctrl & NFP_NET_CFG_CTRL_RXVLAN)) {
 			mb->vlan_tci = rte_cpu_to_le_32(rxds->rxd.vlan);
-			mb->ol_flags |= PKT_RX_VLAN_PKT;
+			mb->ol_flags |= PKT_RX_VLAN_PKT | PKT_RX_VLAN_STRIPPED;
 		}
 
 		/* Adding the mbuff to the mbuff array passed by the app */
@@ -2446,16 +2446,12 @@ nfp_net_init(struct rte_eth_dev *eth_dev)
 
 static struct rte_pci_id pci_id_nfp_net_map[] = {
 	{
-		.vendor_id = PCI_VENDOR_ID_NETRONOME,
-		.device_id = PCI_DEVICE_ID_NFP6000_PF_NIC,
-		.subsystem_vendor_id = PCI_ANY_ID,
-		.subsystem_device_id = PCI_ANY_ID,
+		RTE_PCI_DEVICE(PCI_VENDOR_ID_NETRONOME,
+			       PCI_DEVICE_ID_NFP6000_PF_NIC)
 	},
 	{
-		.vendor_id = PCI_VENDOR_ID_NETRONOME,
-		.device_id = PCI_DEVICE_ID_NFP6000_VF_NIC,
-		.subsystem_vendor_id = PCI_ANY_ID,
-		.subsystem_device_id = PCI_ANY_ID,
+		RTE_PCI_DEVICE(PCI_VENDOR_ID_NETRONOME,
+			       PCI_DEVICE_ID_NFP6000_VF_NIC)
 	},
 	{
 		.vendor_id = 0,
@@ -2490,7 +2486,8 @@ static struct rte_driver rte_nfp_net_driver = {
 	.init = nfp_net_pmd_init,
 };
 
-PMD_REGISTER_DRIVER(rte_nfp_net_driver);
+PMD_REGISTER_DRIVER(rte_nfp_net_driver, nfp);
+DRIVER_REGISTER_PCI_TABLE(nfp, pci_id_nfp_net_map);
 
 /*
  * Local variables:

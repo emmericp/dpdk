@@ -46,15 +46,19 @@
 #include "vnic_rss.h"
 #include "enic_res.h"
 #include "cq_enet_desc.h"
+#include <sys/queue.h>
+#include <rte_spinlock.h>
 
 #define DRV_NAME		"enic_pmd"
 #define DRV_DESCRIPTION		"Cisco VIC Ethernet NIC Poll-mode Driver"
-#define DRV_VERSION		"1.0.0.6"
 #define DRV_COPYRIGHT		"Copyright 2008-2015 Cisco Systems, Inc"
 
 #define ENIC_WQ_MAX		8
-#define ENIC_RQ_MAX		8
-#define ENIC_CQ_MAX		(ENIC_WQ_MAX + ENIC_RQ_MAX)
+/* With Rx scatter support, we use two RQs on VIC per RQ used by app. Both
+ * RQs use the same CQ.
+ */
+#define ENIC_RQ_MAX		16
+#define ENIC_CQ_MAX		(ENIC_WQ_MAX + (ENIC_RQ_MAX / 2))
 #define ENIC_INTR_MAX		(ENIC_CQ_MAX + 2)
 
 #define VLAN_ETH_HLEN           18
@@ -62,7 +66,6 @@
 #define ENICPMD_SETTING(enic, f) ((enic->config.flags & VENETF_##f) ? 1 : 0)
 
 #define ENICPMD_BDF_LENGTH      13   /* 0000:00:00.0'\0' */
-#define PKT_TX_TCP_UDP_CKSUM    0x6000
 #define ENIC_CALC_IP_CKSUM      1
 #define ENIC_CALC_TCP_UDP_CKSUM 2
 #define ENIC_MAX_MTU            9000
@@ -91,6 +94,16 @@ struct enic_fdir {
 	struct enic_fdir_node *nodes[ENICPMD_FDIR_MAX];
 };
 
+struct enic_soft_stats {
+	rte_atomic64_t rx_nombuf;
+	rte_atomic64_t rx_packet_errors;
+};
+
+struct enic_memzone_entry {
+	const struct rte_memzone *rz;
+	LIST_ENTRY(enic_memzone_entry) entries;
+};
+
 /* Per-instance private data structure */
 struct enic {
 	struct enic *next;
@@ -114,6 +127,7 @@ struct enic {
 	u8 ig_vlan_strip_en;
 	int link_status;
 	u8 hw_ip_checksum;
+	u16 max_mtu;
 
 	unsigned int flags;
 	unsigned int priv_flags;
@@ -133,11 +147,44 @@ struct enic {
 	/* interrupt resource */
 	struct vnic_intr intr;
 	unsigned int intr_count;
+
+	/* software counters */
+	struct enic_soft_stats soft_stats;
+
+	/* configured resources on vic */
+	unsigned int conf_rq_count;
+	unsigned int conf_wq_count;
+	unsigned int conf_cq_count;
+	unsigned int conf_intr_count;
+
+	/* linked list storing memory allocations */
+	LIST_HEAD(enic_memzone_list, enic_memzone_entry) memzone_list;
+	rte_spinlock_t memzone_list_lock;
+
 };
+
+static inline unsigned int enic_sop_rq(unsigned int rq)
+{
+	return rq * 2;
+}
+
+static inline unsigned int enic_data_rq(unsigned int rq)
+{
+	return rq * 2 + 1;
+}
+
+static inline unsigned int enic_vnic_rq_count(struct enic *enic)
+{
+	return enic->rq_count * 2;
+}
 
 static inline unsigned int enic_cq_rq(__rte_unused struct enic *enic, unsigned int rq)
 {
-	return rq;
+	/* Scatter rx uses two receive queues together with one
+	 * completion queue, so the completion queue number is no
+	 * longer the same as the rq number.
+	 */
+	return rq / 2;
 }
 
 static inline unsigned int enic_cq_wq(struct enic *enic, unsigned int wq)
@@ -153,6 +200,30 @@ static inline unsigned int enic_msix_err_intr(__rte_unused struct enic *enic)
 static inline struct enic *pmd_priv(struct rte_eth_dev *eth_dev)
 {
 	return (struct enic *)eth_dev->data->dev_private;
+}
+
+static inline uint32_t
+enic_ring_add(uint32_t n_descriptors, uint32_t i0, uint32_t i1)
+{
+	uint32_t d = i0 + i1;
+	d -= (d >= n_descriptors) ? n_descriptors : 0;
+	return d;
+}
+
+static inline uint32_t
+enic_ring_sub(uint32_t n_descriptors, uint32_t i0, uint32_t i1)
+{
+	int32_t d = i1 - i0;
+	return (uint32_t)((d < 0) ? ((int32_t)n_descriptors + d) : d);
+}
+
+static inline uint32_t
+enic_ring_incr(uint32_t n_descriptors, uint32_t idx)
+{
+	idx++;
+	if (unlikely(idx == n_descriptors))
+		idx = 0;
+	return idx;
 }
 
 extern void enic_fdir_stats_get(struct enic *enic,
@@ -199,5 +270,7 @@ extern int enic_clsf_init(struct enic *enic);
 extern void enic_clsf_destroy(struct enic *enic);
 uint16_t enic_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 			uint16_t nb_pkts);
-
+uint16_t enic_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
+			       uint16_t nb_pkts);
+int enic_set_mtu(struct enic *enic, uint16_t new_mtu);
 #endif /* _ENIC_H_ */

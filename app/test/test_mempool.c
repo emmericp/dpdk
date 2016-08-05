@@ -75,9 +75,15 @@
 #define MAX_KEEP 16
 #define MEMPOOL_SIZE ((rte_lcore_count()*(MAX_KEEP+RTE_MEMPOOL_CACHE_MAX_SIZE))-1)
 
+#define LOG_ERR() printf("test failed at %s():%d\n", __func__, __LINE__)
 #define RET_ERR() do {							\
-		printf("test failed at %s():%d\n", __func__, __LINE__); \
+		LOG_ERR();						\
 		return -1;						\
+	} while (0)
+#define GOTO_ERR(var, label) do {					\
+		LOG_ERR();						\
+		var = -1;						\
+		goto label;						\
 	} while (0)
 
 static rte_atomic32_t synchro;
@@ -98,7 +104,7 @@ my_obj_init(struct rte_mempool *mp, __attribute__((unused)) void *arg,
 
 /* basic tests (done on one core) */
 static int
-test_mempool_basic(struct rte_mempool *mp)
+test_mempool_basic(struct rte_mempool *mp, int use_external_cache)
 {
 	uint32_t *objnum;
 	void **objtable;
@@ -106,47 +112,62 @@ test_mempool_basic(struct rte_mempool *mp)
 	char *obj_data;
 	int ret = 0;
 	unsigned i, j;
+	int offset;
+	struct rte_mempool_cache *cache;
+
+	if (use_external_cache) {
+		/* Create a user-owned mempool cache. */
+		cache = rte_mempool_cache_create(RTE_MEMPOOL_CACHE_MAX_SIZE,
+						 SOCKET_ID_ANY);
+		if (cache == NULL)
+			RET_ERR();
+	} else {
+		/* May be NULL if cache is disabled. */
+		cache = rte_mempool_default_cache(mp, rte_lcore_id());
+	}
 
 	/* dump the mempool status */
 	rte_mempool_dump(stdout, mp);
 
 	printf("get an object\n");
-	if (rte_mempool_get(mp, &obj) < 0)
-		RET_ERR();
+	if (rte_mempool_generic_get(mp, &obj, 1, cache, 0) < 0)
+		GOTO_ERR(ret, out);
 	rte_mempool_dump(stdout, mp);
 
 	/* tests that improve coverage */
 	printf("get object count\n");
-	if (rte_mempool_count(mp) != MEMPOOL_SIZE - 1)
-		RET_ERR();
+	/* We have to count the extra caches, one in this case. */
+	offset = use_external_cache ? 1 * cache->len : 0;
+	if (rte_mempool_avail_count(mp) + offset != MEMPOOL_SIZE - 1)
+		GOTO_ERR(ret, out);
 
 	printf("get private data\n");
 	if (rte_mempool_get_priv(mp) != (char *)mp +
 			MEMPOOL_HEADER_SIZE(mp, mp->cache_size))
-		RET_ERR();
+		GOTO_ERR(ret, out);
 
 #ifndef RTE_EXEC_ENV_BSDAPP /* rte_mem_virt2phy() not supported on bsd */
 	printf("get physical address of an object\n");
 	if (rte_mempool_virt2phy(mp, obj) != rte_mem_virt2phy(obj))
-		RET_ERR();
+		GOTO_ERR(ret, out);
 #endif
 
 	printf("put the object back\n");
-	rte_mempool_put(mp, obj);
+	rte_mempool_generic_put(mp, &obj, 1, cache, 0);
 	rte_mempool_dump(stdout, mp);
 
 	printf("get 2 objects\n");
-	if (rte_mempool_get(mp, &obj) < 0)
-		RET_ERR();
-	if (rte_mempool_get(mp, &obj2) < 0) {
-		rte_mempool_put(mp, obj);
-		RET_ERR();
+	if (rte_mempool_generic_get(mp, &obj, 1, cache, 0) < 0)
+		GOTO_ERR(ret, out);
+	if (rte_mempool_generic_get(mp, &obj2, 1, cache, 0) < 0) {
+		rte_mempool_generic_put(mp, &obj, 1, cache, 0);
+		GOTO_ERR(ret, out);
 	}
 	rte_mempool_dump(stdout, mp);
 
 	printf("put the objects back\n");
-	rte_mempool_put(mp, obj);
-	rte_mempool_put(mp, obj2);
+	rte_mempool_generic_put(mp, &obj, 1, cache, 0);
+	rte_mempool_generic_put(mp, &obj2, 1, cache, 0);
 	rte_mempool_dump(stdout, mp);
 
 	/*
@@ -155,10 +176,10 @@ test_mempool_basic(struct rte_mempool *mp)
 	 */
 	objtable = malloc(MEMPOOL_SIZE * sizeof(void *));
 	if (objtable == NULL)
-		RET_ERR();
+		GOTO_ERR(ret, out);
 
 	for (i = 0; i < MEMPOOL_SIZE; i++) {
-		if (rte_mempool_get(mp, &objtable[i]) < 0)
+		if (rte_mempool_generic_get(mp, &objtable[i], 1, cache, 0) < 0)
 			break;
 	}
 
@@ -180,12 +201,18 @@ test_mempool_basic(struct rte_mempool *mp)
 				ret = -1;
 		}
 
-		rte_mempool_put(mp, objtable[i]);
+		rte_mempool_generic_put(mp, &objtable[i], 1, cache, 0);
 	}
 
 	free(objtable);
 	if (ret == -1)
 		printf("objects were modified!\n");
+
+out:
+	if (use_external_cache) {
+		rte_mempool_cache_flush(cache, mp);
+		rte_mempool_cache_free(cache);
+	}
 
 	return ret;
 }
@@ -245,7 +272,7 @@ static int test_mempool_single_producer(void)
 			printf("obj not owned by this mempool\n");
 			RET_ERR();
 		}
-		rte_mempool_sp_put(mp_spsc, obj);
+		rte_mempool_put(mp_spsc, obj);
 		rte_spinlock_lock(&scsp_spinlock);
 		scsp_obj_table[i] = NULL;
 		rte_spinlock_unlock(&scsp_spinlock);
@@ -278,7 +305,7 @@ static int test_mempool_single_consumer(void)
 		rte_spinlock_unlock(&scsp_spinlock);
 		if (i >= MAX_KEEP)
 			continue;
-		if (rte_mempool_sc_get(mp_spsc, &obj) < 0)
+		if (rte_mempool_get(mp_spsc, &obj) < 0)
 			break;
 		rte_spinlock_lock(&scsp_spinlock);
 		scsp_obj_table[i] = obj;
@@ -292,12 +319,14 @@ static int test_mempool_single_consumer(void)
  * test function for mempool test based on singple consumer and single producer,
  * can run on one lcore only
  */
-static int test_mempool_launch_single_consumer(__attribute__((unused)) void *arg)
+static int
+test_mempool_launch_single_consumer(__attribute__((unused)) void *arg)
 {
 	return test_mempool_single_consumer();
 }
 
-static void my_mp_init(struct rte_mempool * mp, __attribute__((unused)) void * arg)
+static void
+my_mp_init(struct rte_mempool *mp, __attribute__((unused)) void *arg)
 {
 	printf("mempool name is %s\n", mp->name);
 	/* nothing to be implemented here*/
@@ -375,20 +404,20 @@ test_mempool_basic_ex(struct rte_mempool *mp)
 		return ret;
 	}
 	printf("test_mempool_basic_ex now mempool (%s) has %u free entries\n",
-		mp->name, rte_mempool_free_count(mp));
+		mp->name, rte_mempool_in_use_count(mp));
 	if (rte_mempool_full(mp) != 1) {
 		printf("test_mempool_basic_ex the mempool should be full\n");
 		goto fail_mp_basic_ex;
 	}
 
 	for (i = 0; i < MEMPOOL_SIZE; i ++) {
-		if (rte_mempool_mc_get(mp, &obj[i]) < 0) {
+		if (rte_mempool_get(mp, &obj[i]) < 0) {
 			printf("test_mp_basic_ex fail to get object for [%u]\n",
 				i);
 			goto fail_mp_basic_ex;
 		}
 	}
-	if (rte_mempool_mc_get(mp, &err_obj) == 0) {
+	if (rte_mempool_get(mp, &err_obj) == 0) {
 		printf("test_mempool_basic_ex get an impossible obj\n");
 		goto fail_mp_basic_ex;
 	}
@@ -399,7 +428,7 @@ test_mempool_basic_ex(struct rte_mempool *mp)
 	}
 
 	for (i = 0; i < MEMPOOL_SIZE; i++)
-		rte_mempool_mp_put(mp, obj[i]);
+		rte_mempool_put(mp, obj[i]);
 
 	if (rte_mempool_full(mp) != 1) {
 		printf("test_mempool_basic_ex the mempool should be full\n");
@@ -477,6 +506,7 @@ test_mempool(void)
 {
 	struct rte_mempool *mp_cache = NULL;
 	struct rte_mempool *mp_nocache = NULL;
+	struct rte_mempool *mp_stack = NULL;
 
 	rte_atomic32_init(&synchro);
 
@@ -505,6 +535,27 @@ test_mempool(void)
 		goto err;
 	}
 
+	/* create a mempool with an external handler */
+	mp_stack = rte_mempool_create_empty("test_stack",
+		MEMPOOL_SIZE,
+		MEMPOOL_ELT_SIZE,
+		RTE_MEMPOOL_CACHE_MAX_SIZE, 0,
+		SOCKET_ID_ANY, 0);
+
+	if (mp_stack == NULL) {
+		printf("cannot allocate mp_stack mempool\n");
+		goto err;
+	}
+	if (rte_mempool_set_ops_byname(mp_stack, "stack", NULL) < 0) {
+		printf("cannot set stack handler\n");
+		goto err;
+	}
+	if (rte_mempool_populate_default(mp_stack) < 0) {
+		printf("cannot populate mp_stack mempool\n");
+		goto err;
+	}
+	rte_mempool_obj_iter(mp_stack, my_obj_init, NULL);
+
 	/* retrieve the mempool from its name */
 	if (rte_mempool_lookup("test_nocache") != mp_nocache) {
 		printf("Cannot lookup mempool from its name\n");
@@ -514,11 +565,15 @@ test_mempool(void)
 	rte_mempool_list_dump(stdout);
 
 	/* basic tests without cache */
-	if (test_mempool_basic(mp_nocache) < 0)
+	if (test_mempool_basic(mp_nocache, 0) < 0)
 		goto err;
 
 	/* basic tests with cache */
-	if (test_mempool_basic(mp_cache) < 0)
+	if (test_mempool_basic(mp_cache, 0) < 0)
+		goto err;
+
+	/* basic tests with user-owned cache */
+	if (test_mempool_basic(mp_nocache, 1) < 0)
 		goto err;
 
 	/* more basic tests without cache */
@@ -538,6 +593,10 @@ test_mempool(void)
 	if (test_mempool_xmem_misc() < 0)
 		goto err;
 
+	/* test the stack handler */
+	if (test_mempool_basic(mp_stack, 1) < 0)
+		goto err;
+
 	rte_mempool_list_dump(stdout);
 
 	return 0;
@@ -545,11 +604,8 @@ test_mempool(void)
 err:
 	rte_mempool_free(mp_nocache);
 	rte_mempool_free(mp_cache);
+	rte_mempool_free(mp_stack);
 	return -1;
 }
 
-static struct test_command mempool_cmd = {
-	.command = "mempool_autotest",
-	.callback = test_mempool,
-};
-REGISTER_TEST_COMMAND(mempool_cmd);
+REGISTER_TEST_COMMAND(mempool_autotest, test_mempool);

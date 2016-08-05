@@ -51,17 +51,16 @@ Supported Features
 - VLAN offload - Filtering and stripping
 - Stateless checksum offloads (IPv4/TCP/UDP)
 - Multiple Rx/Tx queues (queue-pairs)
-- RSS (with default table/key)
+- RSS (with user configurable table/key)
 - TSS
 - Multiple MAC address
 - Default pause flow control
-- SR-IOV VF
+- SR-IOV VF for 25G/40G modes
 
 Non-supported Features
 ----------------------
 
 - Scatter-Gather Rx/Tx frames
-- User configurable RETA table/key
 - Unequal number of Rx/Tx queues
 - MTU change (dynamic)
 - SR-IOV PF
@@ -71,13 +70,13 @@ Non-supported Features
 Supported QLogic Adapters
 -------------------------
 
-- QLogic FastLinQ QL4xxxx 25G/40G CNAs
+- QLogic FastLinQ QL4xxxx 25G/40G/100G CNAs.
 
 Prerequisites
 -------------
 
-- Requires firmware version **8.7.x.** and management
-  firmware version **8.7.x or higher**. Firmware may be available
+- Requires firmware version **8.7.x.** and management firmware
+  version **8.7.x or higher**. Firmware may be available
   inbox in certain newer Linux distros under the standard directory
   ``E.g. /lib/firmware/qed/qed_init_values_zipped-8.7.7.0.bin``
 
@@ -106,7 +105,7 @@ enabling debugging options may affect system performance.
 
   Toggle display of generic debugging messages.
 
-- ``CONFIG_RTE_LIBRTE_QEDE_DEBUG_DRV`` (default **n**)
+- ``CONFIG_RTE_LIBRTE_QEDE_DEBUG_DRIVER`` (default **n**)
 
   Toggle display of ecore related messages.
 
@@ -178,7 +177,7 @@ devices managed by ``librte_pmd_qede`` in Linux operating system.
 
    .. code-block:: console
 
-      ./tools/dpdk_nic_bind.py --bind igb_uio 0000:84:00.0 0000:84:00.1 \
+      ./tools/dpdk-devbind.py --bind igb_uio 0000:84:00.0 0000:84:00.1 \
                                               0000:84:00.2 0000:84:00.3
 
 #. Start ``testpmd`` with basic parameters:

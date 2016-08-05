@@ -83,6 +83,20 @@ int enic_get_vnic_config(struct enic *enic)
 	GET_CONFIG(intr_timer_usec);
 	GET_CONFIG(loop_tag);
 	GET_CONFIG(num_arfs);
+	GET_CONFIG(max_pkt_size);
+
+	/* max packet size is only defined in newer VIC firmware
+	 * and will be 0 for legacy firmware and VICs
+	 */
+	if (c->max_pkt_size > ENIC_DEFAULT_MAX_PKT_SIZE)
+		enic->max_mtu = c->max_pkt_size - (ETHER_HDR_LEN + 4);
+	else
+		enic->max_mtu = ENIC_DEFAULT_MAX_PKT_SIZE - (ETHER_HDR_LEN + 4);
+	if (c->mtu == 0)
+		c->mtu = 1500;
+
+	enic->rte_dev->data->mtu = min_t(u16, enic->max_mtu,
+					 max_t(u16, ENIC_MIN_MTU, c->mtu));
 
 	c->wq_desc_count =
 		min_t(u32, ENIC_MAX_WQ_DESCS,
@@ -96,21 +110,16 @@ int enic_get_vnic_config(struct enic *enic)
 		c->rq_desc_count));
 	c->rq_desc_count &= 0xffffffe0; /* must be aligned to groups of 32 */
 
-	if (c->mtu == 0)
-		c->mtu = 1500;
-	c->mtu = min_t(u16, ENIC_MAX_MTU,
-		max_t(u16, ENIC_MIN_MTU,
-		c->mtu));
-
 	c->intr_timer_usec = min_t(u32, c->intr_timer_usec,
 		vnic_dev_get_intr_coal_timer_max(enic->vdev));
 
 	dev_info(enic_get_dev(enic),
 		"vNIC MAC addr %02x:%02x:%02x:%02x:%02x:%02x "
-		"wq/rq %d/%d mtu %d\n",
+		"wq/rq %d/%d mtu %d, max mtu:%d\n",
 		enic->mac_addr[0], enic->mac_addr[1], enic->mac_addr[2],
 		enic->mac_addr[3], enic->mac_addr[4], enic->mac_addr[5],
-		c->wq_desc_count, c->rq_desc_count, c->mtu);
+		c->wq_desc_count, c->rq_desc_count,
+		enic->rte_dev->data->mtu, enic->max_mtu);
 	dev_info(enic_get_dev(enic), "vNIC csum tx/rx %s/%s "
 		"rss %s intr mode %s type %s timer %d usec "
 		"loopback tag 0x%04x\n",
@@ -196,8 +205,9 @@ void enic_free_vnic_resources(struct enic *enic)
 
 	for (i = 0; i < enic->wq_count; i++)
 		vnic_wq_free(&enic->wq[i]);
-	for (i = 0; i < enic->rq_count; i++)
-		vnic_rq_free(&enic->rq[i]);
+	for (i = 0; i < enic_vnic_rq_count(enic); i++)
+		if (enic->rq[i].in_use)
+			vnic_rq_free(&enic->rq[i]);
 	for (i = 0; i < enic->cq_count; i++)
 		vnic_cq_free(&enic->cq[i]);
 	vnic_intr_free(&enic->intr);
@@ -205,14 +215,14 @@ void enic_free_vnic_resources(struct enic *enic)
 
 void enic_get_res_counts(struct enic *enic)
 {
-	enic->wq_count = vnic_dev_get_res_count(enic->vdev, RES_TYPE_WQ);
-	enic->rq_count = vnic_dev_get_res_count(enic->vdev, RES_TYPE_RQ);
-	enic->cq_count = vnic_dev_get_res_count(enic->vdev, RES_TYPE_CQ);
-	enic->intr_count = vnic_dev_get_res_count(enic->vdev,
+	enic->conf_wq_count = vnic_dev_get_res_count(enic->vdev, RES_TYPE_WQ);
+	enic->conf_rq_count = vnic_dev_get_res_count(enic->vdev, RES_TYPE_RQ);
+	enic->conf_cq_count = vnic_dev_get_res_count(enic->vdev, RES_TYPE_CQ);
+	enic->conf_intr_count = vnic_dev_get_res_count(enic->vdev,
 		RES_TYPE_INTR_CTRL);
 
 	dev_info(enic_get_dev(enic),
 		"vNIC resources avail: wq %d rq %d cq %d intr %d\n",
-		enic->wq_count, enic->rq_count,
-		enic->cq_count, enic->intr_count);
+		enic->conf_wq_count, enic->conf_rq_count,
+		enic->conf_cq_count, enic->conf_intr_count);
 }

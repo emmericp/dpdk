@@ -69,6 +69,9 @@ struct priv_timer {
 
 	unsigned prev_lcore;              /**< used for lcore round robin */
 
+	/** running timer on this lcore now */
+	struct rte_timer *running_tim;
+
 #ifdef RTE_LIBRTE_TIMER_DEBUG
 	/** per-lcore statistics */
 	struct rte_timer_debug_stats stats;
@@ -135,9 +138,12 @@ timer_set_config_state(struct rte_timer *tim,
 	while (success == 0) {
 		prev_status.u32 = tim->status.u32;
 
-		/* timer is running on another core, exit */
+		/* timer is running on another core
+		 * or ready to run on local core, exit
+		 */
 		if (prev_status.state == RTE_TIMER_RUNNING &&
-		    prev_status.owner != (uint16_t)lcore_id)
+		    (prev_status.owner != (uint16_t)lcore_id ||
+		     tim != priv_timer[lcore_id].running_tim))
 			return -1;
 
 		/* timer is being configured on another core */
@@ -543,6 +549,8 @@ void rte_timer_manage(void)
 	/* break the existing list at current time point */
 	timer_get_prev_entries(cur_time, lcore_id, prev);
 	for (i = priv_timer[lcore_id].curr_skiplist_depth -1; i >= 0; i--) {
+		if (prev[i] == &priv_timer[lcore_id].pending_head)
+			continue;
 		priv_timer[lcore_id].pending_head.sl_next[i] =
 		    prev[i]->sl_next[i];
 		if (prev[i]->sl_next[i] == NULL)
@@ -562,10 +570,9 @@ void rte_timer_manage(void)
 			pprev = &tim->sl_next[0];
 		} else {
 			/* another core is trying to re-config this one,
-			 * remove it from local expired list and put it
-			 * back on the priv_timer[] skip list */
+			 * remove it from local expired list
+			 */
 			*pprev = next_tim;
-			timer_add(tim, lcore_id, 1);
 		}
 	}
 
@@ -580,6 +587,7 @@ void rte_timer_manage(void)
 	for (tim = run_first_tim; tim != NULL; tim = next_tim) {
 		next_tim = tim->sl_next[0];
 		priv_timer[lcore_id].updated = 0;
+		priv_timer[lcore_id].running_tim = tim;
 
 		/* execute callback function with list unlocked */
 		tim->f(tim, tim->arg);
@@ -610,6 +618,7 @@ void rte_timer_manage(void)
 			rte_spinlock_unlock(&priv_timer[lcore_id].list_lock);
 		}
 	}
+	priv_timer[lcore_id].running_tim = NULL;
 }
 
 /* dump statistics about timers */

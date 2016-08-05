@@ -96,7 +96,7 @@ vmxnet3_rxq_dump(struct vmxnet3_rx_queue *rxq)
 		return;
 
 	PMD_RX_LOG(DEBUG,
-		   "RXQ: cmd0 base : 0x%p cmd1 base : 0x%p comp ring base : 0x%p.",
+		   "RXQ: cmd0 base : %p cmd1 base : %p comp ring base : %p.",
 		   rxq->cmd_ring[0].base, rxq->cmd_ring[1].base, rxq->comp_ring.base);
 	PMD_RX_LOG(DEBUG,
 		   "RXQ: cmd0 basePA : 0x%lx cmd1 basePA : 0x%lx comp ring basePA : 0x%lx.",
@@ -126,7 +126,7 @@ vmxnet3_txq_dump(struct vmxnet3_tx_queue *txq)
 	if (txq == NULL)
 		return;
 
-	PMD_TX_LOG(DEBUG, "TXQ: cmd base : 0x%p comp ring base : 0x%p data ring base : 0x%p.",
+	PMD_TX_LOG(DEBUG, "TXQ: cmd base : %p comp ring base : %p data ring base : %p.",
 		   txq->cmd_ring.base, txq->comp_ring.base, txq->data_ring.base);
 	PMD_TX_LOG(DEBUG, "TXQ: cmd basePA : 0x%lx comp ring basePA : 0x%lx data ring basePA : 0x%lx.",
 		   (unsigned long)txq->cmd_ring.basePA,
@@ -577,12 +577,6 @@ vmxnet3_post_rx_bufs(vmxnet3_rx_queue_t *rxq, uint8_t ring_id)
 static void
 vmxnet3_rx_offload(const Vmxnet3_RxCompDesc *rcd, struct rte_mbuf *rxm)
 {
-	/* Check for hardware stripped VLAN tag */
-	if (rcd->ts) {
-		rxm->ol_flags |= PKT_RX_VLAN_PKT;
-		rxm->vlan_tci = rte_le_to_cpu_16((uint16_t)rcd->tci);
-	}
-
 	/* Check for RSS */
 	if (rcd->rssType != VMXNET3_RCD_RSS_TYPE_NONE) {
 		rxm->ol_flags |= PKT_RX_RSS_HASH;
@@ -728,7 +722,15 @@ vmxnet3_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 		rxq->last_seg = rxm;
 
 		if (rcd->eop) {
-			rx_pkts[nb_rx++] = rxq->start_seg;
+			struct rte_mbuf *start = rxq->start_seg;
+
+			/* Check for hardware stripped VLAN tag */
+			if (rcd->ts) {
+				start->ol_flags |= (PKT_RX_VLAN_PKT | PKT_RX_VLAN_STRIPPED);
+				start->vlan_tci = rte_le_to_cpu_16((uint16_t)rcd->tci);
+			}
+
+			rx_pkts[nb_rx++] = start;
 			rxq->start_seg = NULL;
 		}
 
