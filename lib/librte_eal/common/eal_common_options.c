@@ -115,6 +115,15 @@ TAILQ_HEAD_INITIALIZER(solib_list);
 /* Default path of external loadable drivers */
 static const char *default_solib_dir = RTE_EAL_PMD_PATH;
 
+/*
+ * Stringified version of solib path used by dpdk-pmdinfo.py
+ * Note: PLEASE DO NOT ALTER THIS without making a corresponding
+ * change to tools/dpdk-pmdinfo.py
+ */
+static const char dpdk_solib_path[] __attribute__((used)) =
+"DPDK_PLUGIN_PATH=" RTE_EAL_PMD_PATH;
+
+
 static int master_lcore_parsed;
 static int mem_parsed;
 
@@ -139,7 +148,11 @@ eal_reset_internal_config(struct internal_config *internal_cfg)
 
 	internal_cfg->syslog_facility = LOG_DAEMON;
 	/* default value from build option */
+#if RTE_LOG_LEVEL >= RTE_LOG_DEBUG
+	internal_cfg->log_level = RTE_LOG_INFO;
+#else
 	internal_cfg->log_level = RTE_LOG_LEVEL;
+#endif
 
 	internal_cfg->xen_dom0_support = 0;
 
@@ -517,6 +530,13 @@ eal_parse_set(const char *input, uint16_t set[], unsigned num)
 		str = end + 1;
 	} while (*end != '\0' && *end != ')');
 
+	/*
+	 * to avoid failure that tail blank makes end character check fail
+	 * in eal_parse_lcores( )
+	 */
+	while (isblank(*str))
+		str++;
+
 	return str - input;
 }
 
@@ -565,13 +585,12 @@ eal_parse_lcores(const char *lcores)
 	struct rte_config *cfg = rte_eal_get_configuration();
 	static uint16_t set[RTE_MAX_LCORE];
 	unsigned idx = 0;
-	int i;
 	unsigned count = 0;
 	const char *lcore_start = NULL;
 	const char *end = NULL;
 	int offset;
 	rte_cpuset_t cpuset;
-	int lflags = 0;
+	int lflags;
 	int ret = -1;
 
 	if (lcores == NULL)
@@ -580,9 +599,6 @@ eal_parse_lcores(const char *lcores)
 	/* Remove all blank characters ahead and after */
 	while (isblank(*lcores))
 		lcores++;
-	i = strlen(lcores);
-	while ((i > 0) && isblank(lcores[i - 1]))
-		i--;
 
 	CPU_ZERO(&cpuset);
 
@@ -599,6 +615,8 @@ eal_parse_lcores(const char *lcores)
 			lcores++;
 		if (*lcores == '\0')
 			goto err;
+
+		lflags = 0;
 
 		/* record lcore_set start point */
 		lcore_start = lcores;

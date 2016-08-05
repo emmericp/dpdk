@@ -1,7 +1,7 @@
 /*
  *   BSD LICENSE
  *
- *   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
+ *   Copyright(c) 2010-2016 Intel Corporation. All rights reserved.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -243,11 +243,12 @@ nic_stats_clear(uint8_t port_id)
 static void
 nic_xstats_display(uint8_t port_id)
 {
-	struct rte_eth_xstats *xstats;
+	struct rte_eth_xstat_name *xstats_names;
+	struct rte_eth_xstat *xstats;
 	int len, ret, i;
 	static const char *nic_stats_border = "########################";
 
-	len = rte_eth_xstats_get(port_id, NULL, 0);
+	len = rte_eth_xstats_get_names(port_id, NULL, 0);
 	if (len < 0) {
 		printf("Cannot get xstats count\n");
 		return;
@@ -255,6 +256,18 @@ nic_xstats_display(uint8_t port_id)
 	xstats = malloc(sizeof(xstats[0]) * len);
 	if (xstats == NULL) {
 		printf("Cannot allocate memory for xstats\n");
+		return;
+	}
+
+	xstats_names = malloc(sizeof(struct rte_eth_xstat_name) * len);
+	if (xstats_names == NULL) {
+		printf("Cannot allocate memory for xstat names\n");
+		free(xstats);
+		return;
+	}
+	if (len != rte_eth_xstats_get_names(
+			port_id, xstats_names, len)) {
+		printf("Cannot get xstat names\n");
 		return;
 	}
 
@@ -270,11 +283,14 @@ nic_xstats_display(uint8_t port_id)
 	}
 
 	for (i = 0; i < len; i++)
-		printf("%s: %"PRIu64"\n", xstats[i].name, xstats[i].value);
+		printf("%s: %"PRIu64"\n",
+			xstats_names[i].name,
+			xstats[i].value);
 
 	printf("%s############################\n",
 			   nic_stats_border);
 	free(xstats);
+	free(xstats_names);
 }
 
 static void
@@ -326,10 +342,6 @@ main(int argc, char **argv)
 	nb_ports = rte_eth_dev_count();
 	if (nb_ports == 0)
 		rte_exit(EXIT_FAILURE, "No Ethernet ports - bye\n");
-
-
-	if (nb_ports > RTE_MAX_ETHPORTS)
-		nb_ports = RTE_MAX_ETHPORTS;
 
 	/* If no port mask was specified*/
 	if (enabled_port_mask == 0)

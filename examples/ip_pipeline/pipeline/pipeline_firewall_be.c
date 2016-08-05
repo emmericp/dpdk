@@ -565,27 +565,6 @@ pipeline_firewall_free(void *pipeline)
 }
 
 static int
-pipeline_firewall_track(void *pipeline,
-	__rte_unused uint32_t port_in,
-	uint32_t *port_out)
-{
-	struct pipeline *p = (struct pipeline *) pipeline;
-
-	/* Check input arguments */
-	if ((p == NULL) ||
-		(port_in >= p->n_ports_in) ||
-		(port_out == NULL))
-		return -1;
-
-	if (p->n_ports_in == 1) {
-		*port_out = 0;
-		return 0;
-	}
-
-	return -1;
-}
-
-static int
 pipeline_firewall_timer(void *pipeline)
 {
 	struct pipeline *p = (struct pipeline *) pipeline;
@@ -732,7 +711,7 @@ pipeline_firewall_msg_req_add_bulk_handler(struct pipeline *p, void *msg)
 	n_keys = req->n_keys;
 
 	for (i = 0; i < n_keys; i++) {
-		entries[i] = rte_malloc(NULL,
+		entries[i] = rte_zmalloc(NULL,
 				sizeof(struct firewall_table_entry),
 				RTE_CACHE_LINE_SIZE);
 		if (entries[i] == NULL) {
@@ -740,7 +719,7 @@ pipeline_firewall_msg_req_add_bulk_handler(struct pipeline *p, void *msg)
 			return rsp;
 		}
 
-		params[i] = rte_malloc(NULL,
+		params[i] = rte_zmalloc(NULL,
 				sizeof(struct rte_table_acl_rule_add_params),
 				RTE_CACHE_LINE_SIZE);
 		if (params[i] == NULL) {
@@ -814,7 +793,7 @@ pipeline_firewall_msg_req_del_bulk_handler(struct pipeline *p, void *msg)
 	n_keys = req->n_keys;
 
 	for (i = 0; i < n_keys; i++) {
-		params[i] = rte_malloc(NULL,
+		params[i] = rte_zmalloc(NULL,
 				sizeof(struct rte_table_acl_rule_delete_params),
 				RTE_CACHE_LINE_SIZE);
 		if (params[i] == NULL) {
@@ -903,5 +882,4 @@ struct pipeline_be_ops pipeline_firewall_be_ops = {
 	.f_free = pipeline_firewall_free,
 	.f_run = NULL,
 	.f_timer = pipeline_firewall_timer,
-	.f_track = pipeline_firewall_track,
 };

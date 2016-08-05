@@ -35,12 +35,6 @@ NICs. These adapters are also referred to as vNICs below. If you are running
 or would like to run DPDK software applications on Cisco UCS servers using
 Cisco VIC adapters the following documentation is relevant.
 
-Version Information
--------------------
-
-The version of the ENIC PMD driver is 1.0.0.6 and will be printed by ENIC PMD
-during the initialization.
-
 How to obtain ENIC PMD integrated DPDK
 --------------------------------------
 
@@ -156,6 +150,8 @@ Supported features
 - VLAN filtering (supported via UCSM/CIMC only)
 - Execution of application by unprivileged system users
 - IPV4, IPV6 and TCP RSS hashing
+- Scattered Rx
+- MTU update
 
 Known bugs and Unsupported features in this release
 ---------------------------------------------------
@@ -165,6 +161,7 @@ Known bugs and Unsupported features in this release
 - non-IPV4 flow direction
 - Setting of extended VLAN
 - UDP RSS hashing
+- MTU update only works if Scattered Rx mode is disabled
 
 Prerequisites
 -------------
@@ -177,13 +174,13 @@ Prerequisites
 - DPDK suite should be configured based on the user's decision to use VFIO or
   UIO framework
 - If the vNIC device(s) to be used is bound to the kernel mode Ethernet driver
-  (enic), use 'ifconfig' to bring the interface down. The dpdk_nic_bind.py tool
+  (enic), use 'ifconfig' to bring the interface down. The dpdk-devbind.py tool
   can then be used to unbind the device's bus id from the enic kernel mode
   driver.
 - Bind the intended vNIC to vfio-pci in case the user wants ENIC PMD to use
-  VFIO framework using dpdk_nic_bind.py.
+  VFIO framework using dpdk-devbind.py.
 - Bind the intended vNIC to igb_uio in case the user wants ENIC PMD to use
-  UIO framework using dpdk_nic_bind.py.
+  UIO framework using dpdk-devbind.py.
 
 At this point the system should be ready to run DPDK applications. Once the
 application runs to completion, the vNIC can be detached from vfio-pci or

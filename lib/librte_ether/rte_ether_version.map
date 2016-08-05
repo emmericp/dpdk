@@ -36,7 +36,6 @@ DPDK_2.2 {
 	rte_eth_dev_get_eeprom_length;
 	rte_eth_dev_get_mtu;
 	rte_eth_dev_get_reg_info;
-	rte_eth_dev_get_reg_length;
 	rte_eth_dev_get_vlan_offload;
 	rte_eth_devices;
 	rte_eth_dev_info_get;
@@ -66,7 +65,6 @@ DPDK_2.2 {
 	rte_eth_dev_set_vf_rxmode;
 	rte_eth_dev_set_vf_tx;
 	rte_eth_dev_set_vf_vlan_filter;
-	rte_eth_dev_set_vlan_ether_type;
 	rte_eth_dev_set_vlan_offload;
 	rte_eth_dev_set_vlan_pvid;
 	rte_eth_dev_set_vlan_strip_on_queue;
@@ -132,3 +130,12 @@ DPDK_16.04 {
 	rte_eth_tx_buffer_set_err_callback;
 
 } DPDK_2.2;
+
+DPDK_16.07 {
+	global:
+
+	rte_eth_add_first_rx_callback;
+	rte_eth_dev_get_name_by_port;
+	rte_eth_dev_get_port_by_name;
+	rte_eth_xstats_get_names;
+} DPDK_16.04;

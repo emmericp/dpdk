@@ -55,20 +55,103 @@
  */
 #define VIRTIO_PCI_CONFIG(hw) (((hw)->use_msix) ? 24 : 20)
 
+static inline int
+check_vq_phys_addr_ok(struct virtqueue *vq)
+{
+	/* Virtio PCI device VIRTIO_PCI_QUEUE_PF register is 32bit,
+	 * and only accepts 32 bit page frame number.
+	 * Check if the allocated physical memory exceeds 16TB.
+	 */
+	if ((vq->vq_ring_mem + vq->vq_ring_size - 1) >>
+			(VIRTIO_PCI_QUEUE_ADDR_SHIFT + 32)) {
+		PMD_INIT_LOG(ERR, "vring address shouldn't be above 16TB!");
+		return 0;
+	}
+
+	return 1;
+}
+
+/*
+ * Since we are in legacy mode:
+ * http://ozlabs.org/~rusty/virtio-spec/virtio-0.9.5.pdf
+ *
+ * "Note that this is possible because while the virtio header is PCI (i.e.
+ * little) endian, the device-specific region is encoded in the native endian of
+ * the guest (where such distinction is applicable)."
+ *
+ * For powerpc which supports both, qemu supposes that cpu is big endian and
+ * enforces this for the virtio-net stuff.
+ */
 static void
 legacy_read_dev_config(struct virtio_hw *hw, size_t offset,
 		       void *dst, int length)
 {
+#ifdef RTE_ARCH_PPC_64
+	int size;
+
+	while (length > 0) {
+		if (length >= 4) {
+			size = 4;
+			rte_eal_pci_ioport_read(&hw->io, dst, size,
+				VIRTIO_PCI_CONFIG(hw) + offset);
+			*(uint32_t *)dst = rte_be_to_cpu_32(*(uint32_t *)dst);
+		} else if (length >= 2) {
+			size = 2;
+			rte_eal_pci_ioport_read(&hw->io, dst, size,
+				VIRTIO_PCI_CONFIG(hw) + offset);
+			*(uint16_t *)dst = rte_be_to_cpu_16(*(uint16_t *)dst);
+		} else {
+			size = 1;
+			rte_eal_pci_ioport_read(&hw->io, dst, size,
+				VIRTIO_PCI_CONFIG(hw) + offset);
+		}
+
+		dst = (char *)dst + size;
+		offset += size;
+		length -= size;
+	}
+#else
 	rte_eal_pci_ioport_read(&hw->io, dst, length,
 				VIRTIO_PCI_CONFIG(hw) + offset);
+#endif
 }
 
 static void
 legacy_write_dev_config(struct virtio_hw *hw, size_t offset,
 			const void *src, int length)
 {
+#ifdef RTE_ARCH_PPC_64
+	union {
+		uint32_t u32;
+		uint16_t u16;
+	} tmp;
+	int size;
+
+	while (length > 0) {
+		if (length >= 4) {
+			size = 4;
+			tmp.u32 = rte_cpu_to_be_32(*(const uint32_t *)src);
+			rte_eal_pci_ioport_write(&hw->io, &tmp.u32, size,
+				VIRTIO_PCI_CONFIG(hw) + offset);
+		} else if (length >= 2) {
+			size = 2;
+			tmp.u16 = rte_cpu_to_be_16(*(const uint16_t *)src);
+			rte_eal_pci_ioport_write(&hw->io, &tmp.u16, size,
+				VIRTIO_PCI_CONFIG(hw) + offset);
+		} else {
+			size = 1;
+			rte_eal_pci_ioport_write(&hw->io, src, size,
+				VIRTIO_PCI_CONFIG(hw) + offset);
+		}
+
+		src = (const char *)src + size;
+		offset += size;
+		length -= size;
+	}
+#else
 	rte_eal_pci_ioport_write(&hw->io, src, length,
 				 VIRTIO_PCI_CONFIG(hw) + offset);
+#endif
 }
 
 static uint64_t
@@ -143,15 +226,20 @@ legacy_get_queue_num(struct virtio_hw *hw, uint16_t queue_id)
 	return dst;
 }
 
-static void
+static int
 legacy_setup_queue(struct virtio_hw *hw, struct virtqueue *vq)
 {
 	uint32_t src;
 
+	if (!check_vq_phys_addr_ok(vq))
+		return -1;
+
 	rte_eal_pci_ioport_write(&hw->io, &vq->vq_queue_index, 2,
 			 VIRTIO_PCI_QUEUE_SEL);
-	src = vq->mz->phys_addr >> VIRTIO_PCI_QUEUE_ADDR_SHIFT;
+	src = vq->vq_ring_mem >> VIRTIO_PCI_QUEUE_ADDR_SHIFT;
 	rte_eal_pci_ioport_write(&hw->io, &src, 4, VIRTIO_PCI_QUEUE_PFN);
+
+	return 0;
 }
 
 static void
@@ -179,7 +267,7 @@ legacy_virtio_has_msix(const struct rte_pci_addr *loc)
 	char dirname[PATH_MAX];
 
 	snprintf(dirname, sizeof(dirname),
-		     SYSFS_PCI_DEVICES "/" PCI_PRI_FMT "/msi_irqs",
+		     "%s/" PCI_PRI_FMT "/msi_irqs", pci_get_sysfs_path(),
 		     loc->domain, loc->bus, loc->devid, loc->function);
 
 	d = opendir(dirname);
@@ -199,15 +287,15 @@ legacy_virtio_has_msix(const struct rte_pci_addr *loc __rte_unused)
 
 static int
 legacy_virtio_resource_init(struct rte_pci_device *pci_dev,
-			    struct virtio_hw *hw)
+			    struct virtio_hw *hw, uint32_t *dev_flags)
 {
 	if (rte_eal_pci_ioport_map(pci_dev, 0, &hw->io) < 0)
 		return -1;
 
 	if (pci_dev->intr_handle.type != RTE_INTR_HANDLE_UNKNOWN)
-		pci_dev->driver->drv_flags |= RTE_PCI_DRV_INTR_LSC;
+		*dev_flags |= RTE_ETH_DEV_INTR_LSC;
 	else
-		pci_dev->driver->drv_flags &= ~RTE_PCI_DRV_INTR_LSC;
+		*dev_flags &= ~RTE_ETH_DEV_INTR_LSC;
 
 	return 0;
 }
@@ -367,13 +455,16 @@ modern_get_queue_num(struct virtio_hw *hw, uint16_t queue_id)
 	return io_read16(&hw->common_cfg->queue_size);
 }
 
-static void
+static int
 modern_setup_queue(struct virtio_hw *hw, struct virtqueue *vq)
 {
 	uint64_t desc_addr, avail_addr, used_addr;
 	uint16_t notify_off;
 
-	desc_addr = vq->mz->phys_addr;
+	if (!check_vq_phys_addr_ok(vq))
+		return -1;
+
+	desc_addr = vq->vq_ring_mem;
 	avail_addr = desc_addr + vq->vq_nentries * sizeof(struct vring_desc);
 	used_addr = RTE_ALIGN_CEIL(avail_addr + offsetof(struct vring_avail,
 							 ring[vq->vq_nentries]),
@@ -400,6 +491,8 @@ modern_setup_queue(struct virtio_hw *hw, struct virtqueue *vq)
 	PMD_INIT_LOG(DEBUG, "\t used_addr: %" PRIx64, used_addr);
 	PMD_INIT_LOG(DEBUG, "\t notify addr: %p (notify offset: %u)",
 		vq->notify_addr, notify_off);
+
+	return 0;
 }
 
 static void
@@ -626,11 +719,13 @@ next:
  * Return -1:
  *   if there is error mapping with VFIO/UIO.
  *   if port map error when driver type is KDRV_NONE.
+ *   if whitelisted but driver type is KDRV_UNKNOWN.
  * Return 1 if kernel driver is managing the device.
  * Return 0 on success.
  */
 int
-vtpci_init(struct rte_pci_device *dev, struct virtio_hw *hw)
+vtpci_init(struct rte_pci_device *dev, struct virtio_hw *hw,
+	   uint32_t *dev_flags)
 {
 	hw->dev = dev;
 
@@ -643,12 +738,12 @@ vtpci_init(struct rte_pci_device *dev, struct virtio_hw *hw)
 		PMD_INIT_LOG(INFO, "modern virtio pci detected.");
 		hw->vtpci_ops = &modern_ops;
 		hw->modern    = 1;
-		dev->driver->drv_flags |= RTE_PCI_DRV_INTR_LSC;
+		*dev_flags |= RTE_ETH_DEV_INTR_LSC;
 		return 0;
 	}
 
 	PMD_INIT_LOG(INFO, "trying with legacy virtio pci.");
-	if (legacy_virtio_resource_init(dev, hw) < 0) {
+	if (legacy_virtio_resource_init(dev, hw, dev_flags) < 0) {
 		if (dev->kdrv == RTE_KDRV_UNKNOWN &&
 		    (!dev->devargs ||
 		     dev->devargs->type != RTE_DEVTYPE_WHITELISTED_PCI)) {

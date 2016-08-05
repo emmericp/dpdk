@@ -89,7 +89,7 @@ i40e_rxd_to_vlan_tci(struct rte_mbuf *mb, volatile union i40e_rx_desc *rxdp)
 {
 	if (rte_le_to_cpu_64(rxdp->wb.qword1.status_error_len) &
 		(1 << I40E_RX_DESC_STATUS_L2TAG1P_SHIFT)) {
-		mb->ol_flags |= PKT_RX_VLAN_PKT;
+		mb->ol_flags |= PKT_RX_VLAN_PKT | PKT_RX_VLAN_STRIPPED;
 		mb->vlan_tci =
 			rte_le_to_cpu_16(rxdp->wb.qword0.lo_dword.l2tag1);
 		PMD_RX_LOG(DEBUG, "Descriptor l2tag1: %u",
@@ -100,7 +100,7 @@ i40e_rxd_to_vlan_tci(struct rte_mbuf *mb, volatile union i40e_rx_desc *rxdp)
 #ifndef RTE_LIBRTE_I40E_16BYTE_RX_DESC
 	if (rte_le_to_cpu_16(rxdp->wb.qword2.ext_status) &
 		(1 << I40E_RX_DESC_EXT_STATUS_L2TAG2P_SHIFT)) {
-		mb->ol_flags |= PKT_RX_QINQ_PKT;
+		mb->ol_flags |= PKT_RX_QINQ_STRIPPED;
 		mb->vlan_tci_outer = mb->vlan_tci;
 		mb->vlan_tci = rte_le_to_cpu_16(rxdp->wb.qword2.l2tag2_2);
 		PMD_RX_LOG(DEBUG, "Descriptor l2tag2_1: %u, l2tag2_2: %u",
@@ -141,27 +141,12 @@ i40e_rxd_error_to_pkt_flags(uint64_t qword)
 #define I40E_RX_ERR_BITS 0x3f
 	if (likely((error_bits & I40E_RX_ERR_BITS) == 0))
 		return flags;
-	/* If RXE bit set, all other status bits are meaningless */
-	if (unlikely(error_bits & (1 << I40E_RX_DESC_ERROR_RXE_SHIFT))) {
-		flags |= PKT_RX_MAC_ERR;
-		return flags;
-	}
-
-	/* If RECIPE bit set, all other status indications should be ignored */
-	if (unlikely(error_bits & (1 << I40E_RX_DESC_ERROR_RECIPE_SHIFT))) {
-		flags |= PKT_RX_RECIP_ERR;
-		return flags;
-	}
-	if (unlikely(error_bits & (1 << I40E_RX_DESC_ERROR_HBO_SHIFT)))
-		flags |= PKT_RX_HBUF_OVERFLOW;
 	if (unlikely(error_bits & (1 << I40E_RX_DESC_ERROR_IPE_SHIFT)))
 		flags |= PKT_RX_IP_CKSUM_BAD;
 	if (unlikely(error_bits & (1 << I40E_RX_DESC_ERROR_L4E_SHIFT)))
 		flags |= PKT_RX_L4_CKSUM_BAD;
 	if (unlikely(error_bits & (1 << I40E_RX_DESC_ERROR_EIPE_SHIFT)))
 		flags |= PKT_RX_EIP_CKSUM_BAD;
-	if (unlikely(error_bits & (1 << I40E_RX_DESC_ERROR_OVERSIZE_SHIFT)))
-		flags |= PKT_RX_OVERSIZE;
 
 	return flags;
 }
@@ -720,6 +705,33 @@ i40e_rxd_pkt_type_mapping(uint8_t ptype)
 			RTE_PTYPE_INNER_L3_IPV6_EXT_UNKNOWN |
 			RTE_PTYPE_INNER_L4_ICMP,
 
+		/* L2 NSH packet type */
+		[154] = RTE_PTYPE_L2_ETHER_NSH,
+		[155] = RTE_PTYPE_L2_ETHER_NSH | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
+			RTE_PTYPE_L4_FRAG,
+		[156] = RTE_PTYPE_L2_ETHER_NSH | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
+			RTE_PTYPE_L4_NONFRAG,
+		[157] = RTE_PTYPE_L2_ETHER_NSH | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
+			RTE_PTYPE_L4_UDP,
+		[158] = RTE_PTYPE_L2_ETHER_NSH | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
+			RTE_PTYPE_L4_TCP,
+		[159] = RTE_PTYPE_L2_ETHER_NSH | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
+			RTE_PTYPE_L4_SCTP,
+		[160] = RTE_PTYPE_L2_ETHER_NSH | RTE_PTYPE_L3_IPV4_EXT_UNKNOWN |
+			RTE_PTYPE_L4_ICMP,
+		[161] = RTE_PTYPE_L2_ETHER_NSH | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
+			RTE_PTYPE_L4_FRAG,
+		[162] = RTE_PTYPE_L2_ETHER_NSH | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
+			RTE_PTYPE_L4_NONFRAG,
+		[163] = RTE_PTYPE_L2_ETHER_NSH | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
+			RTE_PTYPE_L4_UDP,
+		[164] = RTE_PTYPE_L2_ETHER_NSH | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
+			RTE_PTYPE_L4_TCP,
+		[165] = RTE_PTYPE_L2_ETHER_NSH | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
+			RTE_PTYPE_L4_SCTP,
+		[166] = RTE_PTYPE_L2_ETHER_NSH | RTE_PTYPE_L3_IPV6_EXT_UNKNOWN |
+			RTE_PTYPE_L4_ICMP,
+
 		/* All others reserved */
 	};
 
@@ -841,17 +853,6 @@ i40e_txd_enable_checksum(uint64_t ol_flags,
 	default:
 		break;
 	}
-}
-
-static inline struct rte_mbuf *
-rte_rxmbuf_alloc(struct rte_mempool *mp)
-{
-	struct rte_mbuf *m;
-
-	m = __rte_mbuf_raw_alloc(mp);
-	__rte_mbuf_sanity_check_raw(m, 0);
-
-	return m;
 }
 
 /* Construct the tx flags */
@@ -1227,7 +1228,7 @@ i40e_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 		if (!(rx_status & (1 << I40E_RX_DESC_STATUS_DD_SHIFT)))
 			break;
 
-		nmb = rte_rxmbuf_alloc(rxq->mp);
+		nmb = rte_mbuf_raw_alloc(rxq->mp);
 		if (unlikely(!nmb))
 			break;
 		rxd = *rxdp;
@@ -1338,7 +1339,7 @@ i40e_recv_scattered_pkts(void *rx_queue,
 		if (!(rx_status & (1 << I40E_RX_DESC_STATUS_DD_SHIFT)))
 			break;
 
-		nmb = rte_rxmbuf_alloc(rxq->mp);
+		nmb = rte_mbuf_raw_alloc(rxq->mp);
 		if (unlikely(!nmb))
 			break;
 		rxd = *rxdp;
@@ -1437,10 +1438,10 @@ i40e_recv_scattered_pkts(void *rx_queue,
 			i40e_rxd_pkt_type_mapping((uint8_t)((qword1 &
 			I40E_RXD_QW1_PTYPE_MASK) >> I40E_RXD_QW1_PTYPE_SHIFT));
 		if (pkt_flags & PKT_RX_RSS_HASH)
-			rxm->hash.rss =
+			first_seg->hash.rss =
 				rte_le_to_cpu_32(rxd.wb.qword0.hi_dword.rss);
 		if (pkt_flags & PKT_RX_FDIR)
-			pkt_flags |= i40e_rxd_build_fdir(&rxd, rxm);
+			pkt_flags |= i40e_rxd_build_fdir(&rxd, first_seg);
 
 #ifdef RTE_LIBRTE_IEEE1588
 		pkt_flags |= i40e_get_iee15888_flags(first_seg, qword1);
@@ -2601,8 +2602,8 @@ i40e_rx_queue_release_mbufs(struct i40e_rx_queue *rxq)
 		return;
 	}
 
-	if (!rxq || !rxq->sw_ring) {
-		PMD_DRV_LOG(DEBUG, "Pointer to rxq or sw_ring is NULL");
+	if (!rxq->sw_ring) {
+		PMD_DRV_LOG(DEBUG, "Pointer to sw_ring is NULL");
 		return;
 	}
 
@@ -2777,7 +2778,7 @@ i40e_alloc_rx_queue_mbufs(struct i40e_rx_queue *rxq)
 
 	for (i = 0; i < rxq->nb_rx_desc; i++) {
 		volatile union i40e_rx_desc *rxd;
-		struct rte_mbuf *mbuf = rte_rxmbuf_alloc(rxq->mp);
+		struct rte_mbuf *mbuf = rte_mbuf_raw_alloc(rxq->mp);
 
 		if (unlikely(!mbuf)) {
 			PMD_DRV_LOG(ERR, "Failed to allocate mbuf for RX");
@@ -2907,7 +2908,12 @@ i40e_rx_queue_init(struct i40e_rx_queue *rxq)
 	rx_ctx.lrxqthresh = 2;
 	rx_ctx.crcstrip = (rxq->crc_len == 0) ? 1 : 0;
 	rx_ctx.l2tsel = 1;
-	rx_ctx.showiv = 1;
+	/* showiv indicates if inner VLAN is stripped inside of tunnel
+	 * packet. When set it to 1, vlan information is stripped from
+	 * the inner header, but the hardware does not put it in the
+	 * descriptor. So set it zero by default.
+	 */
+	rx_ctx.showiv = 0;
 	rx_ctx.prefena = 1;
 
 	err = i40e_clear_lan_rx_queue_context(hw, pf_q);
@@ -2984,12 +2990,14 @@ i40e_fdir_setup_tx_resources(struct i40e_pf *pf)
 	struct i40e_tx_queue *txq;
 	const struct rte_memzone *tz = NULL;
 	uint32_t ring_size;
-	struct rte_eth_dev *dev = pf->adapter->eth_dev;
+	struct rte_eth_dev *dev;
 
 	if (!pf) {
 		PMD_DRV_LOG(ERR, "PF is not available");
 		return I40E_ERR_BAD_PTR;
 	}
+
+	dev = pf->adapter->eth_dev;
 
 	/* Allocate the TX queue data structure. */
 	txq = rte_zmalloc_socket("i40e fdir tx queue",
@@ -3038,12 +3046,14 @@ i40e_fdir_setup_rx_resources(struct i40e_pf *pf)
 	struct i40e_rx_queue *rxq;
 	const struct rte_memzone *rz = NULL;
 	uint32_t ring_size;
-	struct rte_eth_dev *dev = pf->adapter->eth_dev;
+	struct rte_eth_dev *dev;
 
 	if (!pf) {
 		PMD_DRV_LOG(ERR, "PF is not available");
 		return I40E_ERR_BAD_PTR;
 	}
+
+	dev = pf->adapter->eth_dev;
 
 	/* Allocate the RX queue data structure. */
 	rxq = rte_zmalloc_socket("i40e fdir rx queue",

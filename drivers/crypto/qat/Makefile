@@ -38,6 +38,7 @@ LIBABIVER := 1
 
 # build flags
 CFLAGS += $(WERROR_FLAGS)
+CFLAGS += -O3
 
 # external library include paths
 CFLAGS += -I$(SRCDIR)/qat_adf
@@ -58,6 +59,7 @@ EXPORT_MAP := rte_pmd_qat_version.map
 # library dependencies
 DEPDIRS-$(CONFIG_RTE_LIBRTE_PMD_QAT) += lib/librte_eal
 DEPDIRS-$(CONFIG_RTE_LIBRTE_PMD_QAT) += lib/librte_mbuf
+DEPDIRS-$(CONFIG_RTE_LIBRTE_PMD_QAT) += lib/librte_mempool
 DEPDIRS-$(CONFIG_RTE_LIBRTE_PMD_QAT) += lib/librte_cryptodev
 
 

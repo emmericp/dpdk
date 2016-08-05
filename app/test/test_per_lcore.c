@@ -92,8 +92,8 @@ display_vars(__attribute__((unused)) void *arg)
 static int
 test_per_lcore_delay(__attribute__((unused)) void *arg)
 {
-	rte_delay_ms(5000);
-	printf("wait 5000ms on lcore %u\n", rte_lcore_id());
+	rte_delay_ms(100);
+	printf("wait 100ms on lcore %u\n", rte_lcore_id());
 
 	return 0;
 }
@@ -136,8 +136,4 @@ test_per_lcore(void)
 	return 0;
 }
 
-static struct test_command per_lcore_cmd = {
-	.command = "per_lcore_autotest",
-	.callback = test_per_lcore,
-};
-REGISTER_TEST_COMMAND(per_lcore_cmd);
+REGISTER_TEST_COMMAND(per_lcore_autotest, test_per_lcore);

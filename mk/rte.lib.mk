@@ -77,6 +77,13 @@ else
 _CPU_LDFLAGS := $(CPU_LDFLAGS)
 endif
 
+# Translate DEPDIRS-y into LDLIBS
+# Ignore (sub)directory dependencies which do not provide an actual library
+_IGNORE_DIRS = lib/librte_eal/% lib/librte_net lib/librte_compat
+_DEPDIRS = $(filter-out $(_IGNORE_DIRS),$(DEPDIRS-y))
+_LDDIRS = $(subst librte_ether,libethdev,$(_DEPDIRS))
+LDLIBS += $(subst lib/lib,-l,$(_LDDIRS))
+
 O_TO_A = $(AR) crDs $(LIB) $(OBJS-y)
 O_TO_A_STR = $(subst ','\'',$(O_TO_A)) #'# fix syntax highlight
 O_TO_A_DISP = $(if $(V),"$(O_TO_A_STR)","  AR $(@)")
@@ -86,8 +93,12 @@ O_TO_A_DO = @set -e; \
 	$(O_TO_A) && \
 	echo $(O_TO_A_CMD) > $(call exe2cmd,$(@))
 
-O_TO_S = $(LD) $(_CPU_LDFLAGS) $(EXTRA_LDFLAGS) -shared $(OBJS-y) $(LDLIBS) \
-	 -Wl,-soname,$(LIB) -o $(LIB)
+ifneq ($(CC_SUPPORTS_Z),false)
+NO_UNDEFINED := -z defs
+endif
+
+O_TO_S = $(LD) -L$(RTE_SDK_BIN)/lib $(_CPU_LDFLAGS) $(EXTRA_LDFLAGS) \
+	  -shared $(OBJS-y) $(NO_UNDEFINED) $(LDLIBS) -Wl,-soname,$(LIB) -o $(LIB)
 O_TO_S_STR = $(subst ','\'',$(O_TO_S)) #'# fix syntax highlight
 O_TO_S_DISP = $(if $(V),"$(O_TO_S_STR)","  LD $(@)")
 O_TO_S_DO = @set -e; \
@@ -95,24 +106,6 @@ O_TO_S_DO = @set -e; \
 	$(O_TO_S) && \
 	echo $(O_TO_S_CMD) > $(call exe2cmd,$(@))
 
-ifeq ($(CONFIG_RTE_BUILD_SHARED_LIB),n)
-O_TO_C = $(AR) crus $(LIB_ONE) $(OBJS-y)
-O_TO_C_STR = $(subst ','\'',$(O_TO_C)) #'# fix syntax highlight
-O_TO_C_DISP = $(if $(V),"$(O_TO_C_STR)","  AR_C $(@)")
-O_TO_C_DO = @set -e; \
-	$(lib_dir) \
-	$(copy_obj)
-else
-O_TO_C = $(LD) -shared $(OBJS-y) -o $(LIB_ONE)
-O_TO_C_STR = $(subst ','\'',$(O_TO_C)) #'# fix syntax highlight
-O_TO_C_DISP = $(if $(V),"$(O_TO_C_STR)","  LD_C $(@)")
-O_TO_C_DO = @set -e; \
-	$(lib_dir) \
-	$(copy_obj)
-endif
-
-copy_obj = cp -f $(OBJS-y) $(RTE_OUTPUT)/build/lib;
-lib_dir = [ -d $(RTE_OUTPUT)/lib ] || mkdir -p $(RTE_OUTPUT)/lib;
 -include .$(LIB).cmd
 
 #

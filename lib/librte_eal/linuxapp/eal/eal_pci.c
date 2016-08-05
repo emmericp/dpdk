@@ -66,8 +66,8 @@ pci_unbind_kernel_driver(struct rte_pci_device *dev)
 
 	/* open /sys/bus/pci/devices/AAAA:BB:CC.D/driver */
 	snprintf(filename, sizeof(filename),
-	         SYSFS_PCI_DEVICES "/" PCI_PRI_FMT "/driver/unbind",
-	         loc->domain, loc->bus, loc->devid, loc->function);
+		"%s/" PCI_PRI_FMT "/driver/unbind", pci_get_sysfs_path(),
+		loc->domain, loc->bus, loc->devid, loc->function);
 
 	f = fopen(filename, "w");
 	if (f == NULL) /* device was not bound */
@@ -190,12 +190,13 @@ pci_find_max_end_va(void)
 	return RTE_PTR_ADD(last->addr, last->len);
 }
 
-/* parse the "resource" sysfs file */
-static int
-pci_parse_sysfs_resource(const char *filename, struct rte_pci_device *dev)
+/* parse one line of the "resource" sysfs file (note that the 'line'
+ * string is modified)
+ */
+int
+pci_parse_one_sysfs_resource(char *line, size_t len, uint64_t *phys_addr,
+	uint64_t *end_addr, uint64_t *flags)
 {
-	FILE *f;
-	char buf[BUFSIZ];
 	union pci_resource_info {
 		struct {
 			char *phys_addr;
@@ -204,6 +205,31 @@ pci_parse_sysfs_resource(const char *filename, struct rte_pci_device *dev)
 		};
 		char *ptrs[PCI_RESOURCE_FMT_NVAL];
 	} res_info;
+
+	if (rte_strsplit(line, len, res_info.ptrs, 3, ' ') != 3) {
+		RTE_LOG(ERR, EAL,
+			"%s(): bad resource format\n", __func__);
+		return -1;
+	}
+	errno = 0;
+	*phys_addr = strtoull(res_info.phys_addr, NULL, 16);
+	*end_addr = strtoull(res_info.end_addr, NULL, 16);
+	*flags = strtoull(res_info.flags, NULL, 16);
+	if (errno != 0) {
+		RTE_LOG(ERR, EAL,
+			"%s(): bad resource format\n", __func__);
+		return -1;
+	}
+
+	return 0;
+}
+
+/* parse the "resource" sysfs file */
+static int
+pci_parse_sysfs_resource(const char *filename, struct rte_pci_device *dev)
+{
+	FILE *f;
+	char buf[BUFSIZ];
 	int i;
 	uint64_t phys_addr, end_addr, flags;
 
@@ -220,21 +246,9 @@ pci_parse_sysfs_resource(const char *filename, struct rte_pci_device *dev)
 				"%s(): cannot read resource\n", __func__);
 			goto error;
 		}
-
-		if (rte_strsplit(buf, sizeof(buf), res_info.ptrs, 3, ' ') != 3) {
-			RTE_LOG(ERR, EAL,
-				"%s(): bad resource format\n", __func__);
+		if (pci_parse_one_sysfs_resource(buf, sizeof(buf), &phys_addr,
+				&end_addr, &flags) < 0)
 			goto error;
-		}
-		errno = 0;
-		phys_addr = strtoull(res_info.phys_addr, NULL, 16);
-		end_addr = strtoull(res_info.end_addr, NULL, 16);
-		flags = strtoull(res_info.flags, NULL, 16);
-		if (errno != 0) {
-			RTE_LOG(ERR, EAL,
-				"%s(): bad resource format\n", __func__);
-			goto error;
-		}
 
 		if (flags & IORESOURCE_MEM) {
 			dev->mem_resource[i].phys_addr = phys_addr;
@@ -305,6 +319,16 @@ pci_scan_one(const char *dirname, uint16_t domain, uint8_t bus,
 		return -1;
 	}
 	dev->id.subsystem_device_id = (uint16_t)tmp;
+
+	/* get class_id */
+	snprintf(filename, sizeof(filename), "%s/class",
+		 dirname);
+	if (eal_parse_sysfs_value(filename, &tmp) < 0) {
+		free(dev);
+		return -1;
+	}
+	/* the least 24 bits are valid: class, subclass, program interface */
+	dev->id.class_id = (uint32_t)tmp & RTE_CLASS_ANY_ID;
 
 	/* get max_vfs */
 	dev->max_vfs = 0;
@@ -453,7 +477,7 @@ rte_eal_pci_scan(void)
 	uint16_t domain;
 	uint8_t bus, devid, function;
 
-	dir = opendir(SYSFS_PCI_DEVICES);
+	dir = opendir(pci_get_sysfs_path());
 	if (dir == NULL) {
 		RTE_LOG(ERR, EAL, "%s(): opendir failed: %s\n",
 			__func__, strerror(errno));
@@ -468,8 +492,8 @@ rte_eal_pci_scan(void)
 				&bus, &devid, &function) != 0)
 			continue;
 
-		snprintf(dirname, sizeof(dirname), "%s/%s", SYSFS_PCI_DEVICES,
-			 e->d_name);
+		snprintf(dirname, sizeof(dirname), "%s/%s",
+				pci_get_sysfs_path(), e->d_name);
 		if (pci_scan_one(dirname, domain, bus, devid, function) < 0)
 			goto error;
 	}
@@ -480,18 +504,6 @@ error:
 	closedir(dir);
 	return -1;
 }
-
-#ifdef RTE_PCI_CONFIG
-/*
- * It is deprecated, all its configurations have been moved into
- * each PMD respectively.
- */
-void
-pci_config_space_set(__rte_unused struct rte_pci_device *dev)
-{
-	RTE_LOG(DEBUG, EAL, "Nothing here, as it is deprecated\n");
-}
-#endif
 
 /* Read PCI config space. */
 int rte_eal_pci_read_config(const struct rte_pci_device *device,
@@ -742,21 +754,6 @@ rte_eal_pci_init(void)
 		RTE_LOG(ERR, EAL, "%s(): Cannot scan PCI bus\n", __func__);
 		return -1;
 	}
-#ifdef VFIO_PRESENT
-	pci_vfio_enable();
 
-	if (pci_vfio_is_enabled()) {
-
-		/* if we are primary process, create a thread to communicate with
-		 * secondary processes. the thread will use a socket to wait for
-		 * requests from secondary process to send open file descriptors,
-		 * because VFIO does not allow multiple open descriptors on a group or
-		 * VFIO container.
-		 */
-		if (internal_config.process_type == RTE_PROC_PRIMARY &&
-				pci_vfio_mp_sync_setup() < 0)
-			return -1;
-	}
-#endif
 	return 0;
 }

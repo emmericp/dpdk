@@ -94,10 +94,6 @@ static struct cmdline *testpmd_cl;
 
 static void cmd_reconfig_device_queue(portid_t id, uint8_t dev, uint8_t queue);
 
-#ifdef RTE_NIC_BYPASS
-uint8_t bypass_is_supported(portid_t port_id);
-#endif
-
 /* *** Help command with introduction. *** */
 struct cmd_help_brief_result {
 	cmdline_fixed_string_t help;
@@ -246,8 +242,8 @@ static void cmd_help_long_parsed(void *parsed_result,
 			"    Set number of packets per burst.\n\n"
 
 			"set burst tx delay (microseconds) retry (num)\n"
-			"    Set the transmit delay time and number of retries"
-			" in mac_retry forwarding mode.\n\n"
+			"    Set the transmit delay time and number of retries,"
+			" effective when retry is enabled.\n\n"
 
 			"set txpkts (x[,y]*)\n"
 			"    Set the length of each segment of TXONLY"
@@ -559,13 +555,13 @@ static void cmd_help_long_parsed(void *parsed_result,
 			"port config all max-pkt-len (value)\n"
 			"    Set the max packet length.\n\n"
 
-			"port config all (crc-strip|rx-cksum|hw-vlan|hw-vlan-filter|"
+			"port config all (crc-strip|scatter|rx-cksum|hw-vlan|hw-vlan-filter|"
 			"hw-vlan-strip|hw-vlan-extend|drop-en)"
 			" (on|off)\n"
-			"    Set crc-strip/rx-checksum/hardware-vlan/drop_en"
+			"    Set crc-strip/scatter/rx-checksum/hardware-vlan/drop_en"
 			" for ports.\n\n"
 
-			"port config all rss (all|ip|tcp|udp|sctp|ether|none)\n"
+			"port config all rss (all|ip|tcp|udp|sctp|ether|port|vxlan|geneve|nvgre|none)\n"
 			"    Set the RSS mode.\n\n"
 
 			"port config port-id rss reta (hash,queue)[,(hash,queue)]\n"
@@ -1223,6 +1219,8 @@ cmd_config_rx_tx_parsed(void *parsed_result,
 		return;
 	}
 
+	fwd_config_setup();
+
 	init_port_config();
 
 	cmd_reconfig_device_queue(RTE_PORT_ALL, 1, 1);
@@ -1410,6 +1408,15 @@ cmd_config_rx_mode_flag_parsed(void *parsed_result,
 			printf("Unknown parameter\n");
 			return;
 		}
+	} else if (!strcmp(res->name, "scatter")) {
+		if (!strcmp(res->value, "on"))
+			rx_mode.enable_scatter = 1;
+		else if (!strcmp(res->value, "off"))
+			rx_mode.enable_scatter = 0;
+		else {
+			printf("Unknown parameter\n");
+			return;
+		}
 	} else if (!strcmp(res->name, "rx-cksum")) {
 		if (!strcmp(res->value, "on"))
 			rx_mode.hw_ip_checksum = 1;
@@ -1487,7 +1494,7 @@ cmdline_parse_token_string_t cmd_config_rx_mode_flag_all =
 	TOKEN_STRING_INITIALIZER(struct cmd_config_rx_mode_flag, all, "all");
 cmdline_parse_token_string_t cmd_config_rx_mode_flag_name =
 	TOKEN_STRING_INITIALIZER(struct cmd_config_rx_mode_flag, name,
-					"crc-strip#rx-cksum#hw-vlan#"
+					"crc-strip#scatter#rx-cksum#hw-vlan#"
 					"hw-vlan-filter#hw-vlan-strip#hw-vlan-extend");
 cmdline_parse_token_string_t cmd_config_rx_mode_flag_value =
 	TOKEN_STRING_INITIALIZER(struct cmd_config_rx_mode_flag, value,
@@ -1496,7 +1503,7 @@ cmdline_parse_token_string_t cmd_config_rx_mode_flag_value =
 cmdline_parse_inst_t cmd_config_rx_mode_flag = {
 	.f = cmd_config_rx_mode_flag_parsed,
 	.data = NULL,
-	.help_str = "port config all crc-strip|rx-cksum|hw-vlan|"
+	.help_str = "port config all crc-strip|scatter|rx-cksum|hw-vlan|"
 		"hw-vlan-filter|hw-vlan-strip|hw-vlan-extend on|off",
 	.tokens = {
 		(void *)&cmd_config_rx_mode_flag_port,
@@ -1524,6 +1531,7 @@ cmd_config_rss_parsed(void *parsed_result,
 {
 	struct cmd_config_rss *res = parsed_result;
 	struct rte_eth_rss_conf rss_conf;
+	int diag;
 	uint8_t i;
 
 	if (!strcmp(res->value, "all"))
@@ -1540,6 +1548,14 @@ cmd_config_rss_parsed(void *parsed_result,
 		rss_conf.rss_hf = ETH_RSS_SCTP;
 	else if (!strcmp(res->value, "ether"))
 		rss_conf.rss_hf = ETH_RSS_L2_PAYLOAD;
+	else if (!strcmp(res->value, "port"))
+		rss_conf.rss_hf = ETH_RSS_PORT;
+	else if (!strcmp(res->value, "vxlan"))
+		rss_conf.rss_hf = ETH_RSS_VXLAN;
+	else if (!strcmp(res->value, "geneve"))
+		rss_conf.rss_hf = ETH_RSS_GENEVE;
+	else if (!strcmp(res->value, "nvgre"))
+		rss_conf.rss_hf = ETH_RSS_NVGRE;
 	else if (!strcmp(res->value, "none"))
 		rss_conf.rss_hf = 0;
 	else {
@@ -1547,8 +1563,13 @@ cmd_config_rss_parsed(void *parsed_result,
 		return;
 	}
 	rss_conf.rss_key = NULL;
-	for (i = 0; i < rte_eth_dev_count(); i++)
-		rte_eth_dev_rss_hash_update(i, &rss_conf);
+	for (i = 0; i < rte_eth_dev_count(); i++) {
+		diag = rte_eth_dev_rss_hash_update(i, &rss_conf);
+		if (diag < 0)
+			printf("Configuration of RSS hash at ethernet port %d "
+				"failed with error (%d): %s.\n",
+				i, -diag, strerror(-diag));
+	}
 }
 
 cmdline_parse_token_string_t cmd_config_rss_port =
@@ -1561,12 +1582,12 @@ cmdline_parse_token_string_t cmd_config_rss_name =
 	TOKEN_STRING_INITIALIZER(struct cmd_config_rss, name, "rss");
 cmdline_parse_token_string_t cmd_config_rss_value =
 	TOKEN_STRING_INITIALIZER(struct cmd_config_rss, value,
-		"all#ip#tcp#udp#sctp#ether#none");
+		"all#ip#tcp#udp#sctp#ether#port#vxlan#geneve#nvgre#none");
 
 cmdline_parse_inst_t cmd_config_rss = {
 	.f = cmd_config_rss_parsed,
 	.data = NULL,
-	.help_str = "port config all rss all|ip|tcp|udp|sctp|ether|none",
+	.help_str = "port config all rss all|ip|tcp|udp|sctp|ether|port|vxlan|geneve|nvgre|none",
 	.tokens = {
 		(void *)&cmd_config_rss_port,
 		(void *)&cmd_config_rss_keyword,
@@ -2511,16 +2532,20 @@ static void cmd_set_list_parsed(void *parsed_result,
 		nb_item = parse_item_list(res->list_of_items, "core",
 					  RTE_MAX_LCORE,
 					  parsed_items.lcorelist, 1);
-		if (nb_item > 0)
+		if (nb_item > 0) {
 			set_fwd_lcores_list(parsed_items.lcorelist, nb_item);
+			fwd_config_setup();
+		}
 		return;
 	}
 	if (!strcmp(res->list_name, "portlist")) {
 		nb_item = parse_item_list(res->list_of_items, "port",
 					  RTE_MAX_ETHPORTS,
 					  parsed_items.portlist, 1);
-		if (nb_item > 0)
+		if (nb_item > 0) {
 			set_fwd_ports_list(parsed_items.portlist, nb_item);
+			fwd_config_setup();
+		}
 	}
 }
 
@@ -2564,10 +2589,13 @@ static void cmd_set_mask_parsed(void *parsed_result,
 		printf("Please stop forwarding first\n");
 		return;
 	}
-	if (!strcmp(res->mask, "coremask"))
+	if (!strcmp(res->mask, "coremask")) {
 		set_fwd_lcores_mask(res->hexavalue);
-	else if (!strcmp(res->mask, "portmask"))
+		fwd_config_setup();
+	} else if (!strcmp(res->mask, "portmask")) {
 		set_fwd_ports_mask(res->hexavalue);
+		fwd_config_setup();
+	}
 }
 
 cmdline_parse_token_string_t cmd_setmask_set =
@@ -2604,11 +2632,13 @@ static void cmd_set_parsed(void *parsed_result,
 			   __attribute__((unused)) void *data)
 {
 	struct cmd_set_result *res = parsed_result;
-	if (!strcmp(res->what, "nbport"))
+	if (!strcmp(res->what, "nbport")) {
 		set_fwd_ports_number(res->value);
-	else if (!strcmp(res->what, "nbcore"))
+		fwd_config_setup();
+	} else if (!strcmp(res->what, "nbcore")) {
 		set_fwd_lcores_number(res->value);
-	else if (!strcmp(res->what, "burst"))
+		fwd_config_setup();
+	} else if (!strcmp(res->what, "burst"))
 		set_nb_pkt_per_burst(res->value);
 	else if (!strcmp(res->what, "verbose"))
 		set_verbose_level(res->value);
@@ -2717,6 +2747,74 @@ cmdline_parse_inst_t cmd_set_txsplit = {
 		(void *)&cmd_set_txsplit_keyword,
 		(void *)&cmd_set_txsplit_name,
 		(void *)&cmd_set_txsplit_mode,
+		NULL,
+	},
+};
+
+/* *** CONFIG TX QUEUE FLAGS *** */
+
+struct cmd_config_txqflags_result {
+	cmdline_fixed_string_t port;
+	cmdline_fixed_string_t config;
+	cmdline_fixed_string_t all;
+	cmdline_fixed_string_t what;
+	int32_t hexvalue;
+};
+
+static void cmd_config_txqflags_parsed(void *parsed_result,
+				__attribute__((unused)) struct cmdline *cl,
+				__attribute__((unused)) void *data)
+{
+	struct cmd_config_txqflags_result *res = parsed_result;
+
+	if (!all_ports_stopped()) {
+		printf("Please stop all ports first\n");
+		return;
+	}
+
+	if (strcmp(res->what, "txqflags")) {
+		printf("Unknown parameter\n");
+		return;
+	}
+
+	if (res->hexvalue >= 0) {
+		txq_flags = res->hexvalue;
+	} else {
+		printf("txqflags must be >= 0\n");
+		return;
+	}
+
+	init_port_config();
+
+	cmd_reconfig_device_queue(RTE_PORT_ALL, 1, 1);
+}
+
+cmdline_parse_token_string_t cmd_config_txqflags_port =
+	TOKEN_STRING_INITIALIZER(struct cmd_config_txqflags_result, port,
+				 "port");
+cmdline_parse_token_string_t cmd_config_txqflags_config =
+	TOKEN_STRING_INITIALIZER(struct cmd_config_txqflags_result, config,
+				 "config");
+cmdline_parse_token_string_t cmd_config_txqflags_all =
+	TOKEN_STRING_INITIALIZER(struct cmd_config_txqflags_result, all,
+				 "all");
+cmdline_parse_token_string_t cmd_config_txqflags_what =
+	TOKEN_STRING_INITIALIZER(struct cmd_config_txqflags_result, what,
+				 "txqflags");
+cmdline_parse_token_num_t cmd_config_txqflags_value =
+	TOKEN_NUM_INITIALIZER(struct cmd_config_txqflags_result,
+				hexvalue, INT32);
+
+cmdline_parse_inst_t cmd_config_txqflags = {
+	.f = cmd_config_txqflags_parsed,
+	.data = NULL,
+	.help_str = "port config all txqflags value",
+	.tokens = {
+		(void *)&cmd_config_txqflags_port,
+		(void *)&cmd_config_txqflags_config,
+		(void *)&cmd_config_txqflags_all,
+		(void *)&cmd_config_txqflags_what,
+		(void *)&cmd_config_txqflags_value,
 		NULL,
 	},
 };
@@ -3554,9 +3652,6 @@ cmd_set_bypass_mode_parsed(void *parsed_result,
 	portid_t port_id = res->port_id;
 	uint32_t bypass_mode = RTE_BYPASS_MODE_NORMAL;
 
-	if (!bypass_is_supported(port_id))
-		return;
-
 	if (!strcmp(res->value, "bypass"))
 		bypass_mode = RTE_BYPASS_MODE_BYPASS;
 	else if (!strcmp(res->value, "isolate"))
@@ -3622,9 +3717,6 @@ cmd_set_bypass_event_parsed(void *parsed_result,
 	portid_t port_id = res->port_id;
 	uint32_t bypass_event = RTE_BYPASS_EVENT_NONE;
 	uint32_t bypass_mode = RTE_BYPASS_MODE_NORMAL;
-
-	if (!bypass_is_supported(port_id))
-		return;
 
 	if (!strcmp(res->event_value, "timeout"))
 		bypass_event = RTE_BYPASS_EVENT_TIMEOUT;
@@ -3800,9 +3892,6 @@ cmd_show_bypass_config_parsed(void *parsed_result,
 		"power supply off",
 		"timeout"};
 	int num_events = (sizeof events) / (sizeof events[0]);
-
-	if (!bypass_is_supported(port_id))
-		return;
 
 	/* Display the bypass mode.*/
 	if (0 != rte_eth_dev_bypass_state_show(port_id, &bypass_mode)) {
@@ -4480,6 +4569,7 @@ static void cmd_set_fwd_mode_parsed(void *parsed_result,
 {
 	struct cmd_set_fwd_mode_result *res = parsed_result;
 
+	retry_enabled = 0;
 	set_pkt_forwarding_mode(res->mode);
 }
 
@@ -4522,6 +4612,74 @@ static void cmd_set_fwd_mode_init(void)
 		else
 			*c++ = *modes;
 	token_struct = (cmdline_parse_token_string_t*)cmd_set_fwd_mode.tokens[2];
+	token_struct->string_data.str = token;
+}
+
+/* *** SET RETRY FORWARDING MODE *** */
+struct cmd_set_fwd_retry_mode_result {
+	cmdline_fixed_string_t set;
+	cmdline_fixed_string_t fwd;
+	cmdline_fixed_string_t mode;
+	cmdline_fixed_string_t retry;
+};
+
+static void cmd_set_fwd_retry_mode_parsed(void *parsed_result,
+			    __attribute__((unused)) struct cmdline *cl,
+			    __attribute__((unused)) void *data)
+{
+	struct cmd_set_fwd_retry_mode_result *res = parsed_result;
+
+	retry_enabled = 1;
+	set_pkt_forwarding_mode(res->mode);
+}
+
+cmdline_parse_token_string_t cmd_setfwd_retry_set =
+	TOKEN_STRING_INITIALIZER(struct cmd_set_fwd_retry_mode_result,
+			set, "set");
+cmdline_parse_token_string_t cmd_setfwd_retry_fwd =
+	TOKEN_STRING_INITIALIZER(struct cmd_set_fwd_retry_mode_result,
+			fwd, "fwd");
+cmdline_parse_token_string_t cmd_setfwd_retry_mode =
+	TOKEN_STRING_INITIALIZER(struct cmd_set_fwd_retry_mode_result,
+			mode,
+		"" /* defined at init */);
+cmdline_parse_token_string_t cmd_setfwd_retry_retry =
+	TOKEN_STRING_INITIALIZER(struct cmd_set_fwd_retry_mode_result,
+			retry, "retry");
+
+cmdline_parse_inst_t cmd_set_fwd_retry_mode = {
+	.f = cmd_set_fwd_retry_mode_parsed,
+	.data = NULL,
+	.help_str = NULL, /* defined at init */
+	.tokens = {
+		(void *)&cmd_setfwd_retry_set,
+		(void *)&cmd_setfwd_retry_fwd,
+		(void *)&cmd_setfwd_retry_mode,
+		(void *)&cmd_setfwd_retry_retry,
+		NULL,
+	},
+};
+
+static void cmd_set_fwd_retry_mode_init(void)
+{
+	char *modes, *c;
+	static char token[128];
+	static char help[256];
+	cmdline_parse_token_string_t *token_struct;
+
+	modes = list_pkt_forwarding_retry_modes();
+	snprintf(help, sizeof(help), "set fwd %s retry - "
+		"set packet forwarding mode with retry", modes);
+	cmd_set_fwd_retry_mode.help_str = help;
+
+	/* string token separator is # */
+	for (c = token; *modes != '\0'; modes++)
+		if (*modes == '|')
+			*c++ = '#';
+		else
+			*c++ = *modes;
+	token_struct = (cmdline_parse_token_string_t *)
+		cmd_set_fwd_retry_mode.tokens[2];
 	token_struct->string_data.str = token;
 }
 
@@ -5240,6 +5398,46 @@ cmdline_parse_inst_t cmd_start_tx_first = {
 	},
 };
 
+/* *** START FORWARDING WITH N TX BURST FIRST *** */
+struct cmd_start_tx_first_n_result {
+	cmdline_fixed_string_t start;
+	cmdline_fixed_string_t tx_first;
+	uint32_t tx_num;
+};
+
+static void
+cmd_start_tx_first_n_parsed(void *parsed_result,
+			  __attribute__((unused)) struct cmdline *cl,
+			  __attribute__((unused)) void *data)
+{
+	struct cmd_start_tx_first_n_result *res = parsed_result;
+
+	start_packet_forwarding(res->tx_num);
+}
+
+cmdline_parse_token_string_t cmd_start_tx_first_n_start =
+	TOKEN_STRING_INITIALIZER(struct cmd_start_tx_first_n_result,
+			start, "start");
+cmdline_parse_token_string_t cmd_start_tx_first_n_tx_first =
+	TOKEN_STRING_INITIALIZER(struct cmd_start_tx_first_n_result,
+			tx_first, "tx_first");
+cmdline_parse_token_num_t cmd_start_tx_first_n_tx_num =
+	TOKEN_NUM_INITIALIZER(struct cmd_start_tx_first_n_result,
+			tx_num, UINT32);
+
+cmdline_parse_inst_t cmd_start_tx_first_n = {
+	.f = cmd_start_tx_first_n_parsed,
+	.data = NULL,
+	.help_str = "start packet forwarding, after sending <num> "
+		"bursts of packets",
+	.tokens = {
+		(void *)&cmd_start_tx_first_n_start,
+		(void *)&cmd_start_tx_first_n_tx_first,
+		(void *)&cmd_start_tx_first_n_tx_num,
+		NULL,
+	},
+};
+
 /* *** SET LINK UP *** */
 struct cmd_set_link_up_result {
 	cmdline_fixed_string_t set;
@@ -5336,7 +5534,7 @@ static void cmd_showcfg_parsed(void *parsed_result,
 	else if (!strcmp(res->what, "cores"))
 		fwd_lcores_config_display();
 	else if (!strcmp(res->what, "fwd"))
-		fwd_config_display();
+		pkt_fwd_config_display(&cur_fwd_config);
 	else if (!strcmp(res->what, "txpkts"))
 		show_tx_pkt_segments();
 }
@@ -7191,8 +7389,6 @@ static void cmd_dump_parsed(void *parsed_result,
 		rte_dump_physmem_layout(stdout);
 	else if (!strcmp(res->dump, "dump_memzone"))
 		rte_memzone_dump(stdout);
-	else if (!strcmp(res->dump, "dump_log_history"))
-		rte_log_dump_history(stdout);
 	else if (!strcmp(res->dump, "dump_struct_sizes"))
 		dump_struct_sizes();
 	else if (!strcmp(res->dump, "dump_ring"))
@@ -7207,7 +7403,6 @@ cmdline_parse_token_string_t cmd_dump_dump =
 	TOKEN_STRING_INITIALIZER(struct cmd_dump_result, dump,
 		"dump_physmem#"
 		"dump_memzone#"
-		"dump_log_history#"
 		"dump_struct_sizes#"
 		"dump_ring#"
 		"dump_mempool#"
@@ -9299,6 +9494,10 @@ flowtype_to_str(uint16_t ftype)
 		{"ipv6-sctp", RTE_ETH_FLOW_NONFRAG_IPV6_SCTP},
 		{"ipv6-other", RTE_ETH_FLOW_NONFRAG_IPV6_OTHER},
 		{"l2_payload", RTE_ETH_FLOW_L2_PAYLOAD},
+		{"port", RTE_ETH_FLOW_PORT},
+		{"vxlan", RTE_ETH_FLOW_VXLAN},
+		{"geneve", RTE_ETH_FLOW_GENEVE},
+		{"nvgre", RTE_ETH_FLOW_NVGRE},
 	};
 
 	for (i = 0; i < RTE_DIM(ftype_table); i++) {
@@ -10399,6 +10598,7 @@ cmdline_parse_ctx_t main_ctx[] = {
 	(cmdline_parse_inst_t *)&cmd_showcfg,
 	(cmdline_parse_inst_t *)&cmd_start,
 	(cmdline_parse_inst_t *)&cmd_start_tx_first,
+	(cmdline_parse_inst_t *)&cmd_start_tx_first_n,
 	(cmdline_parse_inst_t *)&cmd_set_link_up,
 	(cmdline_parse_inst_t *)&cmd_set_link_down,
 	(cmdline_parse_inst_t *)&cmd_reset,
@@ -10408,6 +10608,7 @@ cmdline_parse_ctx_t main_ctx[] = {
 	(cmdline_parse_inst_t *)&cmd_set_fwd_list,
 	(cmdline_parse_inst_t *)&cmd_set_fwd_mask,
 	(cmdline_parse_inst_t *)&cmd_set_fwd_mode,
+	(cmdline_parse_inst_t *)&cmd_set_fwd_retry_mode,
 	(cmdline_parse_inst_t *)&cmd_set_burst_tx_retry,
 	(cmdline_parse_inst_t *)&cmd_set_promisc_mode_one,
 	(cmdline_parse_inst_t *)&cmd_set_promisc_mode_all,
@@ -10478,6 +10679,7 @@ cmdline_parse_ctx_t main_ctx[] = {
 	(cmdline_parse_inst_t *)&cmd_config_rx_mode_flag,
 	(cmdline_parse_inst_t *)&cmd_config_rss,
 	(cmdline_parse_inst_t *)&cmd_config_rxtx_queue,
+	(cmdline_parse_inst_t *)&cmd_config_txqflags,
 	(cmdline_parse_inst_t *)&cmd_config_rss_reta,
 	(cmdline_parse_inst_t *)&cmd_showport_reta,
 	(cmdline_parse_inst_t *)&cmd_config_burst,
@@ -10546,6 +10748,7 @@ prompt(void)
 {
 	/* initialize non-constant commands */
 	cmd_set_fwd_mode_init();
+	cmd_set_fwd_retry_mode_init();
 
 	testpmd_cl = cmdline_stdin_new(main_ctx, "testpmd> ");
 	if (testpmd_cl == NULL)
@@ -10584,29 +10787,3 @@ cmd_reconfig_device_queue(portid_t id, uint8_t dev, uint8_t queue)
 			ports[id].need_reconfig_queues = queue;
 	}
 }
-
-#ifdef RTE_NIC_BYPASS
-#include <rte_pci_dev_ids.h>
-uint8_t
-bypass_is_supported(portid_t port_id)
-{
-	struct rte_port   *port;
-	struct rte_pci_id *pci_id;
-
-	if (port_id_is_invalid(port_id, ENABLED_WARN))
-		return 0;
-
-	/* Get the device id. */
-	port    = &ports[port_id];
-	pci_id = &port->dev_info.pci_dev->id;
-
-	/* Check if NIC supports bypass. */
-	if (pci_id->device_id == IXGBE_DEV_ID_82599_BYPASS) {
-		return 1;
-	}
-	else {
-		printf("\tBypass not supported for port_id = %d.\n", port_id);
-		return 0;
-	}
-}
-#endif

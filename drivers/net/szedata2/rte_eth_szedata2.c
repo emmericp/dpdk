@@ -62,7 +62,7 @@
  */
 #define RTE_SZE2_PACKET_HEADER_SIZE_ALIGNED 8
 
-#define RTE_SZEDATA2_DRIVER_NAME "rte_szedata2_pmd"
+#define RTE_SZEDATA2_DRIVER_NAME rte_szedata2_pmd
 #define RTE_SZEDATA2_PCI_DRIVER_NAME "rte_szedata2_pmd"
 
 #define SZEDATA2_DEV_PATH_FMT "/dev/szedataII%u"
@@ -1481,7 +1481,7 @@ rte_szedata2_eth_dev_init(struct rte_eth_dev *dev)
 		return -EINVAL;
 	}
 	snprintf(rsc_filename, PATH_MAX,
-		SYSFS_PCI_DEVICES "/" PCI_PRI_FMT "/resource%u",
+		"%s/" PCI_PRI_FMT "/resource%u", pci_get_sysfs_path(),
 		pci_addr->domain, pci_addr->bus,
 		pci_addr->devid, pci_addr->function, PCI_RESOURCE_NUMBER);
 	fd = open(rsc_filename, O_RDWR);
@@ -1596,9 +1596,9 @@ rte_szedata2_uninit(const char *name __rte_unused)
 
 static struct rte_driver rte_szedata2_driver = {
 	.type = PMD_PDEV,
-	.name = RTE_SZEDATA2_DRIVER_NAME,
 	.init = rte_szedata2_init,
 	.uninit = rte_szedata2_uninit,
 };
 
-PMD_REGISTER_DRIVER(rte_szedata2_driver);
+PMD_REGISTER_DRIVER(rte_szedata2_driver, RTE_SZEDATA2_DRIVER_NAME);
+DRIVER_REGISTER_PCI_TABLE(RTE_SZEDATA2_DRIVER_NAME, rte_szedata2_pci_id_table);

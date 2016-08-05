@@ -11,17 +11,6 @@
 #include "bnx2x.h"
 #include "bnx2x_rxtx.h"
 
-static inline struct rte_mbuf *
-bnx2x_rxmbuf_alloc(struct rte_mempool *mp)
-{
-	struct rte_mbuf *m;
-
-	m = __rte_mbuf_raw_alloc(mp);
-	__rte_mbuf_sanity_check(m, 0);
-
-	return m;
-}
-
 static const struct rte_memzone *
 ring_dma_zone_reserve(struct rte_eth_dev *dev, const char *ring_name,
 		      uint16_t queue_id, uint32_t ring_size, int socket_id)
@@ -148,7 +137,7 @@ bnx2x_dev_rx_queue_setup(struct rte_eth_dev *dev,
 	/* Initialize software ring entries */
 	rxq->rx_mbuf_alloc = 0;
 	for (idx = 0; idx < rxq->nb_rx_desc; idx = NEXT_RX_BD(idx)) {
-		mbuf = bnx2x_rxmbuf_alloc(mp);
+		mbuf = rte_mbuf_raw_alloc(mp);
 		if (NULL == mbuf) {
 			PMD_RX_LOG(ERR, "RX mbuf alloc failed queue_id=%u, idx=%d",
 				   (unsigned)rxq->queue_id, idx);
@@ -222,40 +211,40 @@ bnx2x_xmit_pkts(void *p_txq, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
 	struct bnx2x_tx_queue *txq;
 	struct bnx2x_softc *sc;
 	struct bnx2x_fastpath *fp;
-	uint32_t burst, nb_tx;
-	struct rte_mbuf **m = tx_pkts;
-	int ret;
+	uint16_t nb_tx_pkts;
+	uint16_t nb_pkt_sent = 0;
+	uint32_t ret;
 
 	txq = p_txq;
 	sc = txq->sc;
 	fp = &sc->fp[txq->queue_id];
 
-	nb_tx = nb_pkts;
+	if ((unlikely((txq->nb_tx_desc - txq->nb_tx_avail) >
+				txq->tx_free_thresh)))
+		bnx2x_txeof(sc, fp);
 
-	do {
-		burst = RTE_MIN(nb_pkts, RTE_PMD_BNX2X_TX_MAX_BURST);
+	nb_tx_pkts = RTE_MIN(nb_pkts, txq->nb_tx_avail / BDS_PER_TX_PKT);
+	if (unlikely(nb_tx_pkts == 0))
+		return 0;
 
-		ret = bnx2x_tx_encap(txq, m, burst);
-		if (unlikely(ret)) {
-			PMD_TX_LOG(ERR, "tx_encap failed!");
-		}
+	while (nb_tx_pkts--) {
+		struct rte_mbuf *m = *tx_pkts++;
+		assert(m != NULL);
+		ret = bnx2x_tx_encap(txq, m);
+		fp->tx_db.data.prod += ret;
+		nb_pkt_sent++;
+	}
 
-		bnx2x_update_fp_sb_idx(fp);
+	bnx2x_update_fp_sb_idx(fp);
+	mb();
+	DOORBELL(sc, txq->queue_id, fp->tx_db.raw);
+	mb();
 
-		if ((txq->nb_tx_desc - txq->nb_tx_avail) > txq->tx_free_thresh) {
-			bnx2x_txeof(sc, fp);
-		}
+	if ((txq->nb_tx_desc - txq->nb_tx_avail) >
+				txq->tx_free_thresh)
+		bnx2x_txeof(sc, fp);
 
-		if (unlikely(ret == -ENOMEM)) {
-			break;
-		}
-
-		m += burst;
-		nb_pkts -= burst;
-
-	} while (nb_pkts);
-
-	return nb_tx - nb_pkts;
+	return nb_pkt_sent;
 }
 
 int
@@ -405,9 +394,11 @@ bnx2x_recv_pkts(void *p_rxq, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 		len = cqe_fp->pkt_len_or_gro_seg_len;
 		pad = cqe_fp->placement_offset;
 
-		new_mb = bnx2x_rxmbuf_alloc(rxq->mb_pool);
+		new_mb = rte_mbuf_raw_alloc(rxq->mb_pool);
 		if (unlikely(!new_mb)) {
 			PMD_RX_LOG(ERR, "mbuf alloc fail fp[%02d]", fp->index);
+			rte_eth_devices[rxq->port_id].data->
+					rx_mbuf_alloc_failed++;
 			goto next_rx;
 		}
 
@@ -427,7 +418,6 @@ bnx2x_recv_pkts(void *p_rxq, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 		rx_mb->next = NULL;
 		rx_mb->pkt_len = rx_mb->data_len = len;
 		rx_mb->port = rxq->port_id;
-		rx_mb->buf_len = len + pad;
 		rte_prefetch1(rte_pktmbuf_mtod(rx_mb, void *));
 
 		/*

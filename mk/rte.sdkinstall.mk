@@ -116,16 +116,23 @@ install-runtime:
 	$(Q)$(call rte_mkdir, $(DESTDIR)$(libdir))
 	$(Q)cp -a    $O/lib/* $(DESTDIR)$(libdir)
 	$(Q)$(call rte_mkdir, $(DESTDIR)$(bindir))
-	$(Q)tar -cf -      -C $O app  --exclude 'app/*.map' \
+	$(Q)tar -cf -      -C $O --exclude 'app/*.map' \
+		--exclude app/dpdk-pmdinfogen \
 		--exclude 'app/cmdline*' --exclude app/test \
-		--exclude app/testacl --exclude app/testpipeline | \
+		--exclude app/testacl --exclude app/testpipeline app | \
 	    tar -xf -      -C $(DESTDIR)$(bindir) --strip-components=1 \
 		--keep-newer-files --warning=no-ignore-newer
 	$(Q)$(call rte_mkdir,      $(DESTDIR)$(datadir))
 	$(Q)cp -a $(RTE_SDK)/tools $(DESTDIR)$(datadir)
+	$(Q)$(call rte_symlink,    $(DESTDIR)$(datadir)/tools/dpdk-setup.sh, \
+	                           $(DESTDIR)$(datadir)/tools/setup.sh)
+	$(Q)$(call rte_symlink,    $(DESTDIR)$(datadir)/tools/dpdk-devbind.py, \
+	                           $(DESTDIR)$(datadir)/tools/dpdk_nic_bind.py)
 	$(Q)$(call rte_mkdir,      $(DESTDIR)$(sbindir))
-	$(Q)$(call rte_symlink,    $(DESTDIR)$(datadir)/tools/dpdk_nic_bind.py, \
-	                           $(DESTDIR)$(sbindir)/dpdk_nic_bind)
+	$(Q)$(call rte_symlink,    $(DESTDIR)$(datadir)/tools/dpdk-devbind.py, \
+	                           $(DESTDIR)$(sbindir)/dpdk-devbind)
+	$(Q)$(call rte_symlink,    $(DESTDIR)$(datadir)/tools/dpdk-pmdinfo.py, \
+	                           $(DESTDIR)$(bindir)/dpdk-pmdinfo)
 
 install-kmod:
 ifneq ($(wildcard $O/kmod/*),)
@@ -141,8 +148,9 @@ install-sdk:
 	$(Q)$(call rte_mkdir,                            $(DESTDIR)$(sdkdir))
 	$(Q)cp -a               $(RTE_SDK)/mk            $(DESTDIR)$(sdkdir)
 	$(Q)cp -a               $(RTE_SDK)/scripts       $(DESTDIR)$(sdkdir)
-	$(Q)$(call rte_mkdir,                            $(DESTDIR)$(targetdir))
+	$(Q)$(call rte_mkdir,                            $(DESTDIR)$(targetdir)/app)
 	$(Q)cp -a               $O/.config               $(DESTDIR)$(targetdir)
+	$(Q)cp -a               $O/app/dpdk-pmdinfogen   $(DESTDIR)$(targetdir)/app
 	$(Q)$(call rte_symlink, $(DESTDIR)$(includedir), $(DESTDIR)$(targetdir)/include)
 	$(Q)$(call rte_symlink, $(DESTDIR)$(libdir),     $(DESTDIR)$(targetdir)/lib)
 

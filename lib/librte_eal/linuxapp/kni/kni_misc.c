@@ -26,6 +26,7 @@
 #include <linux/module.h>
 #include <linux/miscdevice.h>
 #include <linux/netdevice.h>
+#include <linux/etherdevice.h>
 #include <linux/pci.h>
 #include <linux/kthread.h>
 #include <linux/rwsem.h>
@@ -34,6 +35,8 @@
 #include <net/netns/generic.h>
 
 #include <exec-env/rte_kni_common.h>
+
+#include "compat.h"
 #include "kni_dev.h"
 
 MODULE_LICENSE("Dual BSD/GPL");
@@ -104,7 +107,7 @@ struct kni_net {
 
 static int __net_init kni_init_net(struct net *net)
 {
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 32)
+#ifdef HAVE_SIMPLIFIED_PERNET_OPERATIONS
 	struct kni_net *knet = net_generic(net, kni_net_id);
 #else
 	struct kni_net *knet;
@@ -115,7 +118,7 @@ static int __net_init kni_init_net(struct net *net)
 		ret = -ENOMEM;
 		return ret;
 	}
-#endif /* LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 32) */
+#endif
 
 	/* Clear the bit of device in use */
 	clear_bit(KNI_DEV_IN_USE_BIT_NUM, &knet->device_in_use);
@@ -123,7 +126,7 @@ static int __net_init kni_init_net(struct net *net)
 	init_rwsem(&knet->kni_list_lock);
 	INIT_LIST_HEAD(&knet->kni_list_head);
 
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 32)
+#ifdef HAVE_SIMPLIFIED_PERNET_OPERATIONS
 	return 0;
 #else
 	ret = net_assign_generic(net, kni_net_id, knet);
@@ -131,25 +134,25 @@ static int __net_init kni_init_net(struct net *net)
 		kfree(knet);
 
 	return ret;
-#endif /* LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 32) */
+#endif
 }
 
 static void __net_exit kni_exit_net(struct net *net)
 {
-#if LINUX_VERSION_CODE <= KERNEL_VERSION(2, 6, 32)
+#ifndef HAVE_SIMPLIFIED_PERNET_OPERATIONS
 	struct kni_net *knet = net_generic(net, kni_net_id);
 
 	kfree(knet);
-#endif /* LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 32) */
+#endif
 }
 
 static struct pernet_operations kni_net_ops = {
 	.init = kni_init_net,
 	.exit = kni_exit_net,
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 32)
+#ifdef HAVE_SIMPLIFIED_PERNET_OPERATIONS
 	.id   = &kni_net_id,
 	.size = sizeof(struct kni_net),
-#endif /* LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 32) */
+#endif
 };
 
 static int __init
@@ -164,11 +167,11 @@ kni_init(void)
 		return -EINVAL;
 	}
 
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 32)
+#ifdef HAVE_SIMPLIFIED_PERNET_OPERATIONS
 	rc = register_pernet_subsys(&kni_net_ops);
 #else
 	rc = register_pernet_gen_subsys(&kni_net_id, &kni_net_ops);
-#endif /* LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 32) */
+#endif
 	if (rc)
 		return -EPERM;
 
@@ -186,11 +189,11 @@ kni_init(void)
 	return 0;
 
 out:
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 32)
+#ifdef HAVE_SIMPLIFIED_PERNET_OPERATIONS
 	unregister_pernet_subsys(&kni_net_ops);
 #else
 	register_pernet_gen_subsys(&kni_net_id, &kni_net_ops);
-#endif /* LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 32) */
+#endif
 	return rc;
 }
 
@@ -198,11 +201,11 @@ static void __exit
 kni_exit(void)
 {
 	misc_deregister(&kni_misc);
-#if LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 32)
+#ifdef HAVE_SIMPLIFIED_PERNET_OPERATIONS
 	unregister_pernet_subsys(&kni_net_ops);
 #else
 	register_pernet_gen_subsys(&kni_net_id, &kni_net_ops);
-#endif /* LINUX_VERSION_CODE > KERNEL_VERSION(2, 6, 32) */
+#endif
 	KNI_PRINT("####### DPDK kni module unloaded  #######\n");
 }
 
@@ -541,6 +544,15 @@ kni_ioctl_create(struct net *net,
 	}
 	if (pci)
 		pci_dev_put(pci);
+
+	if (kni->lad_dev)
+		memcpy(net_dev->dev_addr, kni->lad_dev->dev_addr, ETH_ALEN);
+	else
+		/*
+		 * Generate random mac address. eth_random_addr() is the newer
+		 * version of generating mac address in linux kernel.
+		 */
+		random_ether_addr(net_dev->dev_addr);
 
 	ret = register_netdev(net_dev);
 	if (ret) {

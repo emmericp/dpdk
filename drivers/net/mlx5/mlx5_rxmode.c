@@ -67,11 +67,9 @@ static const struct special_flow_init special_flow_init[] = {
 			1 << HASH_RXQ_TCPV4 |
 			1 << HASH_RXQ_UDPV4 |
 			1 << HASH_RXQ_IPV4 |
-#ifdef HAVE_FLOW_SPEC_IPV6
 			1 << HASH_RXQ_TCPV6 |
 			1 << HASH_RXQ_UDPV6 |
 			1 << HASH_RXQ_IPV6 |
-#endif /* HAVE_FLOW_SPEC_IPV6 */
 			1 << HASH_RXQ_ETH |
 			0,
 		.per_vlan = 0,
@@ -82,10 +80,8 @@ static const struct special_flow_init special_flow_init[] = {
 		.hash_types =
 			1 << HASH_RXQ_UDPV4 |
 			1 << HASH_RXQ_IPV4 |
-#ifdef HAVE_FLOW_SPEC_IPV6
 			1 << HASH_RXQ_UDPV6 |
 			1 << HASH_RXQ_IPV6 |
-#endif /* HAVE_FLOW_SPEC_IPV6 */
 			1 << HASH_RXQ_ETH |
 			0,
 		.per_vlan = 0,
@@ -96,15 +92,12 @@ static const struct special_flow_init special_flow_init[] = {
 		.hash_types =
 			1 << HASH_RXQ_UDPV4 |
 			1 << HASH_RXQ_IPV4 |
-#ifdef HAVE_FLOW_SPEC_IPV6
 			1 << HASH_RXQ_UDPV6 |
 			1 << HASH_RXQ_IPV6 |
-#endif /* HAVE_FLOW_SPEC_IPV6 */
 			1 << HASH_RXQ_ETH |
 			0,
 		.per_vlan = 1,
 	},
-#ifdef HAVE_FLOW_SPEC_IPV6
 	[HASH_RXQ_FLOW_TYPE_IPV6MULTI] = {
 		.dst_mac_val = "\x33\x33\x00\x00\x00\x00",
 		.dst_mac_mask = "\xff\xff\x00\x00\x00\x00",
@@ -115,7 +108,6 @@ static const struct special_flow_init special_flow_init[] = {
 			0,
 		.per_vlan = 1,
 	},
-#endif /* HAVE_FLOW_SPEC_IPV6 */
 };
 
 /**
@@ -355,7 +347,9 @@ priv_special_flow_enable_all(struct priv *priv)
 {
 	enum hash_rxq_flow_type flow_type;
 
-	for (flow_type = 0; flow_type != HASH_RXQ_FLOW_TYPE_MAC; ++flow_type) {
+	for (flow_type = HASH_RXQ_FLOW_TYPE_PROMISC;
+			flow_type != HASH_RXQ_FLOW_TYPE_MAC;
+			++flow_type) {
 		int ret;
 
 		ret = priv_special_flow_enable(priv, flow_type);
@@ -380,7 +374,9 @@ priv_special_flow_disable_all(struct priv *priv)
 {
 	enum hash_rxq_flow_type flow_type;
 
-	for (flow_type = 0; flow_type != HASH_RXQ_FLOW_TYPE_MAC; ++flow_type)
+	for (flow_type = HASH_RXQ_FLOW_TYPE_PROMISC;
+			flow_type != HASH_RXQ_FLOW_TYPE_MAC;
+			++flow_type)
 		priv_special_flow_disable(priv, flow_type);
 }
 

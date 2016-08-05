@@ -98,9 +98,11 @@ Start packet forwarding with current configuration::
 start tx_first
 ~~~~~~~~~~~~~~
 
-Start packet forwarding with current configuration after sending one burst of packets::
+Start packet forwarding with current configuration after sending specified number of bursts of packets::
 
-   testpmd> start tx_first
+   testpmd> start tx_first (""|burst_num)
+
+The default burst number is 1 when ``burst_num`` not presented.
 
 stop
 ~~~~
@@ -177,6 +179,10 @@ For example:
      ipv6-sctp
      ipv6-other
      l2_payload
+     port
+     vxlan
+     geneve
+     nvgre
 
 show port rss reta
 ~~~~~~~~~~~~~~~~~~
@@ -249,8 +255,10 @@ set fwd
 
 Set the packet forwarding mode::
 
-   testpmd> set fwd (io|mac|mac_retry|macswap|flowgen| \
-                     rxonly|txonly|csum|icmpecho)
+   testpmd> set fwd (io|mac|macswap|flowgen| \
+                     rxonly|txonly|csum|icmpecho) (""|retry)
+
+``retry`` can be specified for forwarding engines except ``rx_only``.
 
 The available information categories are:
 
@@ -259,8 +267,6 @@ The available information categories are:
   This is the default mode.
 
 * ``mac``: Changes the source and the destination Ethernet addresses of packets before forwarding them.
-
-* ``mac_retry``: Same as "mac" forwarding mode, but includes retries if the destination queue is full.
 
 * ``macswap``: MAC swap forwarding mode.
   Swaps the source and the destination Ethernet addresses of packets before forwarding them.
@@ -392,9 +398,9 @@ Set number of packets per burst::
 
 This is equivalent to the ``--burst command-line`` option.
 
-In ``mac_retry`` forwarding mode, the transmit delay time and number of retries can also be set::
+When retry is enabled, the transmit delay time and number of retries can also be set::
 
-   testpmd> set burst tx delay (micrseconds) retry (num)
+   testpmd> set burst tx delay (microseconds) retry (num)
 
 set txpkts
 ~~~~~~~~~~
@@ -980,7 +986,9 @@ The following sections show functions for configuring ports.
 port attach
 ~~~~~~~~~~~
 
-Attach a port specified by pci address or virtual device args.
+Attach a port specified by pci address or virtual device args::
+
+   testpmd> port attach (identifier)
 
 To attach a new pci device, the device should be recognized by kernel first.
 Then it should be moved under DPDK management.
@@ -991,7 +999,7 @@ For example, to move a pci device using ixgbe under DPDK management:
 .. code-block:: console
 
    # Check the status of the available devices.
-   ./tools/dpdk_nic_bind.py --status
+   ./tools/dpdk-devbind.py --status
 
    Network devices using DPDK-compatible driver
    ============================================
@@ -1003,18 +1011,16 @@ For example, to move a pci device using ixgbe under DPDK management:
 
 
    # Bind the device to igb_uio.
-   sudo ./tools/dpdk_nic_bind.py -b igb_uio 0000:0a:00.0
+   sudo ./tools/dpdk-devbind.py -b igb_uio 0000:0a:00.0
 
 
    # Recheck the status of the devices.
-   ./tools/dpdk_nic_bind.py --status
+   ./tools/dpdk-devbind.py --status
    Network devices using DPDK-compatible driver
    ============================================
    0000:0a:00.0 '82599ES 10-Gigabit' drv=igb_uio unused=
 
 To attach a port created by virtual device, above steps are not needed.
-
-port attach (identifier)
 
 For example, to attach a port whose pci address is 0000:0a:00.0.
 
@@ -1061,16 +1067,19 @@ the mode and slave parameters must be given.
 port detach
 ~~~~~~~~~~~
 
-Detach a specific port.
-
-Before detaching a port, the port should be closed::
+Detach a specific port::
 
    testpmd> port detach (port_id)
+
+Before detaching a port, the port should be stopped and closed.
 
 For example, to detach a pci device port 0.
 
 .. code-block:: console
 
+   testpmd> port stop 0
+   Stopping ports...
+   Done
    testpmd> port close 0
    Closing ports...
    Done
@@ -1088,6 +1097,9 @@ For example, to detach a virtual device port 0.
 
 .. code-block:: console
 
+   testpmd> port stop 0
+   Stopping ports...
+   Done
    testpmd> port close 0
    Closing ports...
    Done
@@ -1106,9 +1118,9 @@ For example, to move a pci device under kernel management:
 
 .. code-block:: console
 
-   sudo ./tools/dpdk_nic_bind.py -b ixgbe 0000:0a:00.0
+   sudo ./tools/dpdk-devbind.py -b ixgbe 0000:0a:00.0
 
-   ./tools/dpdk_nic_bind.py --status
+   ./tools/dpdk-devbind.py --status
 
    Network devices using DPDK-compatible driver
    ============================================
@@ -1187,6 +1199,26 @@ CRC stripping is off by default.
 
 The ``on`` option is equivalent to the ``--crc-strip`` command-line option.
 
+port config - scatter
+~~~~~~~~~~~~~~~~~~~~~~~
+
+Set RX scatter mode on or off for all ports::
+
+   testpmd> port config all scatter (on|off)
+
+RX scatter mode is off by default.
+
+The ``on`` option is equivalent to the ``--enable-scatter`` command-line option.
+
+port config - TX queue flags
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+Set a hexadecimal bitmap of TX queue flags for all ports::
+
+   testpmd> port config all txqflags value
+
+This command is equivalent to the ``--txqflags`` command-line option.
+
 port config - RX Checksum
 ~~~~~~~~~~~~~~~~~~~~~~~~~
 
@@ -1258,7 +1290,7 @@ port config - RSS
 
 Set the RSS (Receive Side Scaling) mode on or off::
 
-   testpmd> port config all rss (all|ip|tcp|udp|sctp|ether|none)
+   testpmd> port config all rss (all|ip|tcp|udp|sctp|ether|port|vxlan|geneve|nvgre|none)
 
 RSS is on by default.
 
@@ -1782,13 +1814,13 @@ Different NICs may have different capabilities, command show port fdir (port_id)
 
 For example, to add an ipv4-udp flow type filter::
 
-   testpmd> flow_director_filter 0 add flow ipv4-udp src 2.2.2.3 32 \
+   testpmd> flow_director_filter 0 mode IP add flow ipv4-udp src 2.2.2.3 32 \
             dst 2.2.2.5 33 tos 2 ttl 40 vlan 0x1 flexbytes (0x88,0x48) \
             fwd pf queue 1 fd_id 1
 
 For example, add an ipv4-other flow type filter::
 
-   testpmd> flow_director_filter 0 add flow ipv4-other src 2.2.2.3 \
+   testpmd> flow_director_filter 0 mode IP add flow ipv4-other src 2.2.2.3 \
              dst 2.2.2.5 tos 2 proto 20 ttl 40 vlan 0x1 \
              flexbytes (0x88,0x48) fwd pf queue 1 fd_id 1
 
@@ -1821,7 +1853,7 @@ Set flow director's input masks::
 
 Example, to set flow director mask on port 0::
 
-   testpmd> flow_director_mask 0 vlan 0xefff \
+   testpmd> flow_director_mask 0 mode IP vlan 0xefff \
             src_mask 255.255.255.255 \
                 FFFF:FFFF:FFFF:FFFF:FFFF:FFFF:FFFF:FFFF 0xFFFF \
             dst_mask 255.255.255.255 \

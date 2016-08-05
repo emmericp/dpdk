@@ -46,13 +46,13 @@ int
 rte_ethtool_get_drvinfo(uint8_t port_id, struct ethtool_drvinfo *drvinfo)
 {
 	struct rte_eth_dev_info dev_info;
+	struct rte_dev_reg_info reg_info;
 	int n;
 
 	if (drvinfo == NULL)
 		return -EINVAL;
 
-	if (!rte_eth_dev_is_valid_port(port_id))
-		return -ENODEV;
+	RTE_ETH_VALID_PORTID_OR_ERR_RET(port_id, -ENODEV);
 
 	memset(&dev_info, 0, sizeof(dev_info));
 	rte_eth_dev_info_get(port_id, &dev_info);
@@ -66,7 +66,9 @@ rte_ethtool_get_drvinfo(uint8_t port_id, struct ethtool_drvinfo *drvinfo)
 		dev_info.pci_dev->addr.domain, dev_info.pci_dev->addr.bus,
 		dev_info.pci_dev->addr.devid, dev_info.pci_dev->addr.function);
 
-	n = rte_eth_dev_get_reg_length(port_id);
+	memset(&reg_info, 0, sizeof(reg_info));
+	rte_eth_dev_get_reg_info(port_id, &reg_info);
+	n = reg_info.length;
 	if (n > 0)
 		drvinfo->regdump_len = n;
 	else
@@ -87,12 +89,16 @@ rte_ethtool_get_drvinfo(uint8_t port_id, struct ethtool_drvinfo *drvinfo)
 int
 rte_ethtool_get_regs_len(uint8_t port_id)
 {
-	int count_regs;
+	struct rte_dev_reg_info reg_info;
+	int ret;
 
-	count_regs = rte_eth_dev_get_reg_length(port_id);
-	if (count_regs > 0)
-		return count_regs * sizeof(uint32_t);
-	return count_regs;
+	memset(&reg_info, 0, sizeof(reg_info));
+
+	ret = rte_eth_dev_get_reg_info(port_id, &reg_info);
+	if (ret)
+		return ret;
+
+	return reg_info.length * reg_info.width;
 }
 
 int
@@ -120,8 +126,7 @@ rte_ethtool_get_link(uint8_t port_id)
 {
 	struct rte_eth_link link;
 
-	if (!rte_eth_dev_is_valid_port(port_id))
-		return -ENODEV;
+	RTE_ETH_VALID_PORTID_OR_ERR_RET(port_id, -ENODEV);
 	rte_eth_link_get(port_id, &link);
 	return link.link_status;
 }
@@ -267,8 +272,7 @@ rte_ethtool_net_open(uint8_t port_id)
 int
 rte_ethtool_net_stop(uint8_t port_id)
 {
-	if (!rte_eth_dev_is_valid_port(port_id))
-		return -ENODEV;
+	RTE_ETH_VALID_PORTID_OR_ERR_RET(port_id, -ENODEV);
 	rte_eth_dev_stop(port_id);
 
 	return 0;
@@ -277,8 +281,7 @@ rte_ethtool_net_stop(uint8_t port_id)
 int
 rte_ethtool_net_get_mac_addr(uint8_t port_id, struct ether_addr *addr)
 {
-	if (!rte_eth_dev_is_valid_port(port_id))
-		return -ENODEV;
+	RTE_ETH_VALID_PORTID_OR_ERR_RET(port_id, -ENODEV);
 	if (addr == NULL)
 		return -EINVAL;
 	rte_eth_macaddr_get(port_id, addr);

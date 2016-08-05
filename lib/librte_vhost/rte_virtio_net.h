@@ -51,124 +51,11 @@
 #include <rte_mempool.h>
 #include <rte_ether.h>
 
-struct rte_mbuf;
-
-#define VHOST_MEMORY_MAX_NREGIONS 8
-
-/* Used to indicate that the device is running on a data core */
-#define VIRTIO_DEV_RUNNING 1
-
-/* Backend value set by guest. */
-#define VIRTIO_DEV_STOPPED -1
-
+#define RTE_VHOST_USER_CLIENT		(1ULL << 0)
+#define RTE_VHOST_USER_NO_RECONNECT	(1ULL << 1)
 
 /* Enum for virtqueue management. */
 enum {VIRTIO_RXQ, VIRTIO_TXQ, VIRTIO_QNUM};
-
-#define BUF_VECTOR_MAX 256
-
-/**
- * Structure contains buffer address, length and descriptor index
- * from vring to do scatter RX.
- */
-struct buf_vector {
-	uint64_t buf_addr;
-	uint32_t buf_len;
-	uint32_t desc_idx;
-};
-
-/**
- * Structure contains variables relevant to RX/TX virtqueues.
- */
-struct vhost_virtqueue {
-	struct vring_desc	*desc;			/**< Virtqueue descriptor ring. */
-	struct vring_avail	*avail;			/**< Virtqueue available ring. */
-	struct vring_used	*used;			/**< Virtqueue used ring. */
-	uint32_t		size;			/**< Size of descriptor ring. */
-	uint32_t		backend;		/**< Backend value to determine if device should started/stopped. */
-	uint16_t		vhost_hlen;		/**< Vhost header length (varies depending on RX merge buffers. */
-	volatile uint16_t	last_used_idx;		/**< Last index used on the available ring */
-	volatile uint16_t	last_used_idx_res;	/**< Used for multiple devices reserving buffers. */
-#define VIRTIO_INVALID_EVENTFD		(-1)
-#define VIRTIO_UNINITIALIZED_EVENTFD	(-2)
-	int			callfd;			/**< Used to notify the guest (trigger interrupt). */
-	int			kickfd;			/**< Currently unused as polling mode is enabled. */
-	int			enabled;
-	uint64_t		log_guest_addr;		/**< Physical address of used ring, for logging */
-	uint64_t		reserved[15];		/**< Reserve some spaces for future extension. */
-	struct buf_vector	buf_vec[BUF_VECTOR_MAX];	/**< for scatter RX. */
-} __rte_cache_aligned;
-
-/* Old kernels have no such macro defined */
-#ifndef VIRTIO_NET_F_GUEST_ANNOUNCE
- #define VIRTIO_NET_F_GUEST_ANNOUNCE 21
-#endif
-
-
-/*
- * Make an extra wrapper for VIRTIO_NET_F_MQ and
- * VIRTIO_NET_CTRL_MQ_VQ_PAIRS_MAX as they are
- * introduced since kernel v3.8. This makes our
- * code buildable for older kernel.
- */
-#ifdef VIRTIO_NET_F_MQ
- #define VHOST_MAX_QUEUE_PAIRS	VIRTIO_NET_CTRL_MQ_VQ_PAIRS_MAX
- #define VHOST_SUPPORTS_MQ	(1ULL << VIRTIO_NET_F_MQ)
-#else
- #define VHOST_MAX_QUEUE_PAIRS	1
- #define VHOST_SUPPORTS_MQ	0
-#endif
-
-/*
- * Define virtio 1.0 for older kernels
- */
-#ifndef VIRTIO_F_VERSION_1
- #define VIRTIO_F_VERSION_1 32
-#endif
-
-/**
- * Device structure contains all configuration information relating to the device.
- */
-struct virtio_net {
-	struct virtio_memory	*mem;		/**< QEMU memory and memory region information. */
-	uint64_t		features;	/**< Negotiated feature set. */
-	uint64_t		protocol_features;	/**< Negotiated protocol feature set. */
-	uint64_t		device_fh;	/**< device identifier. */
-	uint32_t		flags;		/**< Device flags. Only used to check if device is running on data core. */
-#define IF_NAME_SZ (PATH_MAX > IFNAMSIZ ? PATH_MAX : IFNAMSIZ)
-	char			ifname[IF_NAME_SZ];	/**< Name of the tap device or socket path. */
-	uint32_t		virt_qp_nb;	/**< number of queue pair we have allocated */
-	void			*priv;		/**< private context */
-	uint64_t		log_size;	/**< Size of log area */
-	uint64_t		log_base;	/**< Where dirty pages are logged */
-	struct ether_addr	mac;		/**< MAC address */
-	rte_atomic16_t		broadcast_rarp;	/**< A flag to tell if we need broadcast rarp packet */
-	uint64_t		reserved[61];	/**< Reserve some spaces for future extension. */
-	struct vhost_virtqueue	*virtqueue[VHOST_MAX_QUEUE_PAIRS * 2];	/**< Contains all virtqueue information. */
-} __rte_cache_aligned;
-
-/**
- * Information relating to memory regions including offsets to addresses in QEMUs memory file.
- */
-struct virtio_memory_regions {
-	uint64_t	guest_phys_address;	/**< Base guest physical address of region. */
-	uint64_t	guest_phys_address_end;	/**< End guest physical address of region. */
-	uint64_t	memory_size;		/**< Size of region. */
-	uint64_t	userspace_address;	/**< Base userspace address of region. */
-	uint64_t	address_offset;		/**< Offset of region for address translation. */
-};
-
-
-/**
- * Memory structure includes region and mapping information.
- */
-struct virtio_memory {
-	uint64_t	base_address;	/**< Base QEMU userspace address of the memory file. */
-	uint64_t	mapped_address;	/**< Mapped address of memory file base in our applications memory space. */
-	uint64_t	mapped_size;	/**< Total size of memory file. */
-	uint32_t	nregions;	/**< Number of memory regions. */
-	struct virtio_memory_regions      regions[0]; /**< Memory region information. */
-};
 
 /**
  * Device and vring operations.
@@ -178,45 +65,13 @@ struct virtio_memory {
  *
  */
 struct virtio_net_device_ops {
-	int (*new_device)(struct virtio_net *);	/**< Add device. */
-	void (*destroy_device)(volatile struct virtio_net *);	/**< Remove device. */
+	int (*new_device)(int vid);		/**< Add device. */
+	void (*destroy_device)(int vid);	/**< Remove device. */
 
-	int (*vring_state_changed)(struct virtio_net *dev, uint16_t queue_id, int enable);	/**< triggered when a vring is enabled or disabled */
+	int (*vring_state_changed)(int vid, uint16_t queue_id, int enable);	/**< triggered when a vring is enabled or disabled */
+
+	void *reserved[5]; /**< Reserved for future extension */
 };
-
-static inline uint16_t __attribute__((always_inline))
-rte_vring_available_entries(struct virtio_net *dev, uint16_t queue_id)
-{
-	struct vhost_virtqueue *vq = dev->virtqueue[queue_id];
-
-	if (!vq->enabled)
-		return 0;
-
-	return *(volatile uint16_t *)&vq->avail->idx - vq->last_used_idx_res;
-}
-
-/**
- * Function to convert guest physical addresses to vhost virtual addresses.
- * This is used to convert guest virtio buffer addresses.
- */
-static inline uint64_t __attribute__((always_inline))
-gpa_to_vva(struct virtio_net *dev, uint64_t guest_pa)
-{
-	struct virtio_memory_regions *region;
-	uint32_t regionidx;
-	uint64_t vhost_va = 0;
-
-	for (regionidx = 0; regionidx < dev->mem->nregions; regionidx++) {
-		region = &dev->mem->regions[regionidx];
-		if ((guest_pa >= region->guest_phys_address) &&
-			(guest_pa <= region->guest_phys_address_end)) {
-			vhost_va = region->address_offset + guest_pa;
-			break;
-		}
-	}
-	return vhost_va;
-}
-
 
 /**
  *  Disable features in feature_mask. Returns 0 on success.
@@ -231,13 +86,16 @@ int rte_vhost_feature_enable(uint64_t feature_mask);
 /* Returns currently supported vhost features */
 uint64_t rte_vhost_feature_get(void);
 
-int rte_vhost_enable_guest_notification(struct virtio_net *dev, uint16_t queue_id, int enable);
+int rte_vhost_enable_guest_notification(int vid, uint16_t queue_id, int enable);
 
-/* Register vhost driver. dev_name could be different for multiple instance support. */
-int rte_vhost_driver_register(const char *dev_name);
+/**
+ * Register vhost driver. path could be different for multiple
+ * instance support.
+ */
+int rte_vhost_driver_register(const char *path, uint64_t flags);
 
 /* Unregister vhost driver. This is only meaningful to vhost user. */
-int rte_vhost_driver_unregister(const char *dev_name);
+int rte_vhost_driver_unregister(const char *path);
 
 /* Register callbacks. */
 int rte_vhost_driver_callback_register(struct virtio_net_device_ops const * const);
@@ -245,12 +103,65 @@ int rte_vhost_driver_callback_register(struct virtio_net_device_ops const * cons
 int rte_vhost_driver_session_start(void);
 
 /**
+ * Get the numa node from which the virtio net device's memory
+ * is allocated.
+ *
+ * @param vid
+ *  virtio-net device ID
+ *
+ * @return
+ *  The numa node, -1 on failure
+ */
+int rte_vhost_get_numa_node(int vid);
+
+/**
+ * Get the number of queues the device supports.
+ *
+ * @param vid
+ *  virtio-net device ID
+ *
+ * @return
+ *  The number of queues, 0 on failure
+ */
+uint32_t rte_vhost_get_queue_num(int vid);
+
+/**
+ * Get the virtio net device's ifname. For vhost-cuse, ifname is the
+ * path of the char device. For vhost-user, ifname is the vhost-user
+ * socket file path.
+ *
+ * @param vid
+ *  virtio-net device ID
+ * @param buf
+ *  The buffer to stored the queried ifname
+ * @param len
+ *  The length of buf
+ *
+ * @return
+ *  0 on success, -1 on failure
+ */
+int rte_vhost_get_ifname(int vid, char *buf, size_t len);
+
+/**
+ * Get how many avail entries are left in the queue
+ *
+ * @param vid
+ *  virtio-net device ID
+ * @param queue_id
+ *  virtio queue index
+ *
+ * @return
+ *  num of avail entires left
+ */
+uint16_t rte_vhost_avail_entries(int vid, uint16_t queue_id);
+
+/**
  * This function adds buffers to the virtio devices RX virtqueue. Buffers can
  * be received from the physical port or from another virtual device. A packet
  * count is returned to indicate the number of packets that were succesfully
  * added to the RX queue.
- * @param dev
- *  virtio-net device
+ * @param vid
+ *  virtio-net device ID
  * @param queue_id
  *  virtio queue index in mq case
  * @param pkts
@@ -260,14 +171,14 @@ int rte_vhost_driver_session_start(void);
  * @return
  *  num of packets enqueued
  */
-uint16_t rte_vhost_enqueue_burst(struct virtio_net *dev, uint16_t queue_id,
+uint16_t rte_vhost_enqueue_burst(int vid, uint16_t queue_id,
 	struct rte_mbuf **pkts, uint16_t count);
 
 /**
  * This function gets guest buffers from the virtio device TX virtqueue,
  * construct host mbufs, copies guest buffer content to host mbufs and
  * store them in pkts to be processed.
- * @param dev
+ * @param vid
  *  virtio-net device
  * @param queue_id
  *  virtio queue index in mq case
@@ -280,7 +191,7 @@ uint16_t rte_vhost_enqueue_burst(struct virtio_net *dev, uint16_t queue_id,
  * @return
  *  num of packets dequeued
  */
-uint16_t rte_vhost_dequeue_burst(struct virtio_net *dev, uint16_t queue_id,
+uint16_t rte_vhost_dequeue_burst(int vid, uint16_t queue_id,
 	struct rte_mempool *mbuf_pool, struct rte_mbuf **pkts, uint16_t count);
 
 #endif /* _VIRTIO_NET_H_ */

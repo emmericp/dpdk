@@ -96,22 +96,6 @@ rx_desc_to_ol_flags(struct rte_mbuf *m, const union fm10k_rx_desc *d)
 
 	if (d->w.pkt_info & FM10K_RXD_RSSTYPE_MASK)
 		m->ol_flags |= PKT_RX_RSS_HASH;
-
-	if (unlikely((d->d.staterr &
-		(FM10K_RXD_STATUS_IPCS | FM10K_RXD_STATUS_IPE)) ==
-		(FM10K_RXD_STATUS_IPCS | FM10K_RXD_STATUS_IPE)))
-		m->ol_flags |= PKT_RX_IP_CKSUM_BAD;
-
-	if (unlikely((d->d.staterr &
-		(FM10K_RXD_STATUS_L4CS | FM10K_RXD_STATUS_L4E)) ==
-		(FM10K_RXD_STATUS_L4CS | FM10K_RXD_STATUS_L4E)))
-		m->ol_flags |= PKT_RX_L4_CKSUM_BAD;
-
-	if (unlikely(d->d.staterr & FM10K_RXD_STATUS_HBO))
-		m->ol_flags |= PKT_RX_HBUF_OVERFLOW;
-
-	if (unlikely(d->d.staterr & FM10K_RXD_STATUS_RXE))
-		m->ol_flags |= PKT_RX_RECIP_ERR;
 }
 
 uint16_t
@@ -130,10 +114,10 @@ fm10k_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 
 	nb_pkts = RTE_MIN(nb_pkts, q->alloc_thresh);
 	for (count = 0; count < nb_pkts; ++count) {
+		if (!(q->hw_ring[next_dd].d.staterr & FM10K_RXD_STATUS_DD))
+			break;
 		mbuf = q->sw_ring[next_dd];
 		desc = q->hw_ring[next_dd];
-		if (!(desc.d.staterr & FM10K_RXD_STATUS_DD))
-			break;
 #ifdef RTE_LIBRTE_FM10K_DEBUG_RX
 		dump_rxd(&desc);
 #endif
@@ -244,10 +228,10 @@ fm10k_recv_scattered_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 
 	nb_seg = RTE_MIN(nb_pkts, q->alloc_thresh);
 	for (count = 0; count < nb_seg; count++) {
+		if (!(q->hw_ring[next_dd].d.staterr & FM10K_RXD_STATUS_DD))
+			break;
 		mbuf = q->sw_ring[next_dd];
 		desc = q->hw_ring[next_dd];
-		if (!(desc.d.staterr & FM10K_RXD_STATUS_DD))
-			break;
 #ifdef RTE_LIBRTE_FM10K_DEBUG_RX
 		dump_rxd(&desc);
 #endif

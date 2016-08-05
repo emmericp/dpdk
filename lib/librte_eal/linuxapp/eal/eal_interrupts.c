@@ -57,10 +57,8 @@
 #include <rte_lcore.h>
 #include <rte_atomic.h>
 #include <rte_branch_prediction.h>
-#include <rte_ring.h>
 #include <rte_debug.h>
 #include <rte_log.h>
-#include <rte_mempool.h>
 #include <rte_pci.h>
 #include <rte_malloc.h>
 #include <rte_errno.h>
@@ -889,7 +887,7 @@ rte_eal_intr_init(void)
 			"eal-intr-thread");
 		ret_1 = rte_thread_setname(intr_thread, thread_name);
 		if (ret_1 != 0)
-			RTE_LOG(ERR, EAL,
+			RTE_LOG(DEBUG, EAL,
 			"Failed to set thread name for interrupt handling\n");
 	}
 

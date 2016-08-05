@@ -38,10 +38,11 @@
 #include <rte_dev.h>
 #include <rte_malloc.h>
 #include <rte_cpuflags.h>
-#include <rte_kvargs.h>
 
 #include "rte_snow3g_pmd_private.h"
 
+#define SNOW3G_IV_LENGTH 16
+#define SNOW3G_DIGEST_LENGTH 4
 #define SNOW3G_MAX_BURST 8
 #define BYTE_LEN 8
 
@@ -59,7 +60,7 @@ create_unique_device_name(char *name, size_t size)
 	if (name == NULL)
 		return -EINVAL;
 
-	ret = snprintf(name, size, "%s_%u", CRYPTODEV_NAME_SNOW3G_PMD,
+	ret = snprintf(name, size, "%s_%u", RTE_STR(CRYPTODEV_NAME_SNOW3G_PMD),
 			unique_name_id++);
 	if (ret < 0)
 		return ret;
@@ -198,17 +199,9 @@ process_snow3g_cipher_op(struct rte_crypto_op **ops,
 
 	for (i = 0; i < num_ops; i++) {
 		/* Sanity checks. */
-		if (ops[i]->sym->cipher.iv.length != 16) {
+		if (unlikely(ops[i]->sym->cipher.iv.length != SNOW3G_IV_LENGTH)) {
 			ops[i]->status = RTE_CRYPTO_OP_STATUS_INVALID_ARGS;
 			SNOW3G_LOG_ERR("iv");
-			break;
-		}
-
-		if (((ops[i]->sym->cipher.data.length % BYTE_LEN) != 0)
-				|| ((ops[i]->sym->cipher.data.offset
-					% BYTE_LEN) != 0)) {
-			ops[i]->status = RTE_CRYPTO_OP_STATUS_INVALID_ARGS;
-			SNOW3G_LOG_ERR("Data Length or offset");
 			break;
 		}
 
@@ -231,6 +224,39 @@ process_snow3g_cipher_op(struct rte_crypto_op **ops,
 	return processed_ops;
 }
 
+/** Encrypt/decrypt mbuf (bit level function). */
+static uint8_t
+process_snow3g_cipher_op_bit(struct rte_crypto_op *op,
+		struct snow3g_session *session)
+{
+	uint8_t *src, *dst;
+	uint8_t *IV;
+	uint32_t length_in_bits, offset_in_bits;
+
+	/* Sanity checks. */
+	if (unlikely(op->sym->cipher.iv.length != SNOW3G_IV_LENGTH)) {
+		op->status = RTE_CRYPTO_OP_STATUS_INVALID_ARGS;
+		SNOW3G_LOG_ERR("iv");
+		return 0;
+	}
+
+	offset_in_bits = op->sym->cipher.data.offset;
+	src = rte_pktmbuf_mtod(op->sym->m_src, uint8_t *);
+	if (op->sym->m_dst == NULL) {
+		op->status = RTE_CRYPTO_OP_STATUS_INVALID_ARGS;
+		SNOW3G_LOG_ERR("bit-level in-place not supported\n");
+		return 0;
+	}
+	dst = rte_pktmbuf_mtod(op->sym->m_dst, uint8_t *);
+	IV = op->sym->cipher.iv.data;
+	length_in_bits = op->sym->cipher.data.length;
+
+	sso_snow3g_f8_1_buffer_bit(&session->pKeySched_cipher, IV,
+			src, dst, length_in_bits, offset_in_bits);
+
+	return 1;
+}
+
 /** Generate/verify hash from mbufs with same hash key. */
 static int
 process_snow3g_hash_op(struct rte_crypto_op **ops,
@@ -243,23 +269,22 @@ process_snow3g_hash_op(struct rte_crypto_op **ops,
 	uint32_t length_in_bits;
 
 	for (i = 0; i < num_ops; i++) {
-		if (ops[i]->sym->auth.aad.length != 16) {
+		if (unlikely(ops[i]->sym->auth.aad.length != SNOW3G_IV_LENGTH)) {
 			ops[i]->status = RTE_CRYPTO_OP_STATUS_INVALID_ARGS;
 			SNOW3G_LOG_ERR("aad");
 			break;
 		}
 
-		if (ops[i]->sym->auth.digest.length != 4) {
+		if (unlikely(ops[i]->sym->auth.digest.length != SNOW3G_DIGEST_LENGTH)) {
 			ops[i]->status = RTE_CRYPTO_OP_STATUS_INVALID_ARGS;
 			SNOW3G_LOG_ERR("digest");
 			break;
 		}
 
-		if (((ops[i]->sym->auth.data.length % BYTE_LEN) != 0)
-				|| ((ops[i]->sym->auth.data.offset
-					% BYTE_LEN) != 0)) {
+		/* Data must be byte aligned */
+		if ((ops[i]->sym->auth.data.offset % BYTE_LEN) != 0) {
 			ops[i]->status = RTE_CRYPTO_OP_STATUS_INVALID_ARGS;
-			SNOW3G_LOG_ERR("Data Length or offset");
+			SNOW3G_LOG_ERR("Offset");
 			break;
 		}
 
@@ -299,10 +324,11 @@ process_snow3g_hash_op(struct rte_crypto_op **ops,
 /** Process a batch of crypto ops which shares the same session. */
 static int
 process_ops(struct rte_crypto_op **ops, struct snow3g_session *session,
-		struct snow3g_qp *qp, uint8_t num_ops)
+		struct snow3g_qp *qp, uint8_t num_ops,
+		uint16_t *accumulated_enqueued_ops)
 {
 	unsigned i;
-	unsigned processed_ops;
+	unsigned enqueued_ops, processed_ops;
 
 	switch (session->op) {
 	case SNOW3G_OP_ONLY_CIPHER:
@@ -342,7 +368,63 @@ process_ops(struct rte_crypto_op **ops, struct snow3g_session *session,
 		}
 	}
 
-	return processed_ops;
+	enqueued_ops = rte_ring_enqueue_burst(qp->processed_ops,
+			(void **)ops, processed_ops);
+	qp->qp_stats.enqueued_count += enqueued_ops;
+	*accumulated_enqueued_ops += enqueued_ops;
+
+	return enqueued_ops;
+}
+
+/** Process a crypto op with length/offset in bits. */
+static int
+process_op_bit(struct rte_crypto_op *op, struct snow3g_session *session,
+		struct snow3g_qp *qp, uint16_t *accumulated_enqueued_ops)
+{
+	unsigned enqueued_op, processed_op;
+
+	switch (session->op) {
+	case SNOW3G_OP_ONLY_CIPHER:
+		processed_op = process_snow3g_cipher_op_bit(op,
+				session);
+		break;
+	case SNOW3G_OP_ONLY_AUTH:
+		processed_op = process_snow3g_hash_op(&op, session, 1);
+		break;
+	case SNOW3G_OP_CIPHER_AUTH:
+		processed_op = process_snow3g_cipher_op_bit(op, session);
+		if (processed_op == 1)
+			process_snow3g_hash_op(&op, session, 1);
+		break;
+	case SNOW3G_OP_AUTH_CIPHER:
+		processed_op = process_snow3g_hash_op(&op, session, 1);
+		if (processed_op == 1)
+			process_snow3g_cipher_op_bit(op, session);
+		break;
+	default:
+		/* Operation not supported. */
+		processed_op = 0;
+	}
+
+	/*
+	 * If there was no error/authentication failure,
+	 * change status to successful.
+	 */
+	if (op->status == RTE_CRYPTO_OP_STATUS_NOT_PROCESSED)
+		op->status = RTE_CRYPTO_OP_STATUS_SUCCESS;
+
+	/* Free session if a session-less crypto op. */
+	if (op->sym->sess_type == RTE_CRYPTO_SYM_OP_SESSIONLESS) {
+		rte_mempool_put(qp->sess_mp, op->sym->session);
+		op->sym->session = NULL;
+	}
+
+	enqueued_op = rte_ring_enqueue_burst(qp->processed_ops,
+			(void **)&op, processed_op);
+	qp->qp_stats.enqueued_count += enqueued_op;
+	*accumulated_enqueued_ops += enqueued_op;
+
+	return enqueued_op;
 }
 
 static uint16_t
@@ -354,7 +436,7 @@ snow3g_pmd_enqueue_burst(void *queue_pair, struct rte_crypto_op **ops,
 
 	struct snow3g_session *prev_sess = NULL, *curr_sess = NULL;
 	struct snow3g_qp *qp = queue_pair;
-	unsigned i, n;
+	unsigned i;
 	uint8_t burst_size = 0;
 	uint16_t enqueued_ops = 0;
 	uint8_t processed_ops;
@@ -370,8 +452,32 @@ snow3g_pmd_enqueue_burst(void *queue_pair, struct rte_crypto_op **ops,
 				curr_sess->op == SNOW3G_OP_NOT_SUPPORTED)) {
 			curr_c_op->status =
 					RTE_CRYPTO_OP_STATUS_INVALID_SESSION;
-			qp->qp_stats.enqueue_err_count += nb_ops - enqueued_ops;
-			return enqueued_ops;
+			break;
+		}
+
+		/* If length/offset is at bit-level, process this buffer alone. */
+		if (((curr_c_op->sym->cipher.data.length % BYTE_LEN) != 0)
+				|| ((curr_c_op->sym->cipher.data.offset
+					% BYTE_LEN) != 0)) {
+			/* Process the ops of the previous session. */
+			if (prev_sess != NULL) {
+				processed_ops = process_ops(c_ops, prev_sess,
+				qp, burst_size, &enqueued_ops);
+				if (processed_ops < burst_size) {
+					burst_size = 0;
+					break;
+				}
+
+				burst_size = 0;
+				prev_sess = NULL;
+			}
+
+			processed_ops = process_op_bit(curr_c_op, curr_sess,
+							qp, &enqueued_ops);
+			if (processed_ops != 1)
+				break;
+
+			continue;
 		}
 
 		/* Batch ops that share the same session. */
@@ -385,20 +491,14 @@ snow3g_pmd_enqueue_burst(void *queue_pair, struct rte_crypto_op **ops,
 			 * process them, and start a new batch.
 			 */
 			if (burst_size == SNOW3G_MAX_BURST) {
-				processed_ops = process_ops(c_ops,
-						prev_sess, qp, burst_size);
-				n = rte_ring_enqueue_burst(qp->processed_ops,
-						(void **)c_ops,
-						processed_ops);
-				qp->qp_stats.enqueued_count += n;
-				enqueued_ops += n;
-				if (n < burst_size) {
-					qp->qp_stats.enqueue_err_count +=
-							nb_ops - enqueued_ops;
-					return enqueued_ops;
+				processed_ops = process_ops(c_ops, prev_sess,
+						qp, burst_size, &enqueued_ops);
+				if (processed_ops < burst_size) {
+					burst_size = 0;
+					break;
 				}
-				burst_size = 0;
 
+				burst_size = 0;
 				prev_sess = NULL;
 			}
 		} else {
@@ -406,41 +506,27 @@ snow3g_pmd_enqueue_burst(void *queue_pair, struct rte_crypto_op **ops,
 			 * Different session, process the ops
 			 * of the previous session.
 			 */
-			processed_ops = process_ops(c_ops,
-					prev_sess, qp, burst_size);
-			n = rte_ring_enqueue_burst(qp->processed_ops,
-					(void **)c_ops,
-					processed_ops);
-			qp->qp_stats.enqueued_count += n;
-			enqueued_ops += n;
-			if (n < burst_size) {
-				qp->qp_stats.enqueue_err_count +=
-						nb_ops - enqueued_ops;
-				return enqueued_ops;
+			processed_ops = process_ops(c_ops, prev_sess,
+					qp, burst_size, &enqueued_ops);
+			if (processed_ops < burst_size) {
+				burst_size = 0;
+				break;
 			}
-			burst_size = 0;
 
+			burst_size = 0;
 			prev_sess = curr_sess;
+
 			c_ops[burst_size++] = curr_c_op;
 		}
 	}
 
 	if (burst_size != 0) {
 		/* Process the crypto ops of the last session. */
-		processed_ops = process_ops(c_ops,
-				prev_sess, qp, burst_size);
-		n = rte_ring_enqueue_burst(qp->processed_ops,
-				(void **)c_ops,
-				processed_ops);
-		qp->qp_stats.enqueued_count += n;
-		enqueued_ops += n;
-		if (n < burst_size) {
-			qp->qp_stats.enqueue_err_count +=
-					nb_ops - enqueued_ops;
-			return enqueued_ops;
-		}
+		processed_ops = process_ops(c_ops, prev_sess,
+				qp, burst_size, &enqueued_ops);
 	}
 
+	qp->qp_stats.enqueue_err_count += nb_ops - enqueued_ops;
 	return enqueued_ops;
 }
 
@@ -468,6 +554,16 @@ cryptodev_snow3g_create(const char *name,
 	struct rte_cryptodev *dev;
 	char crypto_dev_name[RTE_CRYPTODEV_NAME_MAX_LEN];
 	struct snow3g_private *internals;
+	uint64_t cpu_flags = 0;
+
+	/* Check CPU for supported vector instruction set */
+	if (rte_cpu_get_flag_enabled(RTE_CPUFLAG_SSE4_1))
+		cpu_flags |= RTE_CRYPTODEV_FF_CPU_SSE;
+	else {
+		SNOW3G_LOG_ERR("Vector instructions are not supported by CPU");
+		return -EFAULT;
+	}
+
 
 	/* Create a unique device name. */
 	if (create_unique_device_name(crypto_dev_name,
@@ -491,7 +587,8 @@ cryptodev_snow3g_create(const char *name,
 	dev->enqueue_burst = snow3g_pmd_enqueue_burst;
 
 	dev->feature_flags = RTE_CRYPTODEV_FF_SYMMETRIC_CRYPTO |
-			RTE_CRYPTODEV_FF_SYM_OPERATION_CHAINING;
+			RTE_CRYPTODEV_FF_SYM_OPERATION_CHAINING |
+			cpu_flags;
 
 	internals = dev->data->dev_private;
 
@@ -542,10 +639,13 @@ cryptodev_snow3g_uninit(const char *name)
 }
 
 static struct rte_driver cryptodev_snow3g_pmd_drv = {
-	.name = CRYPTODEV_NAME_SNOW3G_PMD,
 	.type = PMD_VDEV,
 	.init = cryptodev_snow3g_init,
 	.uninit = cryptodev_snow3g_uninit
 };
 
-PMD_REGISTER_DRIVER(cryptodev_snow3g_pmd_drv);
+PMD_REGISTER_DRIVER(cryptodev_snow3g_pmd_drv, CRYPTODEV_NAME_SNOW3G_PMD);
+DRIVER_REGISTER_PARAM_STRING(CRYPTODEV_NAME_SNOW3G_PMD,
+	"max_nb_queue_pairs=<int> "
+	"max_nb_sessions=<int> "
+	"socket_id=<int>");

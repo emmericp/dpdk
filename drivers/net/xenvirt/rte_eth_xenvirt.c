@@ -39,6 +39,9 @@
 #include <sys/mman.h>
 #include <errno.h>
 #include <sys/user.h>
+#ifndef PAGE_SIZE
+#define PAGE_SIZE sysconf(_SC_PAGE_SIZE)
+#endif
 #include <linux/binfmts.h>
 #include <xen/xen-compat.h>
 #if __XEN_LATEST_INTERFACE_VERSION__ < 0x00040200
@@ -79,18 +82,6 @@ static struct rte_eth_link pmd_link = {
 static void
 eth_xenvirt_free_queues(struct rte_eth_dev *dev);
 
-static inline struct rte_mbuf *
-rte_rxmbuf_alloc(struct rte_mempool *mp)
-{
-	struct rte_mbuf *m;
-
-	m = __rte_mbuf_raw_alloc(mp);
-	__rte_mbuf_sanity_check_raw(m, 0);
-
-	return m;
-}
-
-
 static uint16_t
 eth_xenvirt_rx(void *q, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 {
@@ -122,7 +113,7 @@ eth_xenvirt_rx(void *q, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 	}
 	/* allocate new mbuf for the used descriptor */
 	while (likely(!virtqueue_full(rxvq))) {
-		new_mbuf = rte_rxmbuf_alloc(rxvq->mpool);
+		new_mbuf = rte_mbuf_raw_alloc(rxvq->mpool);
 		if (unlikely(new_mbuf == NULL)) {
 			break;
 		}
@@ -293,7 +284,7 @@ eth_dev_start(struct rte_eth_dev *dev)
 
 	dev->data->dev_link.link_status = ETH_LINK_UP;
 	while (!virtqueue_full(rxvq)) {
-		m = rte_rxmbuf_alloc(rxvq->mpool);
+		m = rte_mbuf_raw_alloc(rxvq->mpool);
 		if (m == NULL)
 			break;
 		/* Enqueue allocated buffers. */
@@ -769,10 +760,11 @@ rte_pmd_xenvirt_devuninit(const char *name)
 }
 
 static struct rte_driver pmd_xenvirt_drv = {
-	.name = "eth_xenvirt",
 	.type = PMD_VDEV,
 	.init = rte_pmd_xenvirt_devinit,
 	.uninit = rte_pmd_xenvirt_devuninit,
 };
 
-PMD_REGISTER_DRIVER(pmd_xenvirt_drv);
+PMD_REGISTER_DRIVER(pmd_xenvirt_drv, eth_xenvirt);
+DRIVER_REGISTER_PARAM_STRING(eth_xenvirt,
+	"mac=<mac addr>");

@@ -62,10 +62,10 @@ typedef uint64_t dma_addr_t;
 #endif
 
 #define ena_atomic32_t rte_atomic32_t
-#define ena_mem_handle_t void *
+#define ena_mem_handle_t const struct rte_memzone *
 
-#define SZ_256 (256)
-#define SZ_4K (4096)
+#define SZ_256 (256U)
+#define SZ_4K (4096U)
 
 #define ENA_COM_OK	0
 #define ENA_COM_NO_MEM	-ENOMEM
@@ -75,6 +75,7 @@ typedef uint64_t dma_addr_t;
 #define ENA_COM_PERMISSION	-EPERM
 #define ENA_COM_TIMER_EXPIRED	-ETIME
 #define ENA_COM_FAULT	-EFAULT
+#define ENA_COM_TRY_AGAIN	-EAGAIN
 
 #define ____cacheline_aligned __rte_cache_aligned
 
@@ -83,6 +84,7 @@ typedef uint64_t dma_addr_t;
 #define ENA_MSLEEP(x) rte_delay_ms(x)
 #define ENA_UDELAY(x) rte_delay_us(x)
 
+#define ENA_TOUCH(x) ((void)(x))
 #define memcpy_toio memcpy
 #define wmb rte_wmb
 #define rmb rte_wmb
@@ -93,14 +95,18 @@ typedef uint64_t dma_addr_t;
 #define ENA_GET_SYSTEM_USECS()						\
 	(rte_get_timer_cycles() * US_PER_S / rte_get_timer_hz())
 
+#if RTE_LOG_LEVEL >= RTE_LOG_DEBUG
 #define ENA_ASSERT(cond, format, arg...)				\
 	do {								\
 		if (unlikely(!(cond))) {				\
-			printf("Assertion failed on %s:%s:%d: " format,	\
-			__FILE__, __func__, __LINE__, ##arg);		\
-			rte_exit(EXIT_FAILURE, "ASSERTION FAILED\n");	\
+			RTE_LOG(ERR, PMD, format, ##arg);		\
+			rte_panic("line %d\tassert \"" #cond "\""	\
+					"failed\n", __LINE__);		\
 		}							\
 	} while (0)
+#else
+#define ENA_ASSERT(cond, format, arg...) do {} while (0)
+#endif
 
 #define ENA_MAX32(x, y) RTE_MAX((x), (y))
 #define ENA_MAX16(x, y) RTE_MAX((x), (y))
@@ -178,17 +184,45 @@ typedef uint64_t dma_addr_t;
 	do {								\
 		const struct rte_memzone *mz;				\
 		char z_name[RTE_MEMZONE_NAMESIZE];			\
-		(void)dmadev; (void)handle;				\
+		ENA_TOUCH(dmadev); ENA_TOUCH(handle);			\
 		snprintf(z_name, sizeof(z_name),			\
 				"ena_alloc_%d", ena_alloc_cnt++);	\
 		mz = rte_memzone_reserve(z_name, size, SOCKET_ID_ANY, 0); \
+		memset(mz->addr, 0, size);				\
+		virt = mz->addr;					\
+		phys = mz->phys_addr;					\
+		handle = mz;						\
+	} while (0)
+#define ENA_MEM_FREE_COHERENT(dmadev, size, virt, phys, handle) 	\
+		({ ENA_TOUCH(size); ENA_TOUCH(phys);			\
+		   ENA_TOUCH(dmadev);					\
+		   rte_memzone_free(handle); })
+
+#define ENA_MEM_ALLOC_COHERENT_NODE(dmadev, size, virt, phys, node, dev_node) \
+	do {								\
+		const struct rte_memzone *mz;				\
+		char z_name[RTE_MEMZONE_NAMESIZE];			\
+		ENA_TOUCH(dmadev); ENA_TOUCH(dev_node);			\
+		snprintf(z_name, sizeof(z_name),			\
+				"ena_alloc_%d", ena_alloc_cnt++);	\
+		mz = rte_memzone_reserve(z_name, size, node, 0); \
 		virt = mz->addr;					\
 		phys = mz->phys_addr;					\
 	} while (0)
-#define ENA_MEM_FREE_COHERENT(dmadev, size, virt, phys, handle) 	\
-	({(void)size; rte_free(virt); })
+
+#define ENA_MEM_ALLOC_NODE(dmadev, size, virt, node, dev_node) \
+	do {								\
+		const struct rte_memzone *mz;				\
+		char z_name[RTE_MEMZONE_NAMESIZE];			\
+		ENA_TOUCH(dmadev); ENA_TOUCH(dev_node);			\
+		snprintf(z_name, sizeof(z_name),			\
+				"ena_alloc_%d", ena_alloc_cnt++);	\
+		mz = rte_memzone_reserve(z_name, size, node, 0); \
+		virt = mz->addr;					\
+	} while (0)
+
 #define ENA_MEM_ALLOC(dmadev, size) rte_zmalloc(NULL, size, 1)
-#define ENA_MEM_FREE(dmadev, ptr) ({(void)dmadev; rte_free(ptr); })
+#define ENA_MEM_FREE(dmadev, ptr) ({ENA_TOUCH(dmadev); rte_free(ptr); })
 
 static inline void writel(u32 value, volatile void  *addr)
 {

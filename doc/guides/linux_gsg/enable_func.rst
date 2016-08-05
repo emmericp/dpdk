@@ -183,23 +183,8 @@ High Performance of Small Packets on 40G NIC
 As there might be firmware fixes for performance enhancement in latest version
 of firmware image, the firmware update might be needed for getting high performance.
 Check with the local Intel's Network Division application engineers for firmware updates.
-The base driver to support firmware version of FVL3E will be integrated in the next
-DPDK release, so currently the validated firmware version is 4.2.6.
-
-Enabling Extended Tag
-~~~~~~~~~~~~~~~~~~~~~
-
-PCI configuration of ``extended_tag`` has big impact on small packet size
-performance of 40G ports. Enabling ``extended_tag`` can help 40G port to
-achieve the best performance, especially for small packet size.
-
-* Disabling/enabling ``extended_tag`` can be done in some BIOS implementations.
-
-* If BIOS does not enable it, and does not support changing it, tools
-  (e.g. ``setpci`` on Linux) can be used to enable or disable ``extended_tag``.
-
-* From release 16.04, ``extended_tag`` is enabled by default during port
-  initialization, users don't need to care about that anymore.
+Users should consult the release notes specific to a DPDK release to identify
+the validated firmware version for a NIC using the i40e driver.
 
 Use 16 Bytes RX Descriptor Size
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~

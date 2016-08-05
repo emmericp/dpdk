@@ -242,9 +242,6 @@ in the *DPDK Programmer's Guide* - Rel 1.4 EAR and the *DPDK API Reference*.
     if (nb_ports == 0)
         rte_exit(EXIT_FAILURE, "No Ethernet ports - bye\n");
 
-    if (nb_ports > RTE_MAX_ETHPORTS)
-        nb_ports = RTE_MAX_ETHPORTS;
-
     /* reset l2fwd_dst_ports */
 
     for (portid = 0; portid < RTE_MAX_ETHPORTS; portid++)
@@ -475,7 +472,7 @@ If the table is full, the whole packets table is transmitted using the l2fwd_sen
     l2fwd_send_packet(struct rte_mbuf *m, uint8_t port)
     {
         unsigned lcore_id, len;
-        struct lcore_queue_conf \*qconf;
+        struct lcore_queue_conf *qconf;
 
         lcore_id = rte_lcore_id();
         qconf = &lcore_queue_conf[lcore_id];

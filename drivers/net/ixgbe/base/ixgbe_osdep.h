@@ -96,6 +96,7 @@ enum {
 #define IXGBE_NTOHL(_i)	rte_be_to_cpu_32(_i)
 #define IXGBE_NTOHS(_i)	rte_be_to_cpu_16(_i)
 #define IXGBE_CPU_TO_LE32(_i)  rte_cpu_to_le_32(_i)
+#define IXGBE_LE32_TO_CPU(_i) rte_le_to_cpu_32(_i)
 #define IXGBE_LE32_TO_CPUS(_i) rte_le_to_cpu_32(_i)
 #define IXGBE_CPU_TO_BE16(_i)  rte_cpu_to_be_16(_i)
 #define IXGBE_CPU_TO_BE32(_i)  rte_cpu_to_be_32(_i)
@@ -107,7 +108,9 @@ typedef int16_t		s16;
 typedef uint32_t	u32;
 typedef int32_t		s32;
 typedef uint64_t	u64;
+#ifndef __cplusplus
 typedef int		bool;
+#endif
 
 #define mb()	rte_mb()
 #define wmb()	rte_wmb()

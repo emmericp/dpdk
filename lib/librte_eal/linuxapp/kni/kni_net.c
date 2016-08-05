@@ -38,6 +38,8 @@
 
 #include <exec-env/rte_kni_common.h>
 #include <kni_fifo.h>
+
+#include "compat.h"
 #include "kni_dev.h"
 
 #define WD_TIMEOUT 5 /*jiffies */
@@ -68,15 +70,6 @@ kni_net_open(struct net_device *dev)
 	int ret;
 	struct rte_kni_request req;
 	struct kni_dev *kni = netdev_priv(dev);
-
-	if (kni->lad_dev)
-		memcpy(dev->dev_addr, kni->lad_dev->dev_addr, ETH_ALEN);
-	else
-		/*
-		 * Generate random mac address. eth_random_addr() is the newer
-		 * version of generating mac address in linux kernel.
-		 */
-		random_ether_addr(dev->dev_addr);
 
 	netif_start_queue(dev);
 
@@ -156,7 +149,8 @@ kni_net_rx_normal(struct kni_dev *kni)
 	/* Transfer received packets to netif */
 	for (i = 0; i < num_rx; i++) {
 		kva = (void *)va[i] - kni->mbuf_va + kni->mbuf_kva;
-		len = kva->data_len;
+		len = kva->pkt_len;
+
 		data_kva = kva->buf_addr + kva->data_off - kni->mbuf_va
 				+ kni->mbuf_kva;
 
@@ -165,22 +159,41 @@ kni_net_rx_normal(struct kni_dev *kni)
 			KNI_ERR("Out of mem, dropping pkts\n");
 			/* Update statistics */
 			kni->stats.rx_dropped++;
+			continue;
 		}
-		else {
-			/* Align IP on 16B boundary */
-			skb_reserve(skb, 2);
+
+		/* Align IP on 16B boundary */
+		skb_reserve(skb, 2);
+
+		if (kva->nb_segs == 1) {
 			memcpy(skb_put(skb, len), data_kva, len);
-			skb->dev = dev;
-			skb->protocol = eth_type_trans(skb, dev);
-			skb->ip_summed = CHECKSUM_UNNECESSARY;
+		} else {
+			int nb_segs;
+			int kva_nb_segs = kva->nb_segs;
 
-			/* Call netif interface */
-			netif_rx_ni(skb);
+			for (nb_segs = 0; nb_segs < kva_nb_segs; nb_segs++) {
+				memcpy(skb_put(skb, kva->data_len),
+					data_kva, kva->data_len);
 
-			/* Update statistics */
-			kni->stats.rx_bytes += len;
-			kni->stats.rx_packets++;
+				if (!kva->next)
+					break;
+
+				kva = kva->next - kni->mbuf_va + kni->mbuf_kva;
+				data_kva = kva->buf_addr + kva->data_off
+					- kni->mbuf_va + kni->mbuf_kva;
+			}
 		}
+
+		skb->dev = dev;
+		skb->protocol = eth_type_trans(skb, dev);
+		skb->ip_summed = CHECKSUM_UNNECESSARY;
+
+		/* Call netif interface */
+		netif_rx_ni(skb);
+
+		/* Update statistics */
+		kni->stats.rx_bytes += len;
+		kni->stats.rx_packets++;
 	}
 
 	/* Burst enqueue mbufs into free_q */
@@ -317,7 +330,7 @@ kni_net_rx_lo_fifo_skb(struct kni_dev *kni)
 	/* Copy mbufs to sk buffer and then call tx interface */
 	for (i = 0; i < num; i++) {
 		kva = (void *)va[i] - kni->mbuf_va + kni->mbuf_kva;
-		len = kva->data_len;
+		len = kva->pkt_len;
 		data_kva = kva->buf_addr + kva->data_off - kni->mbuf_va +
 				kni->mbuf_kva;
 
@@ -338,20 +351,39 @@ kni_net_rx_lo_fifo_skb(struct kni_dev *kni)
 		if (skb == NULL) {
 			KNI_ERR("Out of mem, dropping pkts\n");
 			kni->stats.rx_dropped++;
+			continue;
 		}
-		else {
-			/* Align IP on 16B boundary */
-			skb_reserve(skb, 2);
+
+		/* Align IP on 16B boundary */
+		skb_reserve(skb, 2);
+
+		if (kva->nb_segs == 1) {
 			memcpy(skb_put(skb, len), data_kva, len);
-			skb->dev = dev;
-			skb->ip_summed = CHECKSUM_UNNECESSARY;
+		} else {
+			int nb_segs;
+			int kva_nb_segs = kva->nb_segs;
 
-			kni->stats.rx_bytes += len;
-			kni->stats.rx_packets++;
+			for (nb_segs = 0; nb_segs < kva_nb_segs; nb_segs++) {
+				memcpy(skb_put(skb, kva->data_len),
+					data_kva, kva->data_len);
 
-			/* call tx interface */
-			kni_net_tx(skb, dev);
+				if (!kva->next)
+					break;
+
+				kva = kva->next - kni->mbuf_va + kni->mbuf_kva;
+				data_kva = kva->buf_addr + kva->data_off
+					- kni->mbuf_va + kni->mbuf_kva;
+			}
 		}
+
+		skb->dev = dev;
+		skb->ip_summed = CHECKSUM_UNNECESSARY;
+
+		kni->stats.rx_bytes += len;
+		kni->stats.rx_packets++;
+
+		/* call tx interface */
+		kni_net_tx(skb, dev);
 	}
 
 	/* enqueue all the mbufs from rx_q into free_q */
@@ -396,7 +428,12 @@ kni_net_tx(struct sk_buff *skb, struct net_device *dev)
 	struct rte_kni_mbuf *pkt_kva = NULL;
 	struct rte_kni_mbuf *pkt_va = NULL;
 
-	dev->trans_start = jiffies; /* save the timestamp */
+	/* save the timestamp */
+#ifdef HAVE_TRANS_START_HELPER
+	netif_trans_update(dev);
+#else
+	dev->trans_start = jiffies;
+#endif
 
 	/* Check if the length of skb is less than mbuf size */
 	if (skb->len > kni->mbuf_size)
@@ -604,7 +641,7 @@ kni_net_header(struct sk_buff *skb, struct net_device *dev,
 /*
  * Re-fill the eth header
  */
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 1, 0))
+#ifdef HAVE_REBUILD_HEADER
 static int
 kni_net_rebuild_header(struct sk_buff *skb)
 {
@@ -634,7 +671,7 @@ static int kni_net_set_mac(struct net_device *netdev, void *p)
 	return 0;
 }
 
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 9, 0))
+#ifdef HAVE_CHANGE_CARRIER_CB
 static int kni_net_change_carrier(struct net_device *dev, bool new_carrier)
 {
 	if (new_carrier)
@@ -647,7 +684,7 @@ static int kni_net_change_carrier(struct net_device *dev, bool new_carrier)
 
 static const struct header_ops kni_net_header_ops = {
 	.create  = kni_net_header,
-#if (LINUX_VERSION_CODE < KERNEL_VERSION(4, 1, 0))
+#ifdef HAVE_REBUILD_HEADER
 	.rebuild = kni_net_rebuild_header,
 #endif /* < 4.1.0  */
 	.cache   = NULL,  /* disable caching */
@@ -664,7 +701,7 @@ static const struct net_device_ops kni_net_netdev_ops = {
 	.ndo_get_stats = kni_net_stats,
 	.ndo_tx_timeout = kni_net_tx_timeout,
 	.ndo_set_mac_address = kni_net_set_mac,
-#if (LINUX_VERSION_CODE >= KERNEL_VERSION(3, 9, 0))
+#ifdef HAVE_CHANGE_CARRIER_CB
 	.ndo_change_carrier = kni_net_change_carrier,
 #endif
 };

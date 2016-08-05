@@ -94,7 +94,9 @@
 		I40E_PRTQF_FLX_PIT_SOURCE_OFF_MASK) | \
 	(((fsize) << I40E_PRTQF_FLX_PIT_FSIZE_SHIFT) & \
 			I40E_PRTQF_FLX_PIT_FSIZE_MASK) | \
-	((((dst_offset) + I40E_FLX_OFFSET_IN_FIELD_VECTOR) << \
+	((((dst_offset) == NONUSE_FLX_PIT_DEST_OFF ? \
+			NONUSE_FLX_PIT_DEST_OFF : \
+			((dst_offset) + I40E_FLX_OFFSET_IN_FIELD_VECTOR)) << \
 			I40E_PRTQF_FLX_PIT_DEST_OFF_SHIFT) & \
 			I40E_PRTQF_FLX_PIT_DEST_OFF_MASK))
 
@@ -113,29 +115,11 @@
 
 #define I40E_FLEX_WORD_MASK(off) (0x80 >> (off))
 
-static int i40e_fdir_rx_queue_init(struct i40e_rx_queue *rxq);
-static int i40e_check_fdir_flex_conf(
-	const struct rte_eth_fdir_flex_conf *conf);
-static void i40e_set_flx_pld_cfg(struct i40e_pf *pf,
-			 const struct rte_eth_flex_payload_cfg *cfg);
-static void i40e_set_flex_mask_on_pctype(struct i40e_pf *pf,
-		enum i40e_filter_pctype pctype,
-		const struct rte_eth_fdir_flex_mask *mask_cfg);
-static int i40e_fdir_construct_pkt(struct i40e_pf *pf,
-				     const struct rte_eth_fdir_input *fdir_input,
-				     unsigned char *raw_pkt);
-static int i40e_add_del_fdir_filter(struct rte_eth_dev *dev,
-			    const struct rte_eth_fdir_filter *filter,
-			    bool add);
 static int i40e_fdir_filter_programming(struct i40e_pf *pf,
 			enum i40e_filter_pctype pctype,
 			const struct rte_eth_fdir_filter *filter,
 			bool add);
 static int i40e_fdir_flush(struct rte_eth_dev *dev);
-static void i40e_fdir_info_get(struct rte_eth_dev *dev,
-			   struct rte_eth_fdir_info *fdir);
-static void i40e_fdir_stats_get(struct rte_eth_dev *dev,
-			   struct rte_eth_fdir_stats *stat);
 
 static int
 i40e_fdir_rx_queue_init(struct i40e_rx_queue *rxq)
@@ -163,7 +147,7 @@ i40e_fdir_rx_queue_init(struct i40e_rx_queue *rxq)
 	rx_ctx.lrxqthresh = 2;
 	rx_ctx.crcstrip = 0;
 	rx_ctx.l2tsel = 1;
-	rx_ctx.showiv = 1;
+	rx_ctx.showiv = 0;
 	rx_ctx.prefena = 1;
 
 	err = i40e_clear_lan_rx_queue_context(hw, rxq->reg_idx);
@@ -1159,7 +1143,8 @@ i40e_fdir_filter_programming(struct i40e_pf *pf,
 	fdirdp->dtype_cmd_cntindex |=
 			rte_cpu_to_le_32(I40E_TXD_FLTR_QW1_CNT_ENA_MASK);
 	fdirdp->dtype_cmd_cntindex |=
-			rte_cpu_to_le_32((pf->fdir.match_counter_index <<
+			rte_cpu_to_le_32(
+			((uint32_t)pf->fdir.match_counter_index <<
 			I40E_TXD_FLTR_QW1_CNTINDEX_SHIFT) &
 			I40E_TXD_FLTR_QW1_CNTINDEX_MASK);
 

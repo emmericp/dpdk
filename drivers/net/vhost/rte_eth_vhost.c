@@ -50,12 +50,14 @@
 
 #define ETH_VHOST_IFACE_ARG		"iface"
 #define ETH_VHOST_QUEUES_ARG		"queues"
+#define ETH_VHOST_CLIENT_ARG		"client"
 
 static const char *drivername = "VHOST PMD";
 
 static const char *valid_arguments[] = {
 	ETH_VHOST_IFACE_ARG,
 	ETH_VHOST_QUEUES_ARG,
+	ETH_VHOST_CLIENT_ARG,
 	NULL
 };
 
@@ -71,9 +73,9 @@ static struct ether_addr base_eth_addr = {
 };
 
 struct vhost_queue {
+	int vid;
 	rte_atomic32_t allow_queuing;
 	rte_atomic32_t while_queuing;
-	struct virtio_net *device;
 	struct pmd_internal *internal;
 	struct rte_mempool *mb_pool;
 	uint8_t port;
@@ -89,6 +91,7 @@ struct pmd_internal {
 	char *dev_name;
 	char *iface_name;
 	uint16_t max_queues;
+	uint64_t flags;
 
 	volatile uint16_t once;
 };
@@ -139,7 +142,7 @@ eth_vhost_rx(void *q, struct rte_mbuf **bufs, uint16_t nb_bufs)
 		goto out;
 
 	/* Dequeue packets from guest TX queue */
-	nb_rx = rte_vhost_dequeue_burst(r->device,
+	nb_rx = rte_vhost_dequeue_burst(r->vid,
 			r->virtqueue_id, r->mb_pool, bufs, nb_bufs);
 
 	r->rx_pkts += nb_rx;
@@ -170,7 +173,7 @@ eth_vhost_tx(void *q, struct rte_mbuf **bufs, uint16_t nb_bufs)
 		goto out;
 
 	/* Enqueue packets to guest RX queue */
-	nb_tx = rte_vhost_enqueue_burst(r->device,
+	nb_tx = rte_vhost_enqueue_burst(r->vid,
 			r->virtqueue_id, bufs, nb_bufs);
 
 	r->tx_pkts += nb_tx;
@@ -222,25 +225,22 @@ find_internal_resource(char *ifname)
 }
 
 static int
-new_device(struct virtio_net *dev)
+new_device(int vid)
 {
 	struct rte_eth_dev *eth_dev;
 	struct internal_list *list;
 	struct pmd_internal *internal;
 	struct vhost_queue *vq;
 	unsigned i;
+	char ifname[PATH_MAX];
 #ifdef RTE_LIBRTE_VHOST_NUMA
-	int newnode, ret;
+	int newnode;
 #endif
 
-	if (dev == NULL) {
-		RTE_LOG(INFO, PMD, "Invalid argument\n");
-		return -1;
-	}
-
-	list = find_internal_resource(dev->ifname);
+	rte_vhost_get_ifname(vid, ifname, sizeof(ifname));
+	list = find_internal_resource(ifname);
 	if (list == NULL) {
-		RTE_LOG(INFO, PMD, "Invalid device name\n");
+		RTE_LOG(INFO, PMD, "Invalid device name: %s\n", ifname);
 		return -1;
 	}
 
@@ -248,21 +248,16 @@ new_device(struct virtio_net *dev)
 	internal = eth_dev->data->dev_private;
 
 #ifdef RTE_LIBRTE_VHOST_NUMA
-	ret  = get_mempolicy(&newnode, NULL, 0, dev,
-			MPOL_F_NODE | MPOL_F_ADDR);
-	if (ret < 0) {
-		RTE_LOG(ERR, PMD, "Unknown numa node\n");
-		return -1;
-	}
-
-	eth_dev->data->numa_node = newnode;
+	newnode = rte_vhost_get_numa_node(vid);
+	if (newnode >= 0)
+		eth_dev->data->numa_node = newnode;
 #endif
 
 	for (i = 0; i < eth_dev->data->nb_rx_queues; i++) {
 		vq = eth_dev->data->rx_queues[i];
 		if (vq == NULL)
 			continue;
-		vq->device = dev;
+		vq->vid = vid;
 		vq->internal = internal;
 		vq->port = eth_dev->data->port_id;
 	}
@@ -270,16 +265,14 @@ new_device(struct virtio_net *dev)
 		vq = eth_dev->data->tx_queues[i];
 		if (vq == NULL)
 			continue;
-		vq->device = dev;
+		vq->vid = vid;
 		vq->internal = internal;
 		vq->port = eth_dev->data->port_id;
 	}
 
-	for (i = 0; i < dev->virt_qp_nb * VIRTIO_QNUM; i++)
-		rte_vhost_enable_guest_notification(dev, i, 0);
+	for (i = 0; i < rte_vhost_get_queue_num(vid) * VIRTIO_QNUM; i++)
+		rte_vhost_enable_guest_notification(vid, i, 0);
 
-	dev->flags |= VIRTIO_DEV_RUNNING;
-	dev->priv = eth_dev;
 	eth_dev->data->dev_link.link_status = ETH_LINK_UP;
 
 	for (i = 0; i < eth_dev->data->nb_rx_queues; i++) {
@@ -303,22 +296,22 @@ new_device(struct virtio_net *dev)
 }
 
 static void
-destroy_device(volatile struct virtio_net *dev)
+destroy_device(int vid)
 {
 	struct rte_eth_dev *eth_dev;
 	struct vhost_queue *vq;
+	struct internal_list *list;
+	char ifname[PATH_MAX];
 	unsigned i;
+	struct rte_vhost_vring_state *state;
 
-	if (dev == NULL) {
-		RTE_LOG(INFO, PMD, "Invalid argument\n");
+	rte_vhost_get_ifname(vid, ifname, sizeof(ifname));
+	list = find_internal_resource(ifname);
+	if (list == NULL) {
+		RTE_LOG(ERR, PMD, "Invalid interface name: %s\n", ifname);
 		return;
 	}
-
-	eth_dev = (struct rte_eth_dev *)dev->priv;
-	if (eth_dev == NULL) {
-		RTE_LOG(INFO, PMD, "Failed to find a ethdev\n");
-		return;
-	}
+	eth_dev = list->eth_dev;
 
 	/* Wait until rx/tx_pkt_burst stops accessing vhost device */
 	for (i = 0; i < eth_dev->data->nb_rx_queues; i++) {
@@ -340,21 +333,27 @@ destroy_device(volatile struct virtio_net *dev)
 
 	eth_dev->data->dev_link.link_status = ETH_LINK_DOWN;
 
-	dev->priv = NULL;
-	dev->flags &= ~VIRTIO_DEV_RUNNING;
-
 	for (i = 0; i < eth_dev->data->nb_rx_queues; i++) {
 		vq = eth_dev->data->rx_queues[i];
 		if (vq == NULL)
 			continue;
-		vq->device = NULL;
+		vq->vid = -1;
 	}
 	for (i = 0; i < eth_dev->data->nb_tx_queues; i++) {
 		vq = eth_dev->data->tx_queues[i];
 		if (vq == NULL)
 			continue;
-		vq->device = NULL;
+		vq->vid = -1;
 	}
+
+	state = vring_states[eth_dev->data->port_id];
+	rte_spinlock_lock(&state->lock);
+	for (i = 0; i <= state->max_vring; i++) {
+		state->cur[i] = false;
+		state->seen[i] = false;
+	}
+	state->max_vring = 0;
+	rte_spinlock_unlock(&state->lock);
 
 	RTE_LOG(INFO, PMD, "Connection closed\n");
 
@@ -362,20 +361,17 @@ destroy_device(volatile struct virtio_net *dev)
 }
 
 static int
-vring_state_changed(struct virtio_net *dev, uint16_t vring, int enable)
+vring_state_changed(int vid, uint16_t vring, int enable)
 {
 	struct rte_vhost_vring_state *state;
 	struct rte_eth_dev *eth_dev;
 	struct internal_list *list;
+	char ifname[PATH_MAX];
 
-	if (dev == NULL) {
-		RTE_LOG(ERR, PMD, "Invalid argument\n");
-		return -1;
-	}
-
-	list = find_internal_resource(dev->ifname);
+	rte_vhost_get_ifname(vid, ifname, sizeof(ifname));
+	list = find_internal_resource(ifname);
 	if (list == NULL) {
-		RTE_LOG(ERR, PMD, "Invalid interface name: %s\n", dev->ifname);
+		RTE_LOG(ERR, PMD, "Invalid interface name: %s\n", ifname);
 		return -1;
 	}
 
@@ -484,7 +480,8 @@ eth_dev_start(struct rte_eth_dev *dev)
 	int ret = 0;
 
 	if (rte_atomic16_cmpset(&internal->once, 0, 1)) {
-		ret = rte_vhost_driver_register(internal->iface_name);
+		ret = rte_vhost_driver_register(internal->iface_name,
+						internal->flags);
 		if (ret)
 			return ret;
 	}
@@ -607,7 +604,7 @@ eth_stats_get(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 
 	stats->ipackets = rx_total;
 	stats->opackets = tx_total;
-	stats->imissed = tx_missed_total;
+	stats->oerrors = tx_missed_total;
 	stats->ibytes = rx_total_bytes;
 	stats->obytes = tx_total_bytes;
 }
@@ -689,7 +686,7 @@ static const struct eth_dev_ops ops = {
 
 static int
 eth_dev_vhost_create(const char *name, char *iface_name, int16_t queues,
-		     const unsigned numa_node)
+		     const unsigned numa_node, uint64_t flags)
 {
 	struct rte_eth_dev_data *data = NULL;
 	struct pmd_internal *internal = NULL;
@@ -746,6 +743,7 @@ eth_dev_vhost_create(const char *name, char *iface_name, int16_t queues,
 	internal->iface_name = strdup(iface_name);
 	if (internal->iface_name == NULL)
 		goto error;
+	internal->flags = flags;
 
 	list->eth_dev = eth_dev;
 	pthread_mutex_lock(&internal_list_lock);
@@ -810,18 +808,15 @@ open_iface(const char *key __rte_unused, const char *value, void *extra_args)
 }
 
 static inline int
-open_queues(const char *key __rte_unused, const char *value, void *extra_args)
+open_int(const char *key __rte_unused, const char *value, void *extra_args)
 {
-	uint16_t *q = extra_args;
+	uint16_t *n = extra_args;
 
 	if (value == NULL || extra_args == NULL)
 		return -EINVAL;
 
-	*q = (uint16_t)strtoul(value, NULL, 0);
-	if (*q == USHRT_MAX && errno == ERANGE)
-		return -1;
-
-	if (*q > RTE_MAX_QUEUES_PER_PORT)
+	*n = (uint16_t)strtoul(value, NULL, 0);
+	if (*n == USHRT_MAX && errno == ERANGE)
 		return -1;
 
 	return 0;
@@ -834,6 +829,8 @@ rte_pmd_vhost_devinit(const char *name, const char *params)
 	int ret = 0;
 	char *iface_name;
 	uint16_t queues;
+	uint64_t flags = 0;
+	int client_mode = 0;
 
 	RTE_LOG(INFO, PMD, "Initializing pmd_vhost for %s\n", name);
 
@@ -853,14 +850,24 @@ rte_pmd_vhost_devinit(const char *name, const char *params)
 
 	if (rte_kvargs_count(kvlist, ETH_VHOST_QUEUES_ARG) == 1) {
 		ret = rte_kvargs_process(kvlist, ETH_VHOST_QUEUES_ARG,
-					 &open_queues, &queues);
-		if (ret < 0)
+					 &open_int, &queues);
+		if (ret < 0 || queues > RTE_MAX_QUEUES_PER_PORT)
 			goto out_free;
 
 	} else
 		queues = 1;
 
-	eth_dev_vhost_create(name, iface_name, queues, rte_socket_id());
+	if (rte_kvargs_count(kvlist, ETH_VHOST_CLIENT_ARG) == 1) {
+		ret = rte_kvargs_process(kvlist, ETH_VHOST_CLIENT_ARG,
+					 &open_int, &client_mode);
+		if (ret < 0)
+			goto out_free;
+
+		if (client_mode)
+			flags |= RTE_VHOST_USER_CLIENT;
+	}
+
+	eth_dev_vhost_create(name, iface_name, queues, rte_socket_id(), flags);
 
 out_free:
 	rte_kvargs_free(kvlist);
@@ -918,10 +925,12 @@ rte_pmd_vhost_devuninit(const char *name)
 }
 
 static struct rte_driver pmd_vhost_drv = {
-	.name = "eth_vhost",
 	.type = PMD_VDEV,
 	.init = rte_pmd_vhost_devinit,
 	.uninit = rte_pmd_vhost_devuninit,
 };
 
-PMD_REGISTER_DRIVER(pmd_vhost_drv);
+PMD_REGISTER_DRIVER(pmd_vhost_drv, eth_vhost);
+DRIVER_REGISTER_PARAM_STRING(eth_vhost,
+	"iface=<ifc> "
+	"queues=<int>");

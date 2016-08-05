@@ -148,9 +148,13 @@ int enic_fdir_add_fltr(struct enic *enic, struct rte_eth_fdir_filter *params)
 		enic->fdir.nodes[pos] = NULL;
 		if (unlikely(key->rq_index == queue)) {
 			/* Nothing to be done */
-			pos = rte_hash_add_key(enic->fdir.hash, params);
-			enic->fdir.nodes[pos] = key;
 			enic->fdir.stats.f_add++;
+			pos = rte_hash_add_key(enic->fdir.hash, params);
+			if (pos < 0) {
+				dev_err(enic, "Add hash key failed\n");
+				return pos;
+			}
+			enic->fdir.nodes[pos] = key;
 			dev_warning(enic,
 				"FDIR rule is already present\n");
 			return 0;
@@ -213,6 +217,12 @@ int enic_fdir_add_fltr(struct enic *enic, struct rte_eth_fdir_filter *params)
 	}
 
 	pos = rte_hash_add_key(enic->fdir.hash, params);
+	if (pos < 0) {
+		enic->fdir.stats.f_add++;
+		dev_err(enic, "Add hash key failed\n");
+		return pos;
+	}
+
 	enic->fdir.nodes[pos] = key;
 	return 0;
 }
@@ -239,15 +249,16 @@ void enic_clsf_destroy(struct enic *enic)
 
 int enic_clsf_init(struct enic *enic)
 {
+	char clsf_name[RTE_HASH_NAMESIZE];
 	struct rte_hash_parameters hash_params = {
-		.name = "enicpmd_clsf_hash",
+		.name = clsf_name,
 		.entries = ENICPMD_CLSF_HASH_ENTRIES,
 		.key_len = sizeof(struct rte_eth_fdir_filter),
 		.hash_func = DEFAULT_HASH_FUNC,
 		.hash_func_init_val = 0,
 		.socket_id = SOCKET_ID_ANY,
 	};
-
+	snprintf(clsf_name, RTE_HASH_NAMESIZE, "enic_clsf_%s", enic->bdf_name);
 	enic->fdir.hash = rte_hash_create(&hash_params);
 	memset(&enic->fdir.stats, 0, sizeof(enic->fdir.stats));
 	enic->fdir.stats.free = ENICPMD_FDIR_MAX;

@@ -41,7 +41,7 @@
 
 #include "test.h"
 
-#define TEST_INTERRUPT_CHECK_INTERVAL 1000 /* ms */
+#define TEST_INTERRUPT_CHECK_INTERVAL 100 /* ms */
 
 /* predefined interrupt handle types */
 enum test_interrupt_handle_type {
@@ -372,7 +372,7 @@ test_interrupt_full_path_check(enum test_interrupt_handle_type intr_type)
 	if (test_interrupt_trigger_interrupt() < 0)
 		return -1;
 
-	/* check flag in 3 seconds */
+	/* check flag */
 	for (count = 0; flag == 0 && count < 3; count++)
 		rte_delay_ms(TEST_INTERRUPT_CHECK_INTERVAL);
 
@@ -548,8 +548,4 @@ out:
 	return ret;
 }
 
-static struct test_command interrupt_cmd = {
-	.command = "interrupt_autotest",
-	.callback = test_interrupt,
-};
-REGISTER_TEST_COMMAND(interrupt_cmd);
+REGISTER_TEST_COMMAND(interrupt_autotest, test_interrupt);

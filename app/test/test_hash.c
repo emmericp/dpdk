@@ -176,7 +176,7 @@ static struct rte_hash_parameters ut_params = {
 	.socket_id = 0,
 };
 
-#define CRC32_ITERATIONS (1U << 20)
+#define CRC32_ITERATIONS (1U << 10)
 #define CRC32_DWORDS (1U << 6)
 /*
  * Test if all CRC32 implementations yield the same hash value
@@ -421,6 +421,46 @@ static int test_add_update_delete(void)
 }
 
 /*
+ * Sequence of operations for retrieving a key with its position
+ *
+ *  - create table
+ *  - add key
+ *  - get the key with its position: hit
+ *  - delete key
+ *  - try to get the deleted key: miss
+ *
+ */
+static int test_hash_get_key_with_position(void)
+{
+	struct rte_hash *handle = NULL;
+	int pos, expectedPos, result;
+	void *key;
+
+	ut_params.name = "hash_get_key_w_pos";
+	handle = rte_hash_create(&ut_params);
+	RETURN_IF_ERROR(handle == NULL, "hash creation failed");
+
+	pos = rte_hash_add_key(handle, &keys[0]);
+	print_key_info("Add", &keys[0], pos);
+	RETURN_IF_ERROR(pos < 0, "failed to add key (pos0=%d)", pos);
+	expectedPos = pos;
+
+	result = rte_hash_get_key_with_position(handle, pos, &key);
+	RETURN_IF_ERROR(result != 0, "error retrieving a key");
+
+	pos = rte_hash_del_key(handle, &keys[0]);
+	print_key_info("Del", &keys[0], pos);
+	RETURN_IF_ERROR(pos != expectedPos,
+			"failed to delete key (pos0=%d)", pos);
+
+	result = rte_hash_get_key_with_position(handle, pos, &key);
+	RETURN_IF_ERROR(result != -ENOENT, "non valid key retrieved");
+
+	rte_hash_free(handle);
+	return 0;
+}
+
+/*
  * Sequence of operations for find existing hash table
  *
  *  - create table
@@ -486,7 +526,7 @@ static int test_five_keys(void)
 	for(i = 0; i < 5; i++)
 		key_array[i] = &keys[i];
 
-	ret = rte_hash_lookup_multi(handle, &key_array[0], 5, (int32_t *)pos);
+	ret = rte_hash_lookup_bulk(handle, &key_array[0], 5, (int32_t *)pos);
 	if(ret == 0)
 		for(i = 0; i < 5; i++) {
 			print_key_info("Lkp", key_array[i], pos[i]);
@@ -527,7 +567,7 @@ static int test_five_keys(void)
 	}
 
 	/* Lookup multi */
-	ret = rte_hash_lookup_multi(handle, &key_array[0], 5, (int32_t *)pos);
+	ret = rte_hash_lookup_bulk(handle, &key_array[0], 5, (int32_t *)pos);
 	if (ret == 0)
 		for (i = 0; i < 5; i++) {
 			print_key_info("Lkp", key_array[i], pos[i]);
@@ -1081,7 +1121,7 @@ test_hash_creation_with_good_parameters(void)
 	return 0;
 }
 
-#define ITERATIONS 50
+#define ITERATIONS 3
 /*
  * Test to see the average table utilization (entries added/max entries)
  * before hitting a random entry that cannot be added
@@ -1098,7 +1138,7 @@ static int test_average_table_utilization(void)
 	       "\n  before adding elements begins to fail\n");
 	printf("Measuring performance, please wait");
 	fflush(stdout);
-	ut_params.entries = 1 << 20;
+	ut_params.entries = 1 << 16;
 	ut_params.name = "test_average_utilization";
 	ut_params.hash_func = rte_jhash;
 	handle = rte_hash_create(&ut_params);
@@ -1138,7 +1178,7 @@ static int test_average_table_utilization(void)
 	return 0;
 }
 
-#define NUM_ENTRIES 1024
+#define NUM_ENTRIES 256
 static int test_hash_iteration(void)
 {
 	struct rte_hash *handle;
@@ -1442,6 +1482,8 @@ test_hash(void)
 		return -1;
 	if (test_hash_add_delete_jhash_3word() < 0)
 		return -1;
+	if (test_hash_get_key_with_position() < 0)
+		return -1;
 	if (test_hash_find_existing() < 0)
 		return -1;
 	if (test_add_update_delete() < 0)
@@ -1472,8 +1514,4 @@ test_hash(void)
 	return 0;
 }
 
-static struct test_command hash_cmd = {
-	.command = "hash_autotest",
-	.callback = test_hash,
-};
-REGISTER_TEST_COMMAND(hash_cmd);
+REGISTER_TEST_COMMAND(hash_autotest, test_hash);

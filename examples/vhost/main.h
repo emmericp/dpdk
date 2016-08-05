@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
+ *   Copyright(c) 2010-2016 Intel Corporation. All rights reserved.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -34,48 +34,23 @@
 #ifndef _MAIN_H_
 #define _MAIN_H_
 
-//#define DEBUG
-
-#ifdef DEBUG
-#define LOG_LEVEL RTE_LOG_DEBUG
-#define LOG_DEBUG(log_type, fmt, args...) do {	\
-	RTE_LOG(DEBUG, log_type, fmt, ##args);		\
-} while (0)
-#else
-#define LOG_LEVEL RTE_LOG_INFO
-#define LOG_DEBUG(log_type, fmt, args...) do{} while(0)
-#endif
+#include <sys/queue.h>
 
 /* Macros for printing using RTE_LOG */
 #define RTE_LOGTYPE_VHOST_CONFIG RTE_LOGTYPE_USER1
 #define RTE_LOGTYPE_VHOST_DATA   RTE_LOGTYPE_USER2
 #define RTE_LOGTYPE_VHOST_PORT   RTE_LOGTYPE_USER3
 
-/**
- * Information relating to memory regions including offsets to
- * addresses in host physical space.
- */
-struct virtio_memory_regions_hpa {
-	/**< Base guest physical address of region. */
-	uint64_t    guest_phys_address;
-	/**< End guest physical address of region. */
-	uint64_t    guest_phys_address_end;
-	/**< Size of region. */
-	uint64_t    memory_size;
-	/**< Offset of region for gpa to hpa translation. */
-	uint64_t    host_phys_addr_offset;
+struct device_statistics {
+	uint64_t	tx;
+	uint64_t	tx_total;
+	rte_atomic64_t	rx_atomic;
+	rte_atomic64_t	rx_total_atomic;
 };
 
-/*
- * Device linked list structure for data path.
- */
 struct vhost_dev {
-	/**< Pointer to device created by vhost lib. */
-	struct virtio_net      *dev;
 	/**< Number of memory regions for gpa to hpa translation. */
 	uint32_t nregions_hpa;
-	/**< Memory region information for gpa to hpa translation. */
-	struct virtio_memory_regions_hpa *regions_hpa;
 	/**< Device MAC address (Obtained on first TX packet). */
 	struct ether_addr mac_address;
 	/**< RX VMDQ queue number. */
@@ -88,28 +63,29 @@ struct vhost_dev {
 	volatile uint8_t ready;
 	/**< Device is marked for removal from the data core. */
 	volatile uint8_t remove;
+
+	int vid;
+	struct device_statistics stats;
+	TAILQ_ENTRY(vhost_dev) global_vdev_entry;
+	TAILQ_ENTRY(vhost_dev) lcore_vdev_entry;
 } __rte_cache_aligned;
 
-struct virtio_net_data_ll
-{
-	struct vhost_dev		*vdev;	/* Pointer to device created by configuration core. */
-	struct virtio_net_data_ll	*next;  /* Pointer to next device in linked list. */
-};
+TAILQ_HEAD(vhost_dev_tailq_list, vhost_dev);
+
+
+#define REQUEST_DEV_REMOVAL	1
+#define ACK_DEV_REMOVAL		0
 
 /*
  * Structure containing data core specific information.
  */
-struct lcore_ll_info
-{
-	struct virtio_net_data_ll	*ll_root_free; 		/* Pointer to head in free linked list. */
-	struct virtio_net_data_ll	*ll_root_used;		/* Pointer to head of used linked list. */
-	uint32_t 					device_num;			/* Number of devices on lcore. */
-	volatile uint8_t			dev_removal_flag;	/* Flag to synchronize device removal. */
-};
+struct lcore_info {
+	uint32_t		device_num;
 
-struct lcore_info
-{
-	struct lcore_ll_info	*lcore_ll;	/* Pointer to data core specific lcore_ll_info struct */
+	/* Flag to synchronize device removal. */
+	volatile uint8_t	dev_removal_flag;
+
+	struct vhost_dev_tailq_list vdev_list;
 };
 
 #endif /* _MAIN_H_ */

@@ -72,6 +72,9 @@
 #include <rte_string_fns.h>
 #include <rte_acl.h>
 
+#if RTE_LOG_LEVEL >= RTE_LOG_DEBUG
+#define L3FWDACL_DEBUG
+#endif
 #define DO_RFC_1812_CHECKS
 
 #define RTE_LOGTYPE_L3FWD RTE_LOGTYPE_USER1
@@ -1914,8 +1917,6 @@ main(int argc, char **argv)
 		rte_exit(EXIT_FAILURE, "init_lcore_rx_queues failed\n");
 
 	nb_ports = rte_eth_dev_count();
-	if (nb_ports > RTE_MAX_ETHPORTS)
-		nb_ports = RTE_MAX_ETHPORTS;
 
 	if (check_port_config(nb_ports) < 0)
 		rte_exit(EXIT_FAILURE, "check_port_config failed\n");

@@ -811,9 +811,6 @@ main(int argc, char **argv)
 	if (nb_ports == 0)
 		rte_exit(EXIT_FAILURE, "No Ethernet ports - bye\n");
 
-	if (nb_ports > RTE_MAX_ETHPORTS)
-		nb_ports = RTE_MAX_ETHPORTS;
-
 	/* reset l2fwd_dst_ports */
 	for (portid = 0; portid < RTE_MAX_ETHPORTS; portid++)
 		l2fwd_dst_ports[portid] = 0;
@@ -990,7 +987,7 @@ main(int argc, char **argv)
 			struct rte_jobstats *job = &qconf->port_fwd_jobs[i];
 
 			portid = qconf->rx_port_list[i];
-			printf("Setting forward jon for port %u\n", portid);
+			printf("Setting forward job for port %u\n", portid);
 
 			snprintf(name, RTE_DIM(name), "port %u fwd", portid);
 			/* Setup forward job.

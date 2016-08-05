@@ -60,6 +60,100 @@
 #define RTE_VFIO_NOIOMMU VFIO_NOIOMMU_IOMMU
 #endif
 
+#define VFIO_MAX_GROUPS 64
+
+/*
+ * Function prototypes for VFIO multiprocess sync functions
+ */
+int vfio_mp_sync_send_request(int socket, int req);
+int vfio_mp_sync_receive_request(int socket);
+int vfio_mp_sync_send_fd(int socket, int fd);
+int vfio_mp_sync_receive_fd(int socket);
+int vfio_mp_sync_connect_to_primary(void);
+
+/*
+ * we don't need to store device fd's anywhere since they can be obtained from
+ * the group fd via an ioctl() call.
+ */
+struct vfio_group {
+	int group_no;
+	int fd;
+};
+
+struct vfio_config {
+	int vfio_enabled;
+	int vfio_container_fd;
+	int vfio_container_has_dma;
+	int vfio_group_idx;
+	struct vfio_group vfio_groups[VFIO_MAX_GROUPS];
+};
+
+#define VFIO_DIR "/dev/vfio"
+#define VFIO_CONTAINER_PATH "/dev/vfio/vfio"
+#define VFIO_GROUP_FMT "/dev/vfio/%u"
+#define VFIO_NOIOMMU_GROUP_FMT "/dev/vfio/noiommu-%u"
+#define VFIO_GET_REGION_ADDR(x) ((uint64_t) x << 40ULL)
+#define VFIO_GET_REGION_IDX(x) (x >> 40)
+
+/* DMA mapping function prototype.
+ * Takes VFIO container fd as a parameter.
+ * Returns 0 on success, -1 on error.
+ * */
+typedef int (*vfio_dma_func_t)(int);
+
+struct vfio_iommu_type {
+	int type_id;
+	const char *name;
+	vfio_dma_func_t dma_map_func;
+};
+
+/* pick IOMMU type. returns a pointer to vfio_iommu_type or NULL for error */
+const struct vfio_iommu_type *
+vfio_set_iommu_type(int vfio_container_fd);
+
+/* check if we have any supported extensions */
+int
+vfio_has_supported_extensions(int vfio_container_fd);
+
+/* open container fd or get an existing one */
+int
+vfio_get_container_fd(void);
+
+/* parse IOMMU group number for a device
+ * returns 1 on success, -1 for errors, 0 for non-existent group
+ */
+int
+vfio_get_group_no(const char *sysfs_base,
+		const char *dev_addr, int *iommu_group_no);
+
+/* open group fd or get an existing one */
+int
+vfio_get_group_fd(int iommu_group_no);
+
+/**
+ * Setup vfio_cfg for the device identified by its address. It discovers
+ * the configured I/O MMU groups or sets a new one for the device. If a new
+ * groups is assigned, the DMA mapping is performed.
+ * Returns 0 on success, a negative value on failure and a positive value in
+ * case the given device cannot be managed this way.
+ */
+int vfio_setup_device(const char *sysfs_base, const char *dev_addr,
+		int *vfio_dev_fd, struct vfio_device_info *device_info);
+
+int vfio_enable(const char *modname);
+int vfio_is_enabled(const char *modname);
+
+int pci_vfio_enable(void);
+int pci_vfio_is_enabled(void);
+
+int vfio_mp_sync_setup(void);
+
+#define SOCKET_REQ_CONTAINER 0x100
+#define SOCKET_REQ_GROUP 0x200
+#define SOCKET_OK 0x0
+#define SOCKET_NO_FD 0x1
+#define SOCKET_ERR 0xFF
+
 #define VFIO_PRESENT
 #endif /* kernel version */
 #endif /* RTE_EAL_VFIO */

@@ -624,10 +624,11 @@ rte_pmd_ring_devuninit(const char *name)
 }
 
 static struct rte_driver pmd_ring_drv = {
-	.name = "eth_ring",
 	.type = PMD_VDEV,
 	.init = rte_pmd_ring_devinit,
 	.uninit = rte_pmd_ring_devuninit,
 };
 
-PMD_REGISTER_DRIVER(pmd_ring_drv);
+PMD_REGISTER_DRIVER(pmd_ring_drv, eth_ring);
+DRIVER_REGISTER_PARAM_STRING(eth_ring,
+	"nodeaction=[attach|detach]");

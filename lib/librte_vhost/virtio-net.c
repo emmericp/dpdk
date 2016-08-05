@@ -53,7 +53,6 @@
 #include <rte_virtio_net.h>
 
 #include "vhost-net.h"
-#include "virtio-net.h"
 
 #define MAX_VHOST_DEVICE	1024
 static struct virtio_net *vhost_devices[MAX_VHOST_DEVICE];
@@ -108,15 +107,14 @@ qva_to_vva(struct virtio_net *dev, uint64_t qemu_va)
 	return vhost_va;
 }
 
-
 struct virtio_net *
-get_device(struct vhost_device_ctx ctx)
+get_device(int vid)
 {
-	struct virtio_net *dev = vhost_devices[ctx.fh];
+	struct virtio_net *dev = vhost_devices[vid];
 
 	if (unlikely(!dev)) {
 		RTE_LOG(ERR, VHOST_CONFIG,
-			"(%"PRIu64") device not found.\n", ctx.fh);
+			"(%d) device not found.\n", vid);
 	}
 
 	return dev;
@@ -233,7 +231,7 @@ alloc_vring_queue_pair(struct virtio_net *dev, uint32_t qp_idx)
 
 /*
  * Reset some variables in device structure, while keeping few
- * others untouched, such as device_fh, ifname, virt_qp_nb: they
+ * others untouched, such as vid, ifname, virt_qp_nb: they
  * should be same unless the device is removed.
  */
 static void
@@ -255,7 +253,7 @@ reset_device(struct virtio_net *dev)
  * list.
  */
 int
-vhost_new_device(struct vhost_device_ctx ctx)
+vhost_new_device(void)
 {
 	struct virtio_net *dev;
 	int i;
@@ -263,8 +261,7 @@ vhost_new_device(struct vhost_device_ctx ctx)
 	dev = rte_zmalloc(NULL, sizeof(struct virtio_net), 0);
 	if (dev == NULL) {
 		RTE_LOG(ERR, VHOST_CONFIG,
-			"(%"PRIu64") Failed to allocate memory for dev.\n",
-			ctx.fh);
+			"Failed to allocate memory for new dev.\n");
 		return -1;
 	}
 
@@ -279,7 +276,7 @@ vhost_new_device(struct vhost_device_ctx ctx)
 	}
 
 	vhost_devices[i] = dev;
-	dev->device_fh   = i;
+	dev->vid = i;
 
 	return i;
 }
@@ -289,30 +286,31 @@ vhost_new_device(struct vhost_device_ctx ctx)
  * cleanup the device and remove it from device configuration linked list.
  */
 void
-vhost_destroy_device(struct vhost_device_ctx ctx)
+vhost_destroy_device(int vid)
 {
-	struct virtio_net *dev = get_device(ctx);
+	struct virtio_net *dev = get_device(vid);
 
 	if (dev == NULL)
 		return;
 
-	if (dev->flags & VIRTIO_DEV_RUNNING)
-		notify_ops->destroy_device(dev);
+	if (dev->flags & VIRTIO_DEV_RUNNING) {
+		dev->flags &= ~VIRTIO_DEV_RUNNING;
+		notify_ops->destroy_device(vid);
+	}
 
 	cleanup_device(dev, 1);
 	free_device(dev);
 
-	vhost_devices[ctx.fh] = NULL;
+	vhost_devices[vid] = NULL;
 }
 
 void
-vhost_set_ifname(struct vhost_device_ctx ctx,
-	const char *if_name, unsigned int if_len)
+vhost_set_ifname(int vid, const char *if_name, unsigned int if_len)
 {
 	struct virtio_net *dev;
 	unsigned int len;
 
-	dev = get_device(ctx);
+	dev = get_device(vid);
 	if (dev == NULL)
 		return;
 
@@ -320,6 +318,7 @@ vhost_set_ifname(struct vhost_device_ctx ctx,
 		sizeof(dev->ifname) : if_len;
 
 	strncpy(dev->ifname, if_name, len);
+	dev->ifname[sizeof(dev->ifname) - 1] = '\0';
 }
 
 
@@ -329,11 +328,11 @@ vhost_set_ifname(struct vhost_device_ctx ctx,
  * the device hasn't been initialised.
  */
 int
-vhost_set_owner(struct vhost_device_ctx ctx)
+vhost_set_owner(int vid)
 {
 	struct virtio_net *dev;
 
-	dev = get_device(ctx);
+	dev = get_device(vid);
 	if (dev == NULL)
 		return -1;
 
@@ -344,16 +343,18 @@ vhost_set_owner(struct vhost_device_ctx ctx)
  * Called from CUSE IOCTL: VHOST_RESET_OWNER
  */
 int
-vhost_reset_owner(struct vhost_device_ctx ctx)
+vhost_reset_owner(int vid)
 {
 	struct virtio_net *dev;
 
-	dev = get_device(ctx);
+	dev = get_device(vid);
 	if (dev == NULL)
 		return -1;
 
-	if (dev->flags & VIRTIO_DEV_RUNNING)
-		notify_ops->destroy_device(dev);
+	if (dev->flags & VIRTIO_DEV_RUNNING) {
+		dev->flags &= ~VIRTIO_DEV_RUNNING;
+		notify_ops->destroy_device(vid);
+	}
 
 	cleanup_device(dev, 0);
 	reset_device(dev);
@@ -365,11 +366,11 @@ vhost_reset_owner(struct vhost_device_ctx ctx)
  * The features that we support are requested.
  */
 int
-vhost_get_features(struct vhost_device_ctx ctx, uint64_t *pu)
+vhost_get_features(int vid, uint64_t *pu)
 {
 	struct virtio_net *dev;
 
-	dev = get_device(ctx);
+	dev = get_device(vid);
 	if (dev == NULL)
 		return -1;
 
@@ -383,13 +384,11 @@ vhost_get_features(struct vhost_device_ctx ctx, uint64_t *pu)
  * We receive the negotiated features supported by us and the virtio device.
  */
 int
-vhost_set_features(struct vhost_device_ctx ctx, uint64_t *pu)
+vhost_set_features(int vid, uint64_t *pu)
 {
 	struct virtio_net *dev;
-	uint16_t vhost_hlen;
-	uint16_t i;
 
-	dev = get_device(ctx);
+	dev = get_device(vid);
 	if (dev == NULL)
 		return -1;
 	if (*pu & ~VHOST_FEATURES)
@@ -398,22 +397,15 @@ vhost_set_features(struct vhost_device_ctx ctx, uint64_t *pu)
 	dev->features = *pu;
 	if (dev->features &
 		((1 << VIRTIO_NET_F_MRG_RXBUF) | (1ULL << VIRTIO_F_VERSION_1))) {
-		vhost_hlen = sizeof(struct virtio_net_hdr_mrg_rxbuf);
+		dev->vhost_hlen = sizeof(struct virtio_net_hdr_mrg_rxbuf);
 	} else {
-		vhost_hlen = sizeof(struct virtio_net_hdr);
+		dev->vhost_hlen = sizeof(struct virtio_net_hdr);
 	}
 	LOG_DEBUG(VHOST_CONFIG,
-		"(%"PRIu64") Mergeable RX buffers %s, virtio 1 %s\n",
-		dev->device_fh,
+		"(%d) mergeable RX buffers %s, virtio 1 %s\n",
+		dev->vid,
 		(dev->features & (1 << VIRTIO_NET_F_MRG_RXBUF)) ? "on" : "off",
 		(dev->features & (1ULL << VIRTIO_F_VERSION_1)) ? "on" : "off");
-
-	for (i = 0; i < dev->virt_qp_nb; i++) {
-		uint16_t base_idx = i * VIRTIO_QNUM;
-
-		dev->virtqueue[base_idx + VIRTIO_RXQ]->vhost_hlen = vhost_hlen;
-		dev->virtqueue[base_idx + VIRTIO_TXQ]->vhost_hlen = vhost_hlen;
-	}
 
 	return 0;
 }
@@ -423,12 +415,11 @@ vhost_set_features(struct vhost_device_ctx ctx, uint64_t *pu)
  * The virtio device sends us the size of the descriptor ring.
  */
 int
-vhost_set_vring_num(struct vhost_device_ctx ctx,
-	struct vhost_vring_state *state)
+vhost_set_vring_num(int vid, struct vhost_vring_state *state)
 {
 	struct virtio_net *dev;
 
-	dev = get_device(ctx);
+	dev = get_device(vid);
 	if (dev == NULL)
 		return -1;
 
@@ -509,7 +500,7 @@ numa_realloc(struct virtio_net *dev, int index)
 out:
 	dev->virtqueue[index] = vq;
 	dev->virtqueue[index + 1] = vq + 1;
-	vhost_devices[dev->device_fh] = dev;
+	vhost_devices[dev->vid] = dev;
 
 	return dev;
 }
@@ -527,12 +518,12 @@ numa_realloc(struct virtio_net *dev, int index __rte_unused)
  * This function then converts these to our address space.
  */
 int
-vhost_set_vring_addr(struct vhost_device_ctx ctx, struct vhost_vring_addr *addr)
+vhost_set_vring_addr(int vid, struct vhost_vring_addr *addr)
 {
 	struct virtio_net *dev;
 	struct vhost_virtqueue *vq;
 
-	dev = get_device(ctx);
+	dev = get_device(vid);
 	if ((dev == NULL) || (dev->mem == NULL))
 		return -1;
 
@@ -544,8 +535,8 @@ vhost_set_vring_addr(struct vhost_device_ctx ctx, struct vhost_vring_addr *addr)
 			addr->desc_user_addr);
 	if (vq->desc == 0) {
 		RTE_LOG(ERR, VHOST_CONFIG,
-			"(%"PRIu64") Failed to find desc ring address.\n",
-			dev->device_fh);
+			"(%d) failed to find desc ring address.\n",
+			dev->vid);
 		return -1;
 	}
 
@@ -556,8 +547,8 @@ vhost_set_vring_addr(struct vhost_device_ctx ctx, struct vhost_vring_addr *addr)
 			addr->avail_user_addr);
 	if (vq->avail == 0) {
 		RTE_LOG(ERR, VHOST_CONFIG,
-			"(%"PRIu64") Failed to find avail ring address.\n",
-			dev->device_fh);
+			"(%d) failed to find avail ring address.\n",
+			dev->vid);
 		return -1;
 	}
 
@@ -565,21 +556,29 @@ vhost_set_vring_addr(struct vhost_device_ctx ctx, struct vhost_vring_addr *addr)
 			addr->used_user_addr);
 	if (vq->used == 0) {
 		RTE_LOG(ERR, VHOST_CONFIG,
-			"(%"PRIu64") Failed to find used ring address.\n",
-			dev->device_fh);
+			"(%d) failed to find used ring address.\n",
+			dev->vid);
 		return -1;
+	}
+
+	if (vq->last_used_idx != vq->used->idx) {
+		RTE_LOG(WARNING, VHOST_CONFIG,
+			"last_used_idx (%u) and vq->used->idx (%u) mismatches; "
+			"some packets maybe resent for Tx and dropped for Rx\n",
+			vq->last_used_idx, vq->used->idx);
+		vq->last_used_idx     = vq->used->idx;
 	}
 
 	vq->log_guest_addr = addr->log_guest_addr;
 
-	LOG_DEBUG(VHOST_CONFIG, "(%"PRIu64") mapped address desc: %p\n",
-			dev->device_fh, vq->desc);
-	LOG_DEBUG(VHOST_CONFIG, "(%"PRIu64") mapped address avail: %p\n",
-			dev->device_fh, vq->avail);
-	LOG_DEBUG(VHOST_CONFIG, "(%"PRIu64") mapped address used: %p\n",
-			dev->device_fh, vq->used);
-	LOG_DEBUG(VHOST_CONFIG, "(%"PRIu64") log_guest_addr: %"PRIx64"\n",
-			dev->device_fh, vq->log_guest_addr);
+	LOG_DEBUG(VHOST_CONFIG, "(%d) mapped address desc: %p\n",
+			dev->vid, vq->desc);
+	LOG_DEBUG(VHOST_CONFIG, "(%d) mapped address avail: %p\n",
+			dev->vid, vq->avail);
+	LOG_DEBUG(VHOST_CONFIG, "(%d) mapped address used: %p\n",
+			dev->vid, vq->used);
+	LOG_DEBUG(VHOST_CONFIG, "(%d) log_guest_addr: %" PRIx64 "\n",
+			dev->vid, vq->log_guest_addr);
 
 	return 0;
 }
@@ -589,18 +588,16 @@ vhost_set_vring_addr(struct vhost_device_ctx ctx, struct vhost_vring_addr *addr)
  * The virtio device sends us the available ring last used index.
  */
 int
-vhost_set_vring_base(struct vhost_device_ctx ctx,
-	struct vhost_vring_state *state)
+vhost_set_vring_base(int vid, struct vhost_vring_state *state)
 {
 	struct virtio_net *dev;
 
-	dev = get_device(ctx);
+	dev = get_device(vid);
 	if (dev == NULL)
 		return -1;
 
 	/* State->index refers to the queue index. The txq is 1, rxq is 0. */
 	dev->virtqueue[state->index]->last_used_idx = state->num;
-	dev->virtqueue[state->index]->last_used_idx_res = state->num;
 
 	return 0;
 }
@@ -610,12 +607,12 @@ vhost_set_vring_base(struct vhost_device_ctx ctx,
  * We send the virtio device our available ring last used index.
  */
 int
-vhost_get_vring_base(struct vhost_device_ctx ctx, uint32_t index,
+vhost_get_vring_base(int vid, uint32_t index,
 	struct vhost_vring_state *state)
 {
 	struct virtio_net *dev;
 
-	dev = get_device(ctx);
+	dev = get_device(vid);
 	if (dev == NULL)
 		return -1;
 
@@ -633,13 +630,13 @@ vhost_get_vring_base(struct vhost_device_ctx ctx, uint32_t index,
  * copied into our process space.
  */
 int
-vhost_set_vring_call(struct vhost_device_ctx ctx, struct vhost_vring_file *file)
+vhost_set_vring_call(int vid, struct vhost_vring_file *file)
 {
 	struct virtio_net *dev;
 	struct vhost_virtqueue *vq;
 	uint32_t cur_qp_idx = file->index / VIRTIO_QNUM;
 
-	dev = get_device(ctx);
+	dev = get_device(vid);
 	if (dev == NULL)
 		return -1;
 
@@ -670,12 +667,12 @@ vhost_set_vring_call(struct vhost_device_ctx ctx, struct vhost_vring_file *file)
  * This fd gets copied into our process space.
  */
 int
-vhost_set_vring_kick(struct vhost_device_ctx ctx, struct vhost_vring_file *file)
+vhost_set_vring_kick(int vid, struct vhost_vring_file *file)
 {
 	struct virtio_net *dev;
 	struct vhost_virtqueue *vq;
 
-	dev = get_device(ctx);
+	dev = get_device(vid);
 	if (dev == NULL)
 		return -1;
 
@@ -700,11 +697,11 @@ vhost_set_vring_kick(struct vhost_device_ctx ctx, struct vhost_vring_file *file)
  * The device will still exist in the device configuration linked list.
  */
 int
-vhost_set_backend(struct vhost_device_ctx ctx, struct vhost_vring_file *file)
+vhost_set_backend(int vid, struct vhost_vring_file *file)
 {
 	struct virtio_net *dev;
 
-	dev = get_device(ctx);
+	dev = get_device(vid);
 	if (dev == NULL)
 		return -1;
 
@@ -716,20 +713,98 @@ vhost_set_backend(struct vhost_device_ctx ctx, struct vhost_vring_file *file)
 	 * we add the device.
 	 */
 	if (!(dev->flags & VIRTIO_DEV_RUNNING)) {
-		if (((int)dev->virtqueue[VIRTIO_TXQ]->backend != VIRTIO_DEV_STOPPED) &&
-			((int)dev->virtqueue[VIRTIO_RXQ]->backend != VIRTIO_DEV_STOPPED)) {
-			return notify_ops->new_device(dev);
+		if (dev->virtqueue[VIRTIO_TXQ]->backend != VIRTIO_DEV_STOPPED &&
+		    dev->virtqueue[VIRTIO_RXQ]->backend != VIRTIO_DEV_STOPPED) {
+			if (notify_ops->new_device(vid) < 0)
+				return -1;
+			dev->flags |= VIRTIO_DEV_RUNNING;
 		}
-	/* Otherwise we remove it. */
-	} else
-		if (file->fd == VIRTIO_DEV_STOPPED)
-			notify_ops->destroy_device(dev);
+	} else if (file->fd == VIRTIO_DEV_STOPPED) {
+		dev->flags &= ~VIRTIO_DEV_RUNNING;
+		notify_ops->destroy_device(vid);
+	}
+
 	return 0;
 }
 
-int rte_vhost_enable_guest_notification(struct virtio_net *dev,
-	uint16_t queue_id, int enable)
+int
+rte_vhost_get_numa_node(int vid)
 {
+#ifdef RTE_LIBRTE_VHOST_NUMA
+	struct virtio_net *dev = get_device(vid);
+	int numa_node;
+	int ret;
+
+	if (dev == NULL)
+		return -1;
+
+	ret = get_mempolicy(&numa_node, NULL, 0, dev,
+			    MPOL_F_NODE | MPOL_F_ADDR);
+	if (ret < 0) {
+		RTE_LOG(ERR, VHOST_CONFIG,
+			"(%d) failed to query numa node: %d\n", vid, ret);
+		return -1;
+	}
+
+	return numa_node;
+#else
+	RTE_SET_USED(vid);
+	return -1;
+#endif
+}
+
+uint32_t
+rte_vhost_get_queue_num(int vid)
+{
+	struct virtio_net *dev = get_device(vid);
+
+	if (dev == NULL)
+		return 0;
+
+	return dev->virt_qp_nb;
+}
+
+int
+rte_vhost_get_ifname(int vid, char *buf, size_t len)
+{
+	struct virtio_net *dev = get_device(vid);
+
+	if (dev == NULL)
+		return -1;
+
+	len = RTE_MIN(len, sizeof(dev->ifname));
+
+	strncpy(buf, dev->ifname, len);
+	buf[len - 1] = '\0';
+
+	return 0;
+}
+
+uint16_t
+rte_vhost_avail_entries(int vid, uint16_t queue_id)
+{
+	struct virtio_net *dev;
+	struct vhost_virtqueue *vq;
+
+	dev = get_device(vid);
+	if (!dev)
+		return 0;
+
+	vq = dev->virtqueue[queue_id];
+	if (!vq->enabled)
+		return 0;
+
+	return *(volatile uint16_t *)&vq->avail->idx - vq->last_used_idx;
+}
+
+int
+rte_vhost_enable_guest_notification(int vid, uint16_t queue_id, int enable)
+{
+	struct virtio_net *dev = get_device(vid);
+
+	if (dev == NULL)
+		return -1;
+
 	if (enable) {
 		RTE_LOG(ERR, VHOST_CONFIG,
 			"guest notification isn't supported.\n");

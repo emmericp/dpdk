@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2013-2015 Intel Corporation. All rights reserved.
+ *   Copyright(c) 2013-2016 Intel Corporation. All rights reserved.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -947,7 +947,7 @@ fm10k_dev_promiscuous_enable(struct rte_eth_dev *dev)
 	PMD_INIT_FUNC_TRACE();
 
 	/* Return if it didn't acquire valid glort range */
-	if (!fm10k_glort_valid(hw))
+	if ((hw->mac.type == fm10k_mac_pf) && !fm10k_glort_valid(hw))
 		return;
 
 	fm10k_mbx_lock(hw);
@@ -969,7 +969,7 @@ fm10k_dev_promiscuous_disable(struct rte_eth_dev *dev)
 	PMD_INIT_FUNC_TRACE();
 
 	/* Return if it didn't acquire valid glort range */
-	if (!fm10k_glort_valid(hw))
+	if ((hw->mac.type == fm10k_mac_pf) && !fm10k_glort_valid(hw))
 		return;
 
 	if (dev->data->all_multicast == 1)
@@ -995,7 +995,7 @@ fm10k_dev_allmulticast_enable(struct rte_eth_dev *dev)
 	PMD_INIT_FUNC_TRACE();
 
 	/* Return if it didn't acquire valid glort range */
-	if (!fm10k_glort_valid(hw))
+	if ((hw->mac.type == fm10k_mac_pf) && !fm10k_glort_valid(hw))
 		return;
 
 	/* If promiscuous mode is enabled, it doesn't make sense to enable
@@ -1026,7 +1026,7 @@ fm10k_dev_allmulticast_disable(struct rte_eth_dev *dev)
 	PMD_INIT_FUNC_TRACE();
 
 	/* Return if it didn't acquire valid glort range */
-	if (!fm10k_glort_valid(hw))
+	if ((hw->mac.type == fm10k_mac_pf) && !fm10k_glort_valid(hw))
 		return;
 
 	if (dev->data->promiscuous) {
@@ -1256,8 +1256,46 @@ fm10k_link_update(struct rte_eth_dev *dev,
 	return 0;
 }
 
+static int fm10k_xstats_get_names(__rte_unused struct rte_eth_dev *dev,
+	struct rte_eth_xstat_name *xstats_names, __rte_unused unsigned limit)
+{
+	unsigned i, q;
+	unsigned count = 0;
+
+	if (xstats_names != NULL) {
+		/* Note: limit checked in rte_eth_xstats_names() */
+
+		/* Global stats */
+		for (i = 0; i < FM10K_NB_HW_XSTATS; i++) {
+			snprintf(xstats_names[count].name,
+				sizeof(xstats_names[count].name),
+				"%s", fm10k_hw_stats_strings[count].name);
+			count++;
+		}
+
+		/* PF queue stats */
+		for (q = 0; q < FM10K_MAX_QUEUES_PF; q++) {
+			for (i = 0; i < FM10K_NB_RX_Q_XSTATS; i++) {
+				snprintf(xstats_names[count].name,
+					sizeof(xstats_names[count].name),
+					"rx_q%u_%s", q,
+					fm10k_hw_stats_rx_q_strings[i].name);
+				count++;
+			}
+			for (i = 0; i < FM10K_NB_TX_Q_XSTATS; i++) {
+				snprintf(xstats_names[count].name,
+					sizeof(xstats_names[count].name),
+					"tx_q%u_%s", q,
+					fm10k_hw_stats_tx_q_strings[i].name);
+				count++;
+			}
+		}
+	}
+	return FM10K_NB_XSTATS;
+}
+
 static int
-fm10k_xstats_get(struct rte_eth_dev *dev, struct rte_eth_xstats *xstats,
+fm10k_xstats_get(struct rte_eth_dev *dev, struct rte_eth_xstat *xstats,
 		 unsigned n)
 {
 	struct fm10k_hw_stats *hw_stats =
@@ -1269,8 +1307,6 @@ fm10k_xstats_get(struct rte_eth_dev *dev, struct rte_eth_xstats *xstats,
 
 	/* Global stats */
 	for (i = 0; i < FM10K_NB_HW_XSTATS; i++) {
-		snprintf(xstats[count].name, sizeof(xstats[count].name),
-			 "%s", fm10k_hw_stats_strings[count].name);
 		xstats[count].value = *(uint64_t *)(((char *)hw_stats) +
 			fm10k_hw_stats_strings[count].offset);
 		count++;
@@ -1279,18 +1315,12 @@ fm10k_xstats_get(struct rte_eth_dev *dev, struct rte_eth_xstats *xstats,
 	/* PF queue stats */
 	for (q = 0; q < FM10K_MAX_QUEUES_PF; q++) {
 		for (i = 0; i < FM10K_NB_RX_Q_XSTATS; i++) {
-			snprintf(xstats[count].name, sizeof(xstats[count].name),
-				 "rx_q%u_%s", q,
-				 fm10k_hw_stats_rx_q_strings[i].name);
 			xstats[count].value =
 				*(uint64_t *)(((char *)&hw_stats->q[q]) +
 				fm10k_hw_stats_rx_q_strings[i].offset);
 			count++;
 		}
 		for (i = 0; i < FM10K_NB_TX_Q_XSTATS; i++) {
-			snprintf(xstats[count].name, sizeof(xstats[count].name),
-				 "tx_q%u_%s", q,
-				 fm10k_hw_stats_tx_q_strings[i].name);
 			xstats[count].value =
 				*(uint64_t *)(((char *)&hw_stats->q[q]) +
 				fm10k_hw_stats_tx_q_strings[i].offset);
@@ -2129,8 +2159,8 @@ fm10k_rss_hash_update(struct rte_eth_dev *dev,
 
 	PMD_INIT_FUNC_TRACE();
 
-	if (rss_conf->rss_key_len < FM10K_RSSRK_SIZE *
-		FM10K_RSSRK_ENTRIES_PER_REG)
+	if (key && (rss_conf->rss_key_len < FM10K_RSSRK_SIZE *
+				FM10K_RSSRK_ENTRIES_PER_REG))
 		return -EINVAL;
 
 	if (hf == 0)
@@ -2172,8 +2202,8 @@ fm10k_rss_hash_conf_get(struct rte_eth_dev *dev,
 
 	PMD_INIT_FUNC_TRACE();
 
-	if (rss_conf->rss_key_len < FM10K_RSSRK_SIZE *
-				FM10K_RSSRK_ENTRIES_PER_REG)
+	if (key && (rss_conf->rss_key_len < FM10K_RSSRK_SIZE *
+				FM10K_RSSRK_ENTRIES_PER_REG))
 		return -EINVAL;
 
 	if (key != NULL)
@@ -2629,6 +2659,7 @@ static const struct eth_dev_ops fm10k_eth_dev_ops = {
 	.allmulticast_disable   = fm10k_dev_allmulticast_disable,
 	.stats_get		= fm10k_stats_get,
 	.xstats_get		= fm10k_xstats_get,
+	.xstats_get_names	= fm10k_xstats_get_names,
 	.stats_reset		= fm10k_stats_reset,
 	.xstats_reset		= fm10k_stats_reset,
 	.link_update		= fm10k_link_update,
@@ -2707,10 +2738,8 @@ fm10k_set_tx_function(struct rte_eth_dev *dev)
 		txq = dev->data->tx_queues[i];
 		txq->tx_ftag_en = tx_ftag_en;
 		/* Check if Vector Tx is satisfied */
-		if (fm10k_tx_vec_condition_check(txq)) {
+		if (fm10k_tx_vec_condition_check(txq))
 			use_sse = 0;
-			break;
-		}
 	}
 
 	if (use_sse) {
@@ -3018,9 +3047,9 @@ eth_fm10k_dev_uninit(struct rte_eth_dev *dev)
  * and SRIOV-VF devices.
  */
 static const struct rte_pci_id pci_id_fm10k_map[] = {
-#define RTE_PCI_DEV_ID_DECL_FM10K(vend, dev) { RTE_PCI_DEVICE(vend, dev) },
-#define RTE_PCI_DEV_ID_DECL_FM10KVF(vend, dev) { RTE_PCI_DEVICE(vend, dev) },
-#include "rte_pci_dev_ids.h"
+	{ RTE_PCI_DEVICE(FM10K_INTEL_VENDOR_ID, FM10K_DEV_ID_PF) },
+	{ RTE_PCI_DEVICE(FM10K_INTEL_VENDOR_ID, FM10K_DEV_ID_SDI_FM10420_QDA2) },
+	{ RTE_PCI_DEVICE(FM10K_INTEL_VENDOR_ID, FM10K_DEV_ID_VF) },
 	{ .vendor_id = 0, /* sentinel */ },
 };
 
@@ -3055,4 +3084,5 @@ static struct rte_driver rte_fm10k_driver = {
 	.init = rte_pmd_fm10k_init,
 };
 
-PMD_REGISTER_DRIVER(rte_fm10k_driver);
+PMD_REGISTER_DRIVER(rte_fm10k_driver, fm10k);
+DRIVER_REGISTER_PCI_TABLE(fm10k, pci_id_fm10k_map);

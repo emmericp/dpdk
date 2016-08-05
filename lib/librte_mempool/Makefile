@@ -38,13 +38,13 @@ CFLAGS += $(WERROR_FLAGS) -I$(SRCDIR) -O3
 
 EXPORT_MAP := rte_mempool_version.map
 
-LIBABIVER := 1
+LIBABIVER := 2
 
 # all source are stored in SRCS-y
 SRCS-$(CONFIG_RTE_LIBRTE_MEMPOOL) +=  rte_mempool.c
-ifeq ($(CONFIG_RTE_LIBRTE_XEN_DOM0),y)
-SRCS-$(CONFIG_RTE_LIBRTE_MEMPOOL) +=  rte_dom0_mempool.c
-endif
+SRCS-$(CONFIG_RTE_LIBRTE_MEMPOOL) +=  rte_mempool_ops.c
+SRCS-$(CONFIG_RTE_LIBRTE_MEMPOOL) +=  rte_mempool_ring.c
+SRCS-$(CONFIG_RTE_LIBRTE_MEMPOOL) +=  rte_mempool_stack.c
 # install includes
 SYMLINK-$(CONFIG_RTE_LIBRTE_MEMPOOL)-include := rte_mempool.h
 

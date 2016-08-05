@@ -124,9 +124,10 @@ s32 ixgbe_enable_mc(struct ixgbe_hw *hw);
 s32 ixgbe_disable_mc(struct ixgbe_hw *hw);
 s32 ixgbe_clear_vfta(struct ixgbe_hw *hw);
 s32 ixgbe_set_vfta(struct ixgbe_hw *hw, u32 vlan,
-		   u32 vind, bool vlan_on);
+		   u32 vind, bool vlan_on, bool vlvf_bypass);
 s32 ixgbe_set_vlvf(struct ixgbe_hw *hw, u32 vlan, u32 vind,
-		   bool vlan_on, bool *vfta_changed);
+		   bool vlan_on, u32 *vfta_delta, u32 vfta,
+		   bool vlvf_bypass);
 s32 ixgbe_fc_enable(struct ixgbe_hw *hw);
 s32 ixgbe_setup_fc(struct ixgbe_hw *hw);
 s32 ixgbe_set_fw_drv_ver(struct ixgbe_hw *hw, u8 maj, u8 min, u8 build,
@@ -191,6 +192,7 @@ s32 ixgbe_set_san_mac_addr(struct ixgbe_hw *hw, u8 *san_mac_addr);
 s32 ixgbe_get_device_caps(struct ixgbe_hw *hw, u16 *device_caps);
 s32 ixgbe_acquire_swfw_semaphore(struct ixgbe_hw *hw, u32 mask);
 void ixgbe_release_swfw_semaphore(struct ixgbe_hw *hw, u32 mask);
+void ixgbe_init_swfw_semaphore(struct ixgbe_hw *hw);
 s32 ixgbe_get_wwn_prefix(struct ixgbe_hw *hw, u16 *wwnn_prefix,
 			 u16 *wwpn_prefix);
 s32 ixgbe_get_fcoe_boot_status(struct ixgbe_hw *hw, u16 *bs);
@@ -215,5 +217,7 @@ s32 ixgbe_handle_lasi(struct ixgbe_hw *hw);
 void ixgbe_set_rate_select_speed(struct ixgbe_hw *hw, ixgbe_link_speed speed);
 void ixgbe_disable_rx(struct ixgbe_hw *hw);
 void ixgbe_enable_rx(struct ixgbe_hw *hw);
+s32 ixgbe_negotiate_fc(struct ixgbe_hw *hw, u32 adv_reg, u32 lp_reg,
+			u32 adv_sym, u32 adv_asm, u32 lp_sym, u32 lp_asm);
 
 #endif /* _IXGBE_API_H_ */

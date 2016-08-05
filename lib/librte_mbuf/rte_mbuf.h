@@ -65,10 +65,6 @@
 extern "C" {
 #endif
 
-/* deprecated options */
-#pragma GCC poison RTE_MBUF_SCATTER_GATHER
-#pragma GCC poison RTE_MBUF_REFCNT
-
 /*
  * Packet Offload Features Flags. It also carry packet type information.
  * Critical resources. Both rx/tx shared these bits. Be cautious on any change
@@ -83,21 +79,51 @@ extern "C" {
  * Keep these flags synchronized with rte_get_rx_ol_flag_name() and
  * rte_get_tx_ol_flag_name().
  */
-#define PKT_RX_VLAN_PKT      (1ULL << 0)  /**< RX packet is a 802.1q VLAN packet. */
+
+/**
+ * RX packet is a 802.1q VLAN packet. This flag was set by PMDs when
+ * the packet is recognized as a VLAN, but the behavior between PMDs
+ * was not the same. This flag is kept for some time to avoid breaking
+ * applications and should be replaced by PKT_RX_VLAN_STRIPPED.
+ */
+#define PKT_RX_VLAN_PKT      (1ULL << 0)
+
 #define PKT_RX_RSS_HASH      (1ULL << 1)  /**< RX packet with RSS hash result. */
 #define PKT_RX_FDIR          (1ULL << 2)  /**< RX packet with FDIR match indicate. */
 #define PKT_RX_L4_CKSUM_BAD  (1ULL << 3)  /**< L4 cksum of RX pkt. is not OK. */
 #define PKT_RX_IP_CKSUM_BAD  (1ULL << 4)  /**< IP cksum of RX pkt. is not OK. */
 #define PKT_RX_EIP_CKSUM_BAD (1ULL << 5)  /**< External IP header checksum error. */
-#define PKT_RX_OVERSIZE      (0ULL << 0)  /**< Num of desc of an RX pkt oversize. */
-#define PKT_RX_HBUF_OVERFLOW (0ULL << 0)  /**< Header buffer overflow. */
-#define PKT_RX_RECIP_ERR     (0ULL << 0)  /**< Hardware processing error. */
-#define PKT_RX_MAC_ERR       (0ULL << 0)  /**< MAC error. */
+
+/**
+ * A vlan has been stripped by the hardware and its tci is saved in
+ * mbuf->vlan_tci. This can only happen if vlan stripping is enabled
+ * in the RX configuration of the PMD.
+ */
+#define PKT_RX_VLAN_STRIPPED (1ULL << 6)
+
+/* hole, some bits can be reused here  */
+
 #define PKT_RX_IEEE1588_PTP  (1ULL << 9)  /**< RX IEEE1588 L2 Ethernet PT Packet. */
 #define PKT_RX_IEEE1588_TMST (1ULL << 10) /**< RX IEEE1588 L2/L4 timestamped packet.*/
 #define PKT_RX_FDIR_ID       (1ULL << 13) /**< FD id reported if FDIR match. */
 #define PKT_RX_FDIR_FLX      (1ULL << 14) /**< Flexible bytes reported if FDIR match. */
-#define PKT_RX_QINQ_PKT      (1ULL << 15)  /**< RX packet with double VLAN stripped. */
+
+/**
+ * The 2 vlans have been stripped by the hardware and their tci are
+ * saved in mbuf->vlan_tci (inner) and mbuf->vlan_tci_outer (outer).
+ * This can only happen if vlan stripping is enabled in the RX
+ * configuration of the PMD. If this flag is set, PKT_RX_VLAN_STRIPPED
+ * must also be set.
+ */
+#define PKT_RX_QINQ_STRIPPED (1ULL << 15)
+
+/**
+ * Deprecated.
+ * RX packet with double VLAN stripped.
+ * This flag is replaced by PKT_RX_QINQ_STRIPPED.
+ */
+#define PKT_RX_QINQ_PKT      PKT_RX_QINQ_STRIPPED
+
 /* add new RX flags here */
 
 /* add new TX flags here */
@@ -282,6 +308,13 @@ extern "C" {
  * <'ether type'=0x88CC>
  */
 #define RTE_PTYPE_L2_ETHER_LLDP             0x00000004
+/**
+ * NSH (Network Service Header) packet type.
+ *
+ * Packet format:
+ * <'ether type'=0x894F>
+ */
+#define RTE_PTYPE_L2_ETHER_NSH              0x00000005
 /**
  * Mask of layer 2 packet types.
  * It is used for outer packet for tunneling cases.
@@ -770,7 +803,10 @@ struct rte_mbuf {
 
 	/*
 	 * The packet type, which is the combination of outer/inner L2, L3, L4
-	 * and tunnel types.
+	 * and tunnel types. The packet_type is about data really present in the
+	 * mbuf. Example: if vlan stripping is enabled, a received vlan packet
+	 * would have RTE_PTYPE_L2_ETHER and not RTE_PTYPE_L2_VLAN because the
+	 * vlan is stripped from the data.
 	 */
 	union {
 		uint32_t packet_type; /**< L2/L3/L4 and tunnel information. */
@@ -787,7 +823,8 @@ struct rte_mbuf {
 
 	uint32_t pkt_len;         /**< Total pkt len: sum of all segments. */
 	uint16_t data_len;        /**< Amount of data in segment buffer. */
-	uint16_t vlan_tci;        /**< VLAN Tag Control Identifier (CPU order) */
+	/** VLAN TCI (CPU order), valid if PKT_RX_VLAN_STRIPPED is set. */
+	uint16_t vlan_tci;
 
 	union {
 		uint32_t rss;     /**< RSS hash result if RSS enabled */
@@ -813,7 +850,8 @@ struct rte_mbuf {
 
 	uint32_t seqn; /**< Sequence number. See also rte_reorder_insert() */
 
-	uint16_t vlan_tci_outer;  /**< Outer VLAN Tag Control Identifier (CPU order) */
+	/** Outer VLAN TCI (CPU order), valid if PKT_RX_QINQ_STRIPPED is set. */
+	uint16_t vlan_tci_outer;
 
 	/* second cache line - fields only used in slow path or on TX */
 	MARKER cacheline1 __rte_cache_min_aligned;
@@ -850,6 +888,44 @@ struct rte_mbuf {
 	/** Timesync flags for use with IEEE1588. */
 	uint16_t timesync;
 } __rte_cache_aligned;
+
+/**
+ * Prefetch the first part of the mbuf
+ *
+ * The first 64 bytes of the mbuf corresponds to fields that are used early
+ * in the receive path. If the cache line of the architecture is higher than
+ * 64B, the second part will also be prefetched.
+ *
+ * @param m
+ *   The pointer to the mbuf.
+ */
+static inline void
+rte_mbuf_prefetch_part1(struct rte_mbuf *m)
+{
+	rte_prefetch0(&m->cacheline0);
+}
+
+/**
+ * Prefetch the second part of the mbuf
+ *
+ * The next 64 bytes of the mbuf corresponds to fields that are used in the
+ * transmit path. If the cache line of the architecture is higher than 64B,
+ * this function does nothing as it is expected that the full mbuf is
+ * already in cache.
+ *
+ * @param m
+ *   The pointer to the mbuf.
+ */
+static inline void
+rte_mbuf_prefetch_part2(struct rte_mbuf *m)
+{
+#if RTE_CACHE_LINE_SIZE == 64
+	rte_prefetch0(&m->cacheline1);
+#else
+	RTE_SET_USED(m);
+#endif
+}
+
 
 static inline uint16_t rte_pktmbuf_priv_size(struct rte_mempool *mp);
 
@@ -941,28 +1017,10 @@ struct rte_pktmbuf_pool_private {
 /**  check mbuf type in debug mode */
 #define __rte_mbuf_sanity_check(m, is_h) rte_mbuf_sanity_check(m, is_h)
 
-/**  check mbuf type in debug mode if mbuf pointer is not null */
-#define __rte_mbuf_sanity_check_raw(m, is_h)	do {       \
-	if ((m) != NULL)                                   \
-		rte_mbuf_sanity_check(m, is_h);          \
-} while (0)
-
-/**  MBUF asserts in debug mode */
-#define RTE_MBUF_ASSERT(exp)                                         \
-if (!(exp)) {                                                        \
-	rte_panic("line%d\tassert \"" #exp "\" failed\n", __LINE__); \
-}
-
 #else /*  RTE_LIBRTE_MBUF_DEBUG */
 
 /**  check mbuf type in debug mode */
 #define __rte_mbuf_sanity_check(m, is_h) do { } while (0)
-
-/**  check mbuf type in debug mode if mbuf pointer is not null */
-#define __rte_mbuf_sanity_check_raw(m, is_h) do { } while (0)
-
-/**  MBUF asserts in debug mode */
-#define RTE_MBUF_ASSERT(exp)                do { } while (0)
 
 #endif /*  RTE_LIBRTE_MBUF_DEBUG */
 
@@ -1076,9 +1134,12 @@ void
 rte_mbuf_sanity_check(const struct rte_mbuf *m, int is_header);
 
 /**
- * @internal Allocate a new mbuf from mempool *mp*.
- * The use of that function is reserved for RTE internal needs.
- * Please use rte_pktmbuf_alloc().
+ * Allocate an unitialized mbuf from mempool *mp*.
+ *
+ * This function can be used by PMDs (especially in RX functions) to
+ * allocate an unitialized mbuf. The driver is responsible of
+ * initializing all the required fields. See rte_pktmbuf_reset().
+ * For standard needs, prefer rte_pktmbuf_alloc().
  *
  * @param mp
  *   The mempool from which mbuf is allocated.
@@ -1086,16 +1147,26 @@ rte_mbuf_sanity_check(const struct rte_mbuf *m, int is_header);
  *   - The pointer to the new mbuf on success.
  *   - NULL if allocation failed.
  */
-static inline struct rte_mbuf *__rte_mbuf_raw_alloc(struct rte_mempool *mp)
+static inline struct rte_mbuf *rte_mbuf_raw_alloc(struct rte_mempool *mp)
 {
 	struct rte_mbuf *m;
 	void *mb = NULL;
+
 	if (rte_mempool_get(mp, &mb) < 0)
 		return NULL;
 	m = (struct rte_mbuf *)mb;
-	RTE_MBUF_ASSERT(rte_mbuf_refcnt_read(m) == 0);
+	RTE_ASSERT(rte_mbuf_refcnt_read(m) == 0);
 	rte_mbuf_refcnt_set(m, 1);
+	__rte_mbuf_sanity_check(m, 0);
+
 	return m;
+}
+
+/* compat with older versions */
+__rte_deprecated static inline struct rte_mbuf *
+__rte_mbuf_raw_alloc(struct rte_mempool *mp)
+{
+	return rte_mbuf_raw_alloc(mp);
 }
 
 /**
@@ -1109,7 +1180,7 @@ static inline struct rte_mbuf *__rte_mbuf_raw_alloc(struct rte_mempool *mp)
 static inline void __attribute__((always_inline))
 __rte_mbuf_raw_free(struct rte_mbuf *m)
 {
-	RTE_MBUF_ASSERT(rte_mbuf_refcnt_read(m) == 0);
+	RTE_ASSERT(rte_mbuf_refcnt_read(m) == 0);
 	rte_mempool_put(m->pool, m);
 }
 
@@ -1361,7 +1432,7 @@ static inline void rte_pktmbuf_reset(struct rte_mbuf *m)
 static inline struct rte_mbuf *rte_pktmbuf_alloc(struct rte_mempool *mp)
 {
 	struct rte_mbuf *m;
-	if ((m = __rte_mbuf_raw_alloc(mp)) != NULL)
+	if ((m = rte_mbuf_raw_alloc(mp)) != NULL)
 		rte_pktmbuf_reset(m);
 	return m;
 }
@@ -1397,22 +1468,22 @@ static inline int rte_pktmbuf_alloc_bulk(struct rte_mempool *pool,
 	switch (count % 4) {
 	case 0:
 		while (idx != count) {
-			RTE_MBUF_ASSERT(rte_mbuf_refcnt_read(mbufs[idx]) == 0);
+			RTE_ASSERT(rte_mbuf_refcnt_read(mbufs[idx]) == 0);
 			rte_mbuf_refcnt_set(mbufs[idx], 1);
 			rte_pktmbuf_reset(mbufs[idx]);
 			idx++;
 	case 3:
-			RTE_MBUF_ASSERT(rte_mbuf_refcnt_read(mbufs[idx]) == 0);
+			RTE_ASSERT(rte_mbuf_refcnt_read(mbufs[idx]) == 0);
 			rte_mbuf_refcnt_set(mbufs[idx], 1);
 			rte_pktmbuf_reset(mbufs[idx]);
 			idx++;
 	case 2:
-			RTE_MBUF_ASSERT(rte_mbuf_refcnt_read(mbufs[idx]) == 0);
+			RTE_ASSERT(rte_mbuf_refcnt_read(mbufs[idx]) == 0);
 			rte_mbuf_refcnt_set(mbufs[idx], 1);
 			rte_pktmbuf_reset(mbufs[idx]);
 			idx++;
 	case 1:
-			RTE_MBUF_ASSERT(rte_mbuf_refcnt_read(mbufs[idx]) == 0);
+			RTE_ASSERT(rte_mbuf_refcnt_read(mbufs[idx]) == 0);
 			rte_mbuf_refcnt_set(mbufs[idx], 1);
 			rte_pktmbuf_reset(mbufs[idx]);
 			idx++;
@@ -1426,6 +1497,8 @@ static inline int rte_pktmbuf_alloc_bulk(struct rte_mempool *pool,
  *
  * After attachment we refer the mbuf we attached as 'indirect',
  * while mbuf we attached to as 'direct'.
+ * The direct mbuf's reference counter is incremented.
+ *
  * Right now, not supported:
  *  - attachment for already indirect mbuf (e.g. - mi has to be direct).
  *  - mbuf we trying to attach (mi) is used by someone else
@@ -1440,7 +1513,7 @@ static inline void rte_pktmbuf_attach(struct rte_mbuf *mi, struct rte_mbuf *m)
 {
 	struct rte_mbuf *md;
 
-	RTE_MBUF_ASSERT(RTE_MBUF_DIRECT(mi) &&
+	RTE_ASSERT(RTE_MBUF_DIRECT(mi) &&
 	    rte_mbuf_refcnt_read(mi) == 1);
 
 	/* if m is not direct, get the mbuf that embeds the data */
@@ -1479,13 +1552,17 @@ static inline void rte_pktmbuf_attach(struct rte_mbuf *mi, struct rte_mbuf *m)
  *
  *  - restore original mbuf address and length values.
  *  - reset pktmbuf data and data_len to their default values.
- *  All other fields of the given packet mbuf will be left intact.
+ *  - decrement the direct mbuf's reference counter. When the
+ *  reference counter becomes 0, the direct mbuf is freed.
+ *
+ * All other fields of the given packet mbuf will be left intact.
  *
  * @param m
  *   The indirect attached packet mbuf.
  */
 static inline void rte_pktmbuf_detach(struct rte_mbuf *m)
 {
+	struct rte_mbuf *md = rte_mbuf_from_indirect(m);
 	struct rte_mempool *mp = m->pool;
 	uint32_t mbuf_size, buf_len, priv_size;
 
@@ -1500,6 +1577,9 @@ static inline void rte_pktmbuf_detach(struct rte_mbuf *m)
 	m->data_off = RTE_MIN(RTE_PKTMBUF_HEADROOM, (uint16_t)m->buf_len);
 	m->data_len = 0;
 	m->ol_flags = 0;
+
+	if (rte_mbuf_refcnt_update(md, -1) == 0)
+		__rte_mbuf_raw_free(md);
 }
 
 static inline struct rte_mbuf* __attribute__((always_inline))
@@ -1508,17 +1588,9 @@ __rte_pktmbuf_prefree_seg(struct rte_mbuf *m)
 	__rte_mbuf_sanity_check(m, 0);
 
 	if (likely(rte_mbuf_refcnt_update(m, -1) == 0)) {
-
-		/* if this is an indirect mbuf, then
-		 *  - detach mbuf
-		 *  - free attached mbuf segment
-		 */
-		if (RTE_MBUF_INDIRECT(m)) {
-			struct rte_mbuf *md = rte_mbuf_from_indirect(m);
+		/* if this is an indirect mbuf, it is detached. */
+		if (RTE_MBUF_INDIRECT(m))
 			rte_pktmbuf_detach(m);
-			if (rte_mbuf_refcnt_update(md, -1) == 0)
-				__rte_mbuf_raw_free(md);
-		}
 		return m;
 	}
 	return NULL;

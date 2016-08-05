@@ -566,10 +566,9 @@ virtio_tx_route(struct vhost_dev *vdev, struct rte_mbuf *m)
 	struct rte_mbuf **m_table;
 	unsigned len, ret = 0;
 	const uint16_t lcore_id = rte_lcore_id();
-	struct virtio_net *dev = vdev->dev;
 
-	LOG_DEBUG(VHOST_DATA, "(%"PRIu64") TX: MAC address is external\n",
-		dev->device_fh);
+	RTE_LOG(DEBUG, VHOST_DATA, "(%d) TX: MAC address is external\n",
+		vdev->vid);
 
 	/* Add packet to the port tx queue */
 	tx_q = &lcore_tx_queue[lcore_id];
@@ -578,8 +577,8 @@ virtio_tx_route(struct vhost_dev *vdev, struct rte_mbuf *m)
 	tx_q->m_table[len] = m;
 	len++;
 	if (enable_stats) {
-		dev_statistics[dev->device_fh].tx_total++;
-		dev_statistics[dev->device_fh].tx++;
+		dev_statistics[vdev->vid].tx_total++;
+		dev_statistics[vdev->vid].tx++;
 	}
 
 	if (unlikely(len == MAX_PKT_BURST)) {
@@ -614,7 +613,6 @@ static int
 switch_worker(__rte_unused void *arg)
 {
 	struct rte_mempool *mbuf_pool = arg;
-	struct virtio_net *dev = NULL;
 	struct vhost_dev *vdev = NULL;
 	struct rte_mbuf *pkts_burst[MAX_PKT_BURST];
 	struct virtio_net_data_ll *dev_ll;
@@ -651,7 +649,7 @@ switch_worker(__rte_unused void *arg)
 		if (unlikely(diff_tsc > drain_tsc)) {
 
 			if (tx_q->len) {
-				LOG_DEBUG(VHOST_DATA, "TX queue drained after "
+				RTE_LOG(DEBUG, VHOST_DATA, "TX queue drained after "
 					"timeout with burst size %u\n",
 					tx_q->len);
 				ret = overlay_options.tx_handle(ports[0],
@@ -688,7 +686,6 @@ switch_worker(__rte_unused void *arg)
 
 		while (dev_ll != NULL) {
 			vdev = dev_ll->vdev;
-			dev = vdev->dev;
 
 			if (unlikely(vdev->remove)) {
 				dev_ll = dev_ll->next;
@@ -709,22 +706,22 @@ switch_worker(__rte_unused void *arg)
 					* must be less than virtio queue size
 					*/
 					if (enable_retry && unlikely(rx_count >
-						rte_vring_available_entries(dev, VIRTIO_RXQ))) {
+						rte_vhost_avail_entries(vdev->vid, VIRTIO_RXQ))) {
 						for (retry = 0; retry < burst_rx_retry_num;
 							retry++) {
 							rte_delay_us(burst_rx_delay_time);
-							if (rx_count <= rte_vring_available_entries(dev, VIRTIO_RXQ))
+							if (rx_count <= rte_vhost_avail_entries(vdev->vid, VIRTIO_RXQ))
 								break;
 						}
 					}
 
-					ret_count = overlay_options.rx_handle(dev, pkts_burst, rx_count);
+					ret_count = overlay_options.rx_handle(vdev->vid, pkts_burst, rx_count);
 					if (enable_stats) {
 						rte_atomic64_add(
-						&dev_statistics[dev->device_fh].rx_total_atomic,
+						&dev_statistics[vdev->vid].rx_total_atomic,
 						rx_count);
 						rte_atomic64_add(
-						&dev_statistics[dev->device_fh].rx_atomic, ret_count);
+						&dev_statistics[vdev->vid].rx_atomic, ret_count);
 					}
 					while (likely(rx_count)) {
 						rx_count--;
@@ -736,7 +733,7 @@ switch_worker(__rte_unused void *arg)
 
 			if (likely(!vdev->remove)) {
 				/* Handle guest TX*/
-				tx_count = rte_vhost_dequeue_burst(dev,
+				tx_count = rte_vhost_dequeue_burst(vdev->vid,
 						VIRTIO_TXQ, mbuf_pool,
 						pkts_burst, MAX_PKT_BURST);
 				/* If this is the first received packet we need to learn the MAC */
@@ -908,23 +905,27 @@ init_data_ll(void)
 /**
  * Remove a device from the specific data core linked list and
  * from the main linked list. Synchonization occurs through the use
- * of the lcore dev_removal_flag. Device is made volatile here
- * to avoid re-ordering of dev->remove=1 which can cause an infinite
- * loop in the rte_pause loop.
+ * of the lcore dev_removal_flag.
  */
 static void
-destroy_device(volatile struct virtio_net *dev)
+destroy_device(int vid)
 {
 	struct virtio_net_data_ll *ll_lcore_dev_cur;
 	struct virtio_net_data_ll *ll_main_dev_cur;
 	struct virtio_net_data_ll *ll_lcore_dev_last = NULL;
 	struct virtio_net_data_ll *ll_main_dev_last = NULL;
-	struct vhost_dev *vdev;
+	struct vhost_dev *vdev = NULL;
 	int lcore;
 
-	dev->flags &= ~VIRTIO_DEV_RUNNING;
-
-	vdev = (struct vhost_dev *)dev->priv;
+	ll_main_dev_cur = ll_root_used;
+	while (ll_main_dev_cur != NULL) {
+		if (ll_main_dev_cur->vdev->vid == vid) {
+			vdev = ll_main_dev_cur->vdev;
+			break;
+		}
+	}
+	if (!vdev)
+		return;
 
 	/* set the remove flag. */
 	vdev->remove = 1;
@@ -944,8 +945,7 @@ destroy_device(volatile struct virtio_net *dev)
 
 	if (ll_lcore_dev_cur == NULL) {
 		RTE_LOG(ERR, VHOST_CONFIG,
-			"(%"PRIu64") Failed to find the dev to be destroy.\n",
-			dev->device_fh);
+			"(%d) Failed to find the dev to be destroy.\n", vid);
 		return;
 	}
 
@@ -992,8 +992,8 @@ destroy_device(volatile struct virtio_net *dev)
 	/* Decrement number of device on the lcore. */
 	lcore_info[vdev->coreid].lcore_ll->device_num--;
 
-	RTE_LOG(INFO, VHOST_DATA, "(%"PRIu64") Device has been removed "
-		"from data core\n", dev->device_fh);
+	RTE_LOG(INFO, VHOST_DATA, "(%d) Device has been removed "
+		"from data core\n", vid);
 
 	rte_free(vdev);
 
@@ -1004,7 +1004,7 @@ destroy_device(volatile struct virtio_net *dev)
  * to the main linked list and the allocated to a specific data core.
  */
 static int
-new_device(struct virtio_net *dev)
+new_device(int vid)
 {
 	struct virtio_net_data_ll *ll_dev;
 	int lcore, core_add = 0;
@@ -1014,18 +1014,16 @@ new_device(struct virtio_net *dev)
 	vdev = rte_zmalloc("vhost device", sizeof(*vdev), RTE_CACHE_LINE_SIZE);
 	if (vdev == NULL) {
 		RTE_LOG(INFO, VHOST_DATA,
-			"(%"PRIu64") Couldn't allocate memory for vhost dev\n",
-			dev->device_fh);
+			"(%d) Couldn't allocate memory for vhost dev\n", vid);
 		return -1;
 	}
-	vdev->dev = dev;
-	dev->priv = vdev;
+	vdev->vid = vid;
 	/* Add device to main ll */
 	ll_dev = get_data_ll_free_entry(&ll_root_free);
 	if (ll_dev == NULL) {
-		RTE_LOG(INFO, VHOST_DATA, "(%"PRIu64") No free entry found in"
+		RTE_LOG(INFO, VHOST_DATA, "(%d) No free entry found in"
 			" linked list Device limit of %d devices per core"
-			" has been reached\n", dev->device_fh, nb_devices);
+			" has been reached\n", vid, nb_devices);
 		if (vdev->regions_hpa)
 			rte_free(vdev->regions_hpa);
 		rte_free(vdev);
@@ -1033,7 +1031,7 @@ new_device(struct virtio_net *dev)
 	}
 	ll_dev->vdev = vdev;
 	add_data_ll_entry(&ll_root_used, ll_dev);
-	vdev->rx_q = dev->device_fh;
+	vdev->rx_q = vid;
 
 	/* reset ready flag */
 	vdev->ready = DEVICE_MAC_LEARNING;
@@ -1050,10 +1048,10 @@ new_device(struct virtio_net *dev)
 	ll_dev = get_data_ll_free_entry(&lcore_info[core_add].lcore_ll->ll_root_free);
 	if (ll_dev == NULL) {
 		RTE_LOG(INFO, VHOST_DATA,
-			"(%"PRIu64") Failed to add device to data core\n",
-			dev->device_fh);
+			"(%d) Failed to add device to data core\n",
+			vid);
 		vdev->ready = DEVICE_SAFE_REMOVE;
-		destroy_device(dev);
+		destroy_device(vid);
 		rte_free(vdev->regions_hpa);
 		rte_free(vdev);
 		return -1;
@@ -1065,17 +1063,16 @@ new_device(struct virtio_net *dev)
 			ll_dev);
 
 	/* Initialize device stats */
-	memset(&dev_statistics[dev->device_fh], 0,
+	memset(&dev_statistics[vid], 0,
 		sizeof(struct device_statistics));
 
 	/* Disable notifications. */
-	rte_vhost_enable_guest_notification(dev, VIRTIO_RXQ, 0);
-	rte_vhost_enable_guest_notification(dev, VIRTIO_TXQ, 0);
+	rte_vhost_enable_guest_notification(vid, VIRTIO_RXQ, 0);
+	rte_vhost_enable_guest_notification(vid, VIRTIO_TXQ, 0);
 	lcore_info[vdev->coreid].lcore_ll->device_num++;
-	dev->flags |= VIRTIO_DEV_RUNNING;
 
-	RTE_LOG(INFO, VHOST_DATA, "(%"PRIu64") Device has been added to data core %d\n",
-		dev->device_fh, vdev->coreid);
+	RTE_LOG(INFO, VHOST_DATA, "(%d) Device has been added to data core %d\n",
+		vid, vdev->coreid);
 
 	return 0;
 }
@@ -1099,7 +1096,7 @@ print_stats(void)
 	struct virtio_net_data_ll *dev_ll;
 	uint64_t tx_dropped, rx_dropped;
 	uint64_t tx, tx_total, rx, rx_total, rx_ip_csum, rx_l4_csum;
-	uint32_t device_fh;
+	int vid;
 	const char clr[] = { 27, '[', '2', 'J', '\0' };
 	const char top_left[] = { 27, '[', '1', ';', '1', 'H', '\0' };
 
@@ -1113,22 +1110,22 @@ print_stats(void)
 
 		dev_ll = ll_root_used;
 		while (dev_ll != NULL) {
-			device_fh = (uint32_t)dev_ll->vdev->dev->device_fh;
-			tx_total = dev_statistics[device_fh].tx_total;
-			tx = dev_statistics[device_fh].tx;
+			vid = dev_ll->vdev->vid;
+			tx_total = dev_statistics[vid].tx_total;
+			tx = dev_statistics[vid].tx;
 			tx_dropped = tx_total - tx;
 
 			rx_total = rte_atomic64_read(
-				&dev_statistics[device_fh].rx_total_atomic);
+				&dev_statistics[vid].rx_total_atomic);
 			rx = rte_atomic64_read(
-				&dev_statistics[device_fh].rx_atomic);
+				&dev_statistics[vid].rx_atomic);
 			rx_dropped = rx_total - rx;
 			rx_ip_csum = rte_atomic64_read(
-				&dev_statistics[device_fh].rx_bad_ip_csum);
+				&dev_statistics[vid].rx_bad_ip_csum);
 			rx_l4_csum = rte_atomic64_read(
-				&dev_statistics[device_fh].rx_bad_l4_csum);
+				&dev_statistics[vid].rx_bad_l4_csum);
 
-			printf("\nStatistics for device %"PRIu32" ----------"
+			printf("\nStatistics for device %d ----------"
 					"\nTX total:		%"PRIu64""
 					"\nTX dropped:		%"PRIu64""
 					"\nTX successful:		%"PRIu64""
@@ -1137,7 +1134,7 @@ print_stats(void)
 					"\nRX bad L4 csum:      %"PRIu64""
 					"\nRX dropped:		%"PRIu64""
 					"\nRX successful:		%"PRIu64"",
-					device_fh,
+					vid,
 					tx_total,
 					tx_dropped,
 					tx,
@@ -1190,8 +1187,6 @@ main(int argc, char *argv[])
 
 	/* Get the number of physical ports. */
 	nb_ports = rte_eth_dev_count();
-	if (nb_ports > RTE_MAX_ETHPORTS)
-		nb_ports = RTE_MAX_ETHPORTS;
 
 	/*
 	 * Update the global var NB_PORTS and global array PORTS
@@ -1219,9 +1214,6 @@ main(int argc, char *argv[])
 
 	for (queue_id = 0; queue_id < MAX_QUEUES + 1; queue_id++)
 		vpool_array[queue_id].pool = mbuf_pool;
-
-	/* Set log level. */
-	rte_set_log_level(LOG_LEVEL);
 
 	/* initialize all ports */
 	for (portid = 0; portid < nb_ports; portid++) {
@@ -1251,7 +1243,7 @@ main(int argc, char *argv[])
 		snprintf(thread_name, RTE_MAX_THREAD_NAME_LEN, "print-stats");
 		ret = rte_thread_setname(tid, thread_name);
 		if (ret != 0)
-			RTE_LOG(ERR, VHOST_CONFIG, "Cannot set print-stats name\n");
+			RTE_LOG(DEBUG, VHOST_CONFIG, "Cannot set print-stats name\n");
 	}
 
 	/* Launch all data cores. */
@@ -1262,7 +1254,7 @@ main(int argc, char *argv[])
 	rte_vhost_feature_disable(1ULL << VIRTIO_NET_F_MRG_RXBUF);
 
 	/* Register CUSE device to handle IOCTLs. */
-	ret = rte_vhost_driver_register((char *)&dev_basename);
+	ret = rte_vhost_driver_register((char *)&dev_basename, 0);
 	if (ret != 0)
 		rte_exit(EXIT_FAILURE, "CUSE device setup failure.\n");
 

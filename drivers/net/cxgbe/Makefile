@@ -45,7 +45,7 @@ EXPORT_MAP := rte_pmd_cxgbe_version.map
 
 LIBABIVER := 1
 
-ifeq ($(CC), icc)
+ifeq ($(CONFIG_RTE_TOOLCHAIN_ICC),y)
 #
 # CFLAGS for icc
 #
@@ -54,8 +54,10 @@ else
 #
 # CFLAGS for gcc/clang
 #
-ifeq ($(shell test $(CC) = gcc && test $(GCC_VERSION) -ge 44 && echo 1), 1)
+ifeq ($(CONFIG_RTE_TOOLCHAIN_GCC),y)
+ifeq ($(shell test $(GCC_VERSION) -ge 44 && echo 1), 1)
 CFLAGS     += -Wno-deprecated
+endif
 endif
 CFLAGS_BASE_DRIVER =
 
@@ -82,6 +84,6 @@ SRCS-$(CONFIG_RTE_LIBRTE_CXGBE_PMD) += t4_hw.c
 # this lib depends upon:
 DEPDIRS-$(CONFIG_RTE_LIBRTE_CXGBE_PMD) += lib/librte_eal lib/librte_ether
 DEPDIRS-$(CONFIG_RTE_LIBRTE_CXGBE_PMD) += lib/librte_mempool lib/librte_mbuf
-DEPDIRS-$(CONFIG_RTE_LIBRTE_CXGBE_PMD) += lib/librte_net lib/librte_malloc
+DEPDIRS-$(CONFIG_RTE_LIBRTE_CXGBE_PMD) += lib/librte_net
 
 include $(RTE_SDK)/mk/rte.lib.mk

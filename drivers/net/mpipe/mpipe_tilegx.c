@@ -516,7 +516,7 @@ mpipe_recv_fill_stack(struct mpipe_dev_priv *priv, int count)
 	int i;
 
 	for (i = 0; i < count; i++) {
-		mbuf = __rte_mbuf_raw_alloc(priv->rx_mpool);
+		mbuf = rte_mbuf_raw_alloc(priv->rx_mpool);
 		if (!mbuf)
 			break;
 		mpipe_recv_push(priv, mbuf);
@@ -1452,7 +1452,7 @@ mpipe_do_recv(struct mpipe_rx_queue *rx_queue, struct rte_mbuf **rx_pkts,
 					MPIPE_BUF_DEBT_THRESHOLD)
 				mpipe_local.mbuf_push_debt[in_port]++;
 			else {
-				mbuf = __rte_mbuf_raw_alloc(priv->rx_mpool);
+				mbuf = rte_mbuf_raw_alloc(priv->rx_mpool);
 				if (unlikely(!mbuf)) {
 					nb_nomem++;
 					gxio_mpipe_iqueue_drop(iqueue, idesc);
@@ -1624,19 +1624,17 @@ rte_pmd_mpipe_devinit(const char *ifname,
 }
 
 static struct rte_driver pmd_mpipe_xgbe_drv = {
-	.name = "xgbe",
 	.type = PMD_VDEV,
 	.init = rte_pmd_mpipe_devinit,
 };
 
 static struct rte_driver pmd_mpipe_gbe_drv = {
-	.name = "gbe",
 	.type = PMD_VDEV,
 	.init = rte_pmd_mpipe_devinit,
 };
 
-PMD_REGISTER_DRIVER(pmd_mpipe_xgbe_drv);
-PMD_REGISTER_DRIVER(pmd_mpipe_gbe_drv);
+PMD_REGISTER_DRIVER(pmd_mpipe_xgbe_drv, xgbe);
+PMD_REGISTER_DRIVER(pmd_mpipe_gbe_drv, gbe);
 
 static void __attribute__((constructor, used))
 mpipe_init_contexts(void)

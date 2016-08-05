@@ -39,7 +39,6 @@
 #include <limits.h>
 #include <net/if.h>
 #include <netinet/in.h>
-#include <linux/if.h>
 
 /* Verbs header. */
 /* ISO C doesn't support unnamed structs/unions, disabling -pedantic. */
@@ -68,6 +67,11 @@
 #include "mlx5_rxtx.h"
 #include "mlx5_autoconf.h"
 #include "mlx5_defs.h"
+
+#if !defined(HAVE_VERBS_IBV_EXP_CQ_COMPRESSED_CQE) || \
+	!defined(HAVE_VERBS_MLX5_ETH_VLAN_INLINE_HEADER_SIZE)
+#error Mellanox OFED >= 3.3 is required, please refer to the documentation.
+#endif
 
 enum {
 	PCI_VENDOR_ID_MELLANOX = 0x15b3,
@@ -105,9 +109,12 @@ struct priv {
 	unsigned int hw_vlan_strip:1; /* VLAN stripping is supported. */
 	unsigned int hw_fcs_strip:1; /* FCS stripping is supported. */
 	unsigned int hw_padding:1; /* End alignment padding is supported. */
-	unsigned int vf:1; /* This is a VF device. */
+	unsigned int sriov:1; /* This is a VF or PF with VF devices. */
 	unsigned int mps:1; /* Whether multi-packet send is supported. */
+	unsigned int cqe_comp:1; /* Whether CQE compression is enabled. */
 	unsigned int pending_alarm:1; /* An alarm is pending. */
+	unsigned int txq_inline; /* Maximum packet size for inlining. */
+	unsigned int txqs_inline; /* Queue number threshold for inlining. */
 	/* RX/TX queues. */
 	unsigned int rxqs_n; /* RX queues array size. */
 	unsigned int txqs_n; /* TX queues array size. */
@@ -173,6 +180,7 @@ struct priv *mlx5_get_priv(struct rte_eth_dev *dev);
 int mlx5_is_secondary(void);
 int priv_get_ifname(const struct priv *, char (*)[IF_NAMESIZE]);
 int priv_ifreq(const struct priv *, int req, struct ifreq *);
+int priv_get_num_vfs(struct priv *, uint16_t *);
 int priv_get_mtu(struct priv *, uint16_t *);
 int priv_set_flags(struct priv *, unsigned int, unsigned int);
 int mlx5_dev_configure(struct rte_eth_dev *);
@@ -191,6 +199,8 @@ void priv_dev_interrupt_handler_install(struct priv *, struct rte_eth_dev *);
 int mlx5_set_link_down(struct rte_eth_dev *dev);
 int mlx5_set_link_up(struct rte_eth_dev *dev);
 struct priv *mlx5_secondary_data_setup(struct priv *priv);
+void priv_select_tx_function(struct priv *);
+void priv_select_rx_function(struct priv *);
 
 /* mlx5_mac.c */
 

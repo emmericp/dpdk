@@ -38,6 +38,12 @@
 
 # find out CLANG version
 
-CLANG_MAJOR_VERSION = $(shell $(CC) -dumpversion | cut -f1 -d.)
+CLANG_VERSION := $(shell $(CC) -v 2>&1 | grep version | sed "s/.*version \([0-9]*\.[0-9]*\).*/\1/")
 
-CLANG_MINOR_VERSION = $(shell $(CC) -dumpversion | cut -f2 -d.)
+CLANG_MAJOR_VERSION := $(shell echo $(CLANG_VERSION) | cut -f1 -d.)
+
+CLANG_MINOR_VERSION := $(shell echo $(CLANG_VERSION) | cut -f2 -d.)
+
+ifeq ($(shell test $(CLANG_MAJOR_VERSION)$(CLANG_MINOR_VERSION) -lt 35 && echo 1), 1)
+	CC_SUPPORTS_Z := false
+endif

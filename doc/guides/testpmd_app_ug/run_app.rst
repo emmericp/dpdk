@@ -289,6 +289,10 @@ The commandline options are:
 
     Enable hardware RX checksum offload.
 
+*   ``--enable-scatter``
+
+    Enable scatter (multi-segment) RX.
+
 *   ``--disable-hw-vlan``
 
     Disable hardware VLAN.
@@ -329,7 +333,6 @@ The commandline options are:
 
        io (the default)
        mac
-       mac_retry
        mac_swap
        flowgen
        rxonly

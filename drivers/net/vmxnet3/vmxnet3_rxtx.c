@@ -86,16 +86,6 @@ static void vmxnet3_rxq_dump(struct vmxnet3_rx_queue *);
 static void vmxnet3_txq_dump(struct vmxnet3_tx_queue *);
 #endif
 
-static struct rte_mbuf *
-rte_rxmbuf_alloc(struct rte_mempool *mp)
-{
-	struct rte_mbuf *m;
-
-	m = __rte_mbuf_raw_alloc(mp);
-	__rte_mbuf_sanity_check_raw(m, 0);
-	return m;
-}
-
 #ifdef RTE_LIBRTE_VMXNET3_DEBUG_DRIVER_NOT_USED
 static void
 vmxnet3_rxq_dump(struct vmxnet3_rx_queue *rxq)
@@ -106,7 +96,7 @@ vmxnet3_rxq_dump(struct vmxnet3_rx_queue *rxq)
 		return;
 
 	PMD_RX_LOG(DEBUG,
-		   "RXQ: cmd0 base : 0x%p cmd1 base : 0x%p comp ring base : 0x%p.",
+		   "RXQ: cmd0 base : %p cmd1 base : %p comp ring base : %p.",
 		   rxq->cmd_ring[0].base, rxq->cmd_ring[1].base, rxq->comp_ring.base);
 	PMD_RX_LOG(DEBUG,
 		   "RXQ: cmd0 basePA : 0x%lx cmd1 basePA : 0x%lx comp ring basePA : 0x%lx.",
@@ -136,7 +126,7 @@ vmxnet3_txq_dump(struct vmxnet3_tx_queue *txq)
 	if (txq == NULL)
 		return;
 
-	PMD_TX_LOG(DEBUG, "TXQ: cmd base : 0x%p comp ring base : 0x%p data ring base : 0x%p.",
+	PMD_TX_LOG(DEBUG, "TXQ: cmd base : %p comp ring base : %p data ring base : %p.",
 		   txq->cmd_ring.base, txq->comp_ring.base, txq->data_ring.base);
 	PMD_TX_LOG(DEBUG, "TXQ: cmd basePA : 0x%lx comp ring basePA : 0x%lx data ring basePA : 0x%lx.",
 		   (unsigned long)txq->cmd_ring.basePA,
@@ -296,7 +286,7 @@ vmxnet3_unmap_pkt(uint16_t eop_idx, vmxnet3_tx_queue_t *txq)
 	struct rte_mbuf *mbuf;
 
 	/* Release cmd_ring descriptor and free mbuf */
-	VMXNET3_ASSERT(txq->cmd_ring.base[eop_idx].txd.eop == 1);
+	RTE_ASSERT(txq->cmd_ring.base[eop_idx].txd.eop == 1);
 
 	mbuf = txq->cmd_ring.buf_info[eop_idx].m;
 	if (mbuf == NULL)
@@ -307,7 +297,7 @@ vmxnet3_unmap_pkt(uint16_t eop_idx, vmxnet3_tx_queue_t *txq)
 
 	while (txq->cmd_ring.next2comp != eop_idx) {
 		/* no out-of-order completion */
-		VMXNET3_ASSERT(txq->cmd_ring.base[txq->cmd_ring.next2comp].txd.cq == 0);
+		RTE_ASSERT(txq->cmd_ring.base[txq->cmd_ring.next2comp].txd.cq == 0);
 		vmxnet3_cmd_ring_adv_next2comp(&txq->cmd_ring);
 		completed++;
 	}
@@ -454,7 +444,7 @@ vmxnet3_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 		if (tso) {
 			uint16_t mss = txm->tso_segsz;
 
-			VMXNET3_ASSERT(mss > 0);
+			RTE_ASSERT(mss > 0);
 
 			gdesc->txd.hlen = txm->l2_len + txm->l3_len + txm->l4_len;
 			gdesc->txd.om = VMXNET3_OM_TSO;
@@ -544,7 +534,7 @@ vmxnet3_post_rx_bufs(vmxnet3_rx_queue_t *rxq, uint8_t ring_id)
 		rxd = (struct Vmxnet3_RxDesc *)(ring->base + ring->next2fill);
 
 		/* Allocate blank mbuf for the current Rx Descriptor */
-		mbuf = rte_rxmbuf_alloc(rxq->mp);
+		mbuf = rte_mbuf_raw_alloc(rxq->mp);
 		if (unlikely(mbuf == NULL)) {
 			PMD_RX_LOG(ERR, "Error allocating mbuf");
 			rxq->stats.rx_buf_alloc_failure++;
@@ -587,12 +577,6 @@ vmxnet3_post_rx_bufs(vmxnet3_rx_queue_t *rxq, uint8_t ring_id)
 static void
 vmxnet3_rx_offload(const Vmxnet3_RxCompDesc *rcd, struct rte_mbuf *rxm)
 {
-	/* Check for hardware stripped VLAN tag */
-	if (rcd->ts) {
-		rxm->ol_flags |= PKT_RX_VLAN_PKT;
-		rxm->vlan_tci = rte_le_to_cpu_16((uint16_t)rcd->tci);
-	}
-
 	/* Check for RSS */
 	if (rcd->rssType != VMXNET3_RCD_RSS_TYPE_NONE) {
 		rxm->ol_flags |= PKT_RX_RSS_HASH;
@@ -658,12 +642,13 @@ vmxnet3_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 		idx = rcd->rxdIdx;
 		ring_idx = (uint8_t)((rcd->rqID == rxq->qid1) ? 0 : 1);
 		rxd = (Vmxnet3_RxDesc *)rxq->cmd_ring[ring_idx].base + idx;
+		RTE_SET_USED(rxd); /* used only for assert when enabled */
 		rbi = rxq->cmd_ring[ring_idx].buf_info + idx;
 
 		PMD_RX_LOG(DEBUG, "rxd idx: %d ring idx: %d.", idx, ring_idx);
 
-		VMXNET3_ASSERT(rcd->len <= rxd->len);
-		VMXNET3_ASSERT(rbi->m);
+		RTE_ASSERT(rcd->len <= rxd->len);
+		RTE_ASSERT(rbi->m);
 
 		/* Get the packet buffer pointer from buf_info */
 		rxm = rbi->m;
@@ -710,10 +695,10 @@ vmxnet3_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 		 * the last mbuf of the current packet.
 		 */
 		if (rcd->sop) {
-			VMXNET3_ASSERT(rxd->btype == VMXNET3_RXD_BTYPE_HEAD);
+			RTE_ASSERT(rxd->btype == VMXNET3_RXD_BTYPE_HEAD);
 
 			if (unlikely(rcd->len == 0)) {
-				VMXNET3_ASSERT(rcd->eop);
+				RTE_ASSERT(rcd->eop);
 
 				PMD_RX_LOG(DEBUG,
 					   "Rx buf was skipped. rxring[%d][%d])",
@@ -727,7 +712,7 @@ vmxnet3_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 		} else {
 			struct rte_mbuf *start = rxq->start_seg;
 
-			VMXNET3_ASSERT(rxd->btype == VMXNET3_RXD_BTYPE_BODY);
+			RTE_ASSERT(rxd->btype == VMXNET3_RXD_BTYPE_BODY);
 
 			start->pkt_len += rxm->data_len;
 			start->nb_segs++;
@@ -737,7 +722,15 @@ vmxnet3_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 		rxq->last_seg = rxm;
 
 		if (rcd->eop) {
-			rx_pkts[nb_rx++] = rxq->start_seg;
+			struct rte_mbuf *start = rxq->start_seg;
+
+			/* Check for hardware stripped VLAN tag */
+			if (rcd->ts) {
+				start->ol_flags |= (PKT_RX_VLAN_PKT | PKT_RX_VLAN_STRIPPED);
+				start->vlan_tci = rte_le_to_cpu_16((uint16_t)rcd->tci);
+			}
+
+			rx_pkts[nb_rx++] = start;
 			rxq->start_seg = NULL;
 		}
 

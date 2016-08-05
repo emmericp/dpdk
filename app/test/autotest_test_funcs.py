@@ -83,7 +83,7 @@ def spinlock_autotest(child, test_name):
 			"Test Failed",
 			"Hello from core ([0-9]*) !",
 			"Hello from within recursive locks from ([0-9]*) !",
-		pexpect.TIMEOUT], timeout = 20)
+		pexpect.TIMEOUT], timeout = 5)
 		# ok
 		if index == 0:
 			break
@@ -145,18 +145,10 @@ def logs_autotest(child, test_name):
 	child.sendline(test_name)
 
 	log_list = [
-		"TESTAPP1: this is a debug level message",
-		"TESTAPP1: this is a info level message",
-		"TESTAPP1: this is a warning level message",
-		"TESTAPP2: this is a info level message",
-		"TESTAPP2: this is a warning level message",
-		"TESTAPP1: this is a debug level message",
-		"TESTAPP1: this is a debug level message",
-		"TESTAPP1: this is a info level message",
-		"TESTAPP1: this is a warning level message",
-		"TESTAPP2: this is a info level message",
-		"TESTAPP2: this is a warning level message",
-		"TESTAPP1: this is a debug level message",
+		"TESTAPP1: error message",
+		"TESTAPP1: critical message",
+		"TESTAPP2: critical message",
+		"TESTAPP1: error message",
 	]
 
 	for log_msg in log_list:
@@ -181,9 +173,9 @@ def timer_autotest(child, test_name):
 	i = 0
 	child.sendline(test_name)
 
-	index = child.expect(["Start timer stress tests \(20 seconds\)",
+	index = child.expect(["Start timer stress tests",
 		"Test Failed",
-		pexpect.TIMEOUT], timeout = 10)
+		pexpect.TIMEOUT], timeout = 5)
 
 	if index == 1:
 		return -1, "Fail"
@@ -192,16 +184,16 @@ def timer_autotest(child, test_name):
 
 	index = child.expect(["Start timer stress tests 2",
 		"Test Failed",
-		pexpect.TIMEOUT], timeout = 40)
+		pexpect.TIMEOUT], timeout = 5)
 
 	if index == 1:
 		return -1, "Fail"
 	elif index == 2:
 		return -1, "Fail [Timeout]"
 
-	index = child.expect(["Start timer basic tests \(20 seconds\)",
+	index = child.expect(["Start timer basic tests",
 		"Test Failed",
-		pexpect.TIMEOUT], timeout = 20)
+		pexpect.TIMEOUT], timeout = 5)
 
 	if index == 1:
 		return -1, "Fail"
@@ -281,7 +273,7 @@ def timer_autotest(child, test_name):
 def ring_autotest(child, test_name):
 	child.sendline(test_name)
 	index = child.expect(["Test OK", "Test Failed",
-		pexpect.TIMEOUT], timeout = 15)
+		pexpect.TIMEOUT], timeout = 2)
 	if index == 1:
 		return -1, "Fail"
 	elif index == 2:

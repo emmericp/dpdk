@@ -101,7 +101,7 @@ fm10k_desc_to_olflags_v(__m128i descs[4], struct rte_mbuf **rx_pkts)
 	const __m128i rxe_flag = _mm_set_epi8(0, 0, 0, 0,
 			0, 0, 0, 0,
 			0, 0, 0, 0,
-			0, 0, PKT_RX_RECIP_ERR, 0);
+			0, 0, 0, 0);
 
 	/* map rss type to rss hash flag */
 	const __m128i rss_flags = _mm_set_epi8(0, 0, 0, 0,
@@ -487,10 +487,10 @@ fm10k_recv_raw_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
 		rte_compiler_barrier();
 
 		if (split_packet) {
-			rte_prefetch0(&rx_pkts[pos]->cacheline1);
-			rte_prefetch0(&rx_pkts[pos + 1]->cacheline1);
-			rte_prefetch0(&rx_pkts[pos + 2]->cacheline1);
-			rte_prefetch0(&rx_pkts[pos + 3]->cacheline1);
+			rte_mbuf_prefetch_part2(rx_pkts[pos]);
+			rte_mbuf_prefetch_part2(rx_pkts[pos + 1]);
+			rte_mbuf_prefetch_part2(rx_pkts[pos + 2]);
+			rte_mbuf_prefetch_part2(rx_pkts[pos + 3]);
 		}
 
 		/* D.1 pkt 3,4 convert format from desc to pktmbuf */
@@ -606,8 +606,11 @@ fm10k_reassemble_packets(struct fm10k_rx_queue *rxq,
 
 			if (!split_flags[buf_idx]) {
 				/* it's the last packet of the set */
+#ifdef RTE_LIBRTE_FM10K_RX_OLFLAGS_ENABLE
 				start->hash = end->hash;
 				start->ol_flags = end->ol_flags;
+				start->packet_type = end->packet_type;
+#endif
 				pkts[pkt_idx++] = start;
 				start = end = NULL;
 			}

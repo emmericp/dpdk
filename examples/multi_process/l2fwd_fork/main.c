@@ -442,7 +442,8 @@ reset_slave_all_ports(unsigned slaveid)
 		pool = rte_mempool_lookup(buf_name);
 		if (pool)
 			printf("Port %d mempool free object is %u(%u)\n", slave->port[i],
-				rte_mempool_count(pool), (unsigned)NB_MBUF);
+				rte_mempool_avail_count(pool),
+				(unsigned int)NB_MBUF);
 		else
 			printf("Can't find mempool %s\n", buf_name);
 
@@ -978,9 +979,6 @@ main(int argc, char **argv)
 	nb_ports = rte_eth_dev_count();
 	if (nb_ports == 0)
 		rte_exit(EXIT_FAILURE, "No Ethernet ports - bye\n");
-
-	if (nb_ports > RTE_MAX_ETHPORTS)
-		nb_ports = RTE_MAX_ETHPORTS;
 
 	/* create the mbuf pool */
 	for (portid = 0; portid < nb_ports; portid++) {

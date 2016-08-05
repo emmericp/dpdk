@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
+ *   Copyright(c) 2010-2016 Intel Corporation. All rights reserved.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -59,8 +59,6 @@
 #include "virtqueue.h"
 #include "virtio_rxtx.h"
 
-
-static int eth_virtio_dev_init(struct rte_eth_dev *eth_dev);
 static int eth_virtio_dev_uninit(struct rte_eth_dev *eth_dev);
 static int  virtio_dev_configure(struct rte_eth_dev *dev);
 static int  virtio_dev_start(struct rte_eth_dev *dev);
@@ -80,7 +78,10 @@ static void virtio_get_hwaddr(struct virtio_hw *hw);
 static void virtio_dev_stats_get(struct rte_eth_dev *dev,
 				 struct rte_eth_stats *stats);
 static int virtio_dev_xstats_get(struct rte_eth_dev *dev,
-				 struct rte_eth_xstats *xstats, unsigned n);
+				 struct rte_eth_xstat *xstats, unsigned n);
+static int virtio_dev_xstats_get_names(struct rte_eth_dev *dev,
+				       struct rte_eth_xstat_name *xstats_names,
+				       unsigned limit);
 static void virtio_dev_stats_reset(struct rte_eth_dev *dev);
 static void virtio_dev_free_mbufs(struct rte_eth_dev *dev);
 static int virtio_vlan_filter_set(struct rte_eth_dev *dev,
@@ -102,11 +103,8 @@ static int virtio_dev_queue_stats_mapping_set(
  * The set of PCI devices this driver supports
  */
 static const struct rte_pci_id pci_id_virtio_map[] = {
-
-#define RTE_PCI_DEV_ID_DECL_VIRTIO(vend, dev) {RTE_PCI_DEVICE(vend, dev)},
-#include "rte_pci_dev_ids.h"
-
-{ .vendor_id = 0, /* sentinel */ },
+	{ RTE_PCI_DEVICE(VIRTIO_PCI_VENDORID, VIRTIO_PCI_DEVICEID_MIN) },
+	{ .vendor_id = 0, /* sentinel */ },
 };
 
 struct rte_virtio_xstats_name_off {
@@ -115,40 +113,61 @@ struct rte_virtio_xstats_name_off {
 };
 
 /* [rt]x_qX_ is prepended to the name string here */
-static const struct rte_virtio_xstats_name_off rte_virtio_q_stat_strings[] = {
-	{"good_packets",           offsetof(struct virtqueue, packets)},
-	{"good_bytes",             offsetof(struct virtqueue, bytes)},
-	{"errors",                 offsetof(struct virtqueue, errors)},
-	{"multicast_packets",      offsetof(struct virtqueue, multicast)},
-	{"broadcast_packets",      offsetof(struct virtqueue, broadcast)},
-	{"undersize_packets",      offsetof(struct virtqueue, size_bins[0])},
-	{"size_64_packets",        offsetof(struct virtqueue, size_bins[1])},
-	{"size_65_127_packets",    offsetof(struct virtqueue, size_bins[2])},
-	{"size_128_255_packets",   offsetof(struct virtqueue, size_bins[3])},
-	{"size_256_511_packets",   offsetof(struct virtqueue, size_bins[4])},
-	{"size_512_1023_packets",  offsetof(struct virtqueue, size_bins[5])},
-	{"size_1024_1517_packets", offsetof(struct virtqueue, size_bins[6])},
-	{"size_1518_max_packets",  offsetof(struct virtqueue, size_bins[7])},
+static const struct rte_virtio_xstats_name_off rte_virtio_rxq_stat_strings[] = {
+	{"good_packets",           offsetof(struct virtnet_rx, stats.packets)},
+	{"good_bytes",             offsetof(struct virtnet_rx, stats.bytes)},
+	{"errors",                 offsetof(struct virtnet_rx, stats.errors)},
+	{"multicast_packets",      offsetof(struct virtnet_rx, stats.multicast)},
+	{"broadcast_packets",      offsetof(struct virtnet_rx, stats.broadcast)},
+	{"undersize_packets",      offsetof(struct virtnet_rx, stats.size_bins[0])},
+	{"size_64_packets",        offsetof(struct virtnet_rx, stats.size_bins[1])},
+	{"size_65_127_packets",    offsetof(struct virtnet_rx, stats.size_bins[2])},
+	{"size_128_255_packets",   offsetof(struct virtnet_rx, stats.size_bins[3])},
+	{"size_256_511_packets",   offsetof(struct virtnet_rx, stats.size_bins[4])},
+	{"size_512_1023_packets",  offsetof(struct virtnet_rx, stats.size_bins[5])},
+	{"size_1024_1517_packets", offsetof(struct virtnet_rx, stats.size_bins[6])},
+	{"size_1518_max_packets",  offsetof(struct virtnet_rx, stats.size_bins[7])},
 };
 
-#define VIRTIO_NB_Q_XSTATS (sizeof(rte_virtio_q_stat_strings) / \
-			    sizeof(rte_virtio_q_stat_strings[0]))
+/* [rt]x_qX_ is prepended to the name string here */
+static const struct rte_virtio_xstats_name_off rte_virtio_txq_stat_strings[] = {
+	{"good_packets",           offsetof(struct virtnet_tx, stats.packets)},
+	{"good_bytes",             offsetof(struct virtnet_tx, stats.bytes)},
+	{"errors",                 offsetof(struct virtnet_tx, stats.errors)},
+	{"multicast_packets",      offsetof(struct virtnet_tx, stats.multicast)},
+	{"broadcast_packets",      offsetof(struct virtnet_tx, stats.broadcast)},
+	{"undersize_packets",      offsetof(struct virtnet_tx, stats.size_bins[0])},
+	{"size_64_packets",        offsetof(struct virtnet_tx, stats.size_bins[1])},
+	{"size_65_127_packets",    offsetof(struct virtnet_tx, stats.size_bins[2])},
+	{"size_128_255_packets",   offsetof(struct virtnet_tx, stats.size_bins[3])},
+	{"size_256_511_packets",   offsetof(struct virtnet_tx, stats.size_bins[4])},
+	{"size_512_1023_packets",  offsetof(struct virtnet_tx, stats.size_bins[5])},
+	{"size_1024_1517_packets", offsetof(struct virtnet_tx, stats.size_bins[6])},
+	{"size_1518_max_packets",  offsetof(struct virtnet_tx, stats.size_bins[7])},
+};
+
+#define VIRTIO_NB_RXQ_XSTATS (sizeof(rte_virtio_rxq_stat_strings) / \
+			    sizeof(rte_virtio_rxq_stat_strings[0]))
+#define VIRTIO_NB_TXQ_XSTATS (sizeof(rte_virtio_txq_stat_strings) / \
+			    sizeof(rte_virtio_txq_stat_strings[0]))
 
 static int
-virtio_send_command(struct virtqueue *vq, struct virtio_pmd_ctrl *ctrl,
+virtio_send_command(struct virtnet_ctl *cvq, struct virtio_pmd_ctrl *ctrl,
 		int *dlen, int pkt_num)
 {
 	uint32_t head, i;
 	int k, sum = 0;
 	virtio_net_ctrl_ack status = ~0;
 	struct virtio_pmd_ctrl result;
+	struct virtqueue *vq;
 
 	ctrl->status = status;
 
-	if (!(vq && vq->hw->cvq)) {
+	if (!cvq || !cvq->vq) {
 		PMD_INIT_LOG(ERR, "Control queue is not supported.");
 		return -1;
 	}
+	vq = cvq->vq;
 	head = vq->vq_desc_head_idx;
 
 	PMD_INIT_LOG(DEBUG, "vq->vq_desc_head_idx = %d, status = %d, "
@@ -158,7 +177,7 @@ virtio_send_command(struct virtqueue *vq, struct virtio_pmd_ctrl *ctrl,
 	if ((vq->vq_free_cnt < ((uint32_t)pkt_num + 2)) || (pkt_num < 1))
 		return -1;
 
-	memcpy(vq->virtio_net_hdr_mz->addr, ctrl,
+	memcpy(cvq->virtio_net_hdr_mz->addr, ctrl,
 		sizeof(struct virtio_pmd_ctrl));
 
 	/*
@@ -168,14 +187,14 @@ virtio_send_command(struct virtqueue *vq, struct virtio_pmd_ctrl *ctrl,
 	 * One RX packet for ACK.
 	 */
 	vq->vq_ring.desc[head].flags = VRING_DESC_F_NEXT;
-	vq->vq_ring.desc[head].addr = vq->virtio_net_hdr_mz->phys_addr;
+	vq->vq_ring.desc[head].addr = cvq->virtio_net_hdr_mem;
 	vq->vq_ring.desc[head].len = sizeof(struct virtio_net_ctrl_hdr);
 	vq->vq_free_cnt--;
 	i = vq->vq_ring.desc[head].next;
 
 	for (k = 0; k < pkt_num; k++) {
 		vq->vq_ring.desc[i].flags = VRING_DESC_F_NEXT;
-		vq->vq_ring.desc[i].addr = vq->virtio_net_hdr_mz->phys_addr
+		vq->vq_ring.desc[i].addr = cvq->virtio_net_hdr_mem
 			+ sizeof(struct virtio_net_ctrl_hdr)
 			+ sizeof(ctrl->status) + sizeof(uint8_t)*sum;
 		vq->vq_ring.desc[i].len = dlen[k];
@@ -185,7 +204,7 @@ virtio_send_command(struct virtqueue *vq, struct virtio_pmd_ctrl *ctrl,
 	}
 
 	vq->vq_ring.desc[i].flags = VRING_DESC_F_WRITE;
-	vq->vq_ring.desc[i].addr = vq->virtio_net_hdr_mz->phys_addr
+	vq->vq_ring.desc[i].addr = cvq->virtio_net_hdr_mem
 			+ sizeof(struct virtio_net_ctrl_hdr);
 	vq->vq_ring.desc[i].len = sizeof(ctrl->status);
 	vq->vq_free_cnt--;
@@ -200,12 +219,12 @@ virtio_send_command(struct virtqueue *vq, struct virtio_pmd_ctrl *ctrl,
 	virtqueue_notify(vq);
 
 	rte_rmb();
-	while (vq->vq_used_cons_idx == vq->vq_ring.used->idx) {
+	while (VIRTQUEUE_NUSED(vq) == 0) {
 		rte_rmb();
 		usleep(100);
 	}
 
-	while (vq->vq_used_cons_idx != vq->vq_ring.used->idx) {
+	while (VIRTQUEUE_NUSED(vq)) {
 		uint32_t idx, desc_idx, used_idx;
 		struct vring_used_elem *uep;
 
@@ -230,7 +249,7 @@ virtio_send_command(struct virtqueue *vq, struct virtio_pmd_ctrl *ctrl,
 	PMD_INIT_LOG(DEBUG, "vq->vq_free_cnt=%d\nvq->vq_desc_head_idx=%d",
 			vq->vq_free_cnt, vq->vq_desc_head_idx);
 
-	memcpy(&result, vq->virtio_net_hdr_mz->addr,
+	memcpy(&result, cvq->virtio_net_hdr_mz->addr,
 			sizeof(struct virtio_pmd_ctrl));
 
 	return result.status;
@@ -261,12 +280,14 @@ virtio_set_multiple_queues(struct rte_eth_dev *dev, uint16_t nb_queues)
 }
 
 void
-virtio_dev_queue_release(struct virtqueue *vq) {
+virtio_dev_queue_release(struct virtqueue *vq)
+{
 	struct virtio_hw *hw;
 
 	if (vq) {
 		hw = vq->hw;
-		hw->vtpci_ops->del_queue(hw, vq);
+		if (vq->configured)
+			hw->vtpci_ops->del_queue(hw, vq);
 
 		rte_free(vq->sw_ring);
 		rte_free(vq);
@@ -279,13 +300,21 @@ int virtio_dev_queue_setup(struct rte_eth_dev *dev,
 			uint16_t vtpci_queue_idx,
 			uint16_t nb_desc,
 			unsigned int socket_id,
-			struct virtqueue **pvq)
+			void **pvq)
 {
 	char vq_name[VIRTQUEUE_MAX_NAME_SZ];
-	const struct rte_memzone *mz;
+	char vq_hdr_name[VIRTQUEUE_MAX_NAME_SZ];
+	const struct rte_memzone *mz = NULL, *hdr_mz = NULL;
 	unsigned int vq_size, size;
 	struct virtio_hw *hw = dev->data->dev_private;
-	struct virtqueue *vq = NULL;
+	struct virtnet_rx *rxvq = NULL;
+	struct virtnet_tx *txvq = NULL;
+	struct virtnet_ctl *cvq = NULL;
+	struct virtqueue *vq;
+	const char *queue_names[] = {"rvq", "txq", "cvq"};
+	size_t sz_vq, sz_q = 0, sz_hdr_mz = 0;
+	void *sw_ring = NULL;
+	int ret;
 
 	PMD_INIT_LOG(DEBUG, "setting up queue: %u", vtpci_queue_idx);
 
@@ -305,39 +334,33 @@ int virtio_dev_queue_setup(struct rte_eth_dev *dev,
 		return -EINVAL;
 	}
 
+	snprintf(vq_name, sizeof(vq_name), "port%d_%s%d",
+		 dev->data->port_id, queue_names[queue_type], queue_idx);
+
+	sz_vq = RTE_ALIGN_CEIL(sizeof(*vq) +
+				vq_size * sizeof(struct vq_desc_extra),
+				RTE_CACHE_LINE_SIZE);
 	if (queue_type == VTNET_RQ) {
-		snprintf(vq_name, sizeof(vq_name), "port%d_rvq%d",
-			dev->data->port_id, queue_idx);
-		vq = rte_zmalloc(vq_name, sizeof(struct virtqueue) +
-			vq_size * sizeof(struct vq_desc_extra), RTE_CACHE_LINE_SIZE);
-		vq->sw_ring = rte_zmalloc_socket("rxq->sw_ring",
-			(RTE_PMD_VIRTIO_RX_MAX_BURST + vq_size) *
-			sizeof(vq->sw_ring[0]), RTE_CACHE_LINE_SIZE, socket_id);
+		sz_q = sz_vq + sizeof(*rxvq);
 	} else if (queue_type == VTNET_TQ) {
-		snprintf(vq_name, sizeof(vq_name), "port%d_tvq%d",
-			dev->data->port_id, queue_idx);
-		vq = rte_zmalloc(vq_name, sizeof(struct virtqueue) +
-			vq_size * sizeof(struct vq_desc_extra), RTE_CACHE_LINE_SIZE);
+		sz_q = sz_vq + sizeof(*txvq);
+		/*
+		 * For each xmit packet, allocate a virtio_net_hdr
+		 * and indirect ring elements
+		 */
+		sz_hdr_mz = vq_size * sizeof(struct virtio_tx_region);
 	} else if (queue_type == VTNET_CQ) {
-		snprintf(vq_name, sizeof(vq_name), "port%d_cvq",
-			dev->data->port_id);
-		vq = rte_zmalloc(vq_name, sizeof(struct virtqueue) +
-			vq_size * sizeof(struct vq_desc_extra),
-			RTE_CACHE_LINE_SIZE);
-	}
-	if (vq == NULL) {
-		PMD_INIT_LOG(ERR, "Can not allocate virtqueue");
-		return -ENOMEM;
-	}
-	if (queue_type == VTNET_RQ && vq->sw_ring == NULL) {
-		PMD_INIT_LOG(ERR, "Can not allocate RX soft ring");
-		rte_free(vq);
-		return -ENOMEM;
+		sz_q = sz_vq + sizeof(*cvq);
+		/* Allocate a page for control vq command, data and status */
+		sz_hdr_mz = PAGE_SIZE;
 	}
 
+	vq = rte_zmalloc_socket(vq_name, sz_q, RTE_CACHE_LINE_SIZE, socket_id);
+	if (vq == NULL) {
+		PMD_INIT_LOG(ERR, "can not allocate vq");
+		return -ENOMEM;
+	}
 	vq->hw = hw;
-	vq->port_id = dev->data->port_id;
-	vq->queue_id = queue_idx;
 	vq->vq_queue_index = vtpci_queue_idx;
 	vq->vq_nentries = vq_size;
 
@@ -350,64 +373,103 @@ int virtio_dev_queue_setup(struct rte_eth_dev *dev,
 	 */
 	size = vring_size(vq_size, VIRTIO_PCI_VRING_ALIGN);
 	vq->vq_ring_size = RTE_ALIGN_CEIL(size, VIRTIO_PCI_VRING_ALIGN);
-	PMD_INIT_LOG(DEBUG, "vring_size: %d, rounded_vring_size: %d", size, vq->vq_ring_size);
+	PMD_INIT_LOG(DEBUG, "vring_size: %d, rounded_vring_size: %d",
+		     size, vq->vq_ring_size);
 
-	mz = rte_memzone_reserve_aligned(vq_name, vq->vq_ring_size,
-		socket_id, 0, VIRTIO_PCI_VRING_ALIGN);
+	mz = rte_memzone_reserve_aligned(vq_name, vq->vq_ring_size, socket_id,
+					 0, VIRTIO_PCI_VRING_ALIGN);
 	if (mz == NULL) {
 		if (rte_errno == EEXIST)
 			mz = rte_memzone_lookup(vq_name);
 		if (mz == NULL) {
-			rte_free(vq);
-			return -ENOMEM;
+			ret = -ENOMEM;
+			goto fail_q_alloc;
 		}
 	}
 
-	/*
-	 * Virtio PCI device VIRTIO_PCI_QUEUE_PF register is 32bit,
-	 * and only accepts 32 bit page frame number.
-	 * Check if the allocated physical memory exceeds 16TB.
-	 */
-	if ((mz->phys_addr + vq->vq_ring_size - 1) >> (VIRTIO_PCI_QUEUE_ADDR_SHIFT + 32)) {
-		PMD_INIT_LOG(ERR, "vring address shouldn't be above 16TB!");
-		rte_free(vq);
-		return -ENOMEM;
-	}
-
 	memset(mz->addr, 0, sizeof(mz->len));
-	vq->mz = mz;
+
 	vq->vq_ring_mem = mz->phys_addr;
 	vq->vq_ring_virt_mem = mz->addr;
-	PMD_INIT_LOG(DEBUG, "vq->vq_ring_mem:      0x%"PRIx64, (uint64_t)mz->phys_addr);
-	PMD_INIT_LOG(DEBUG, "vq->vq_ring_virt_mem: 0x%"PRIx64, (uint64_t)(uintptr_t)mz->addr);
-	vq->virtio_net_hdr_mz  = NULL;
-	vq->virtio_net_hdr_mem = 0;
+	PMD_INIT_LOG(DEBUG, "vq->vq_ring_mem:      0x%" PRIx64,
+		     (uint64_t)mz->phys_addr);
+	PMD_INIT_LOG(DEBUG, "vq->vq_ring_virt_mem: 0x%" PRIx64,
+		     (uint64_t)(uintptr_t)mz->addr);
 
-	if (queue_type == VTNET_TQ) {
-		const struct rte_memzone *hdr_mz;
-		struct virtio_tx_region *txr;
-		unsigned int i;
-
-		/*
-		 * For each xmit packet, allocate a virtio_net_hdr
-		 * and indirect ring elements
-		 */
-		snprintf(vq_name, sizeof(vq_name), "port%d_tvq%d_hdrzone",
-			 dev->data->port_id, queue_idx);
-		hdr_mz = rte_memzone_reserve_aligned(vq_name,
-						     vq_size * sizeof(*txr),
+	if (sz_hdr_mz) {
+		snprintf(vq_hdr_name, sizeof(vq_hdr_name), "port%d_%s%d_hdr",
+			 dev->data->port_id, queue_names[queue_type],
+			 queue_idx);
+		hdr_mz = rte_memzone_reserve_aligned(vq_hdr_name, sz_hdr_mz,
 						     socket_id, 0,
 						     RTE_CACHE_LINE_SIZE);
 		if (hdr_mz == NULL) {
 			if (rte_errno == EEXIST)
-				hdr_mz = rte_memzone_lookup(vq_name);
+				hdr_mz = rte_memzone_lookup(vq_hdr_name);
 			if (hdr_mz == NULL) {
-				rte_free(vq);
-				return -ENOMEM;
+				ret = -ENOMEM;
+				goto fail_q_alloc;
 			}
 		}
-		vq->virtio_net_hdr_mz = hdr_mz;
-		vq->virtio_net_hdr_mem = hdr_mz->phys_addr;
+	}
+
+	if (queue_type == VTNET_RQ) {
+		size_t sz_sw = (RTE_PMD_VIRTIO_RX_MAX_BURST + vq_size) *
+			       sizeof(vq->sw_ring[0]);
+
+		sw_ring = rte_zmalloc_socket("sw_ring", sz_sw,
+					     RTE_CACHE_LINE_SIZE, socket_id);
+		if (!sw_ring) {
+			PMD_INIT_LOG(ERR, "can not allocate RX soft ring");
+			ret = -ENOMEM;
+			goto fail_q_alloc;
+		}
+
+		vq->sw_ring = sw_ring;
+		rxvq = (struct virtnet_rx *)RTE_PTR_ADD(vq, sz_vq);
+		rxvq->vq = vq;
+		rxvq->port_id = dev->data->port_id;
+		rxvq->queue_id = queue_idx;
+		rxvq->mz = mz;
+		*pvq = rxvq;
+	} else if (queue_type == VTNET_TQ) {
+		txvq = (struct virtnet_tx *)RTE_PTR_ADD(vq, sz_vq);
+		txvq->vq = vq;
+		txvq->port_id = dev->data->port_id;
+		txvq->queue_id = queue_idx;
+		txvq->mz = mz;
+		txvq->virtio_net_hdr_mz = hdr_mz;
+		txvq->virtio_net_hdr_mem = hdr_mz->phys_addr;
+
+		*pvq = txvq;
+	} else if (queue_type == VTNET_CQ) {
+		cvq = (struct virtnet_ctl *)RTE_PTR_ADD(vq, sz_vq);
+		cvq->vq = vq;
+		cvq->mz = mz;
+		cvq->virtio_net_hdr_mz = hdr_mz;
+		cvq->virtio_net_hdr_mem = hdr_mz->phys_addr;
+		memset(cvq->virtio_net_hdr_mz->addr, 0, PAGE_SIZE);
+		*pvq = cvq;
+	}
+
+	/* For virtio_user case (that is when dev->pci_dev is NULL), we use
+	 * virtual address. And we need properly set _offset_, please see
+	 * VIRTIO_MBUF_DATA_DMA_ADDR in virtqueue.h for more information.
+	 */
+	if (dev->pci_dev)
+		vq->offset = offsetof(struct rte_mbuf, buf_physaddr);
+	else {
+		vq->vq_ring_mem = (uintptr_t)mz->addr;
+		vq->offset = offsetof(struct rte_mbuf, buf_addr);
+		if (queue_type == VTNET_TQ)
+			txvq->virtio_net_hdr_mem = (uintptr_t)hdr_mz->addr;
+		else if (queue_type == VTNET_CQ)
+			cvq->virtio_net_hdr_mem = (uintptr_t)hdr_mz->addr;
+	}
+
+	if (queue_type == VTNET_TQ) {
+		struct virtio_tx_region *txr;
+		unsigned int i;
 
 		txr = hdr_mz->addr;
 		memset(txr, 0, vq_size * sizeof(*txr));
@@ -417,57 +479,50 @@ int virtio_dev_queue_setup(struct rte_eth_dev *dev,
 			vring_desc_init(start_dp, RTE_DIM(txr[i].tx_indir));
 
 			/* first indirect descriptor is always the tx header */
-			start_dp->addr = vq->virtio_net_hdr_mem
+			start_dp->addr = txvq->virtio_net_hdr_mem
 				+ i * sizeof(*txr)
 				+ offsetof(struct virtio_tx_region, tx_hdr);
 
-			start_dp->len = vq->hw->vtnet_hdr_size;
+			start_dp->len = hw->vtnet_hdr_size;
 			start_dp->flags = VRING_DESC_F_NEXT;
 		}
-
-	} else if (queue_type == VTNET_CQ) {
-		/* Allocate a page for control vq command, data and status */
-		snprintf(vq_name, sizeof(vq_name), "port%d_cvq_hdrzone",
-			dev->data->port_id);
-		vq->virtio_net_hdr_mz = rte_memzone_reserve_aligned(vq_name,
-			PAGE_SIZE, socket_id, 0, RTE_CACHE_LINE_SIZE);
-		if (vq->virtio_net_hdr_mz == NULL) {
-			if (rte_errno == EEXIST)
-				vq->virtio_net_hdr_mz =
-					rte_memzone_lookup(vq_name);
-			if (vq->virtio_net_hdr_mz == NULL) {
-				rte_free(vq);
-				return -ENOMEM;
-			}
-		}
-		vq->virtio_net_hdr_mem =
-			vq->virtio_net_hdr_mz->phys_addr;
-		memset(vq->virtio_net_hdr_mz->addr, 0, PAGE_SIZE);
 	}
 
-	hw->vtpci_ops->setup_queue(hw, vq);
+	if (hw->vtpci_ops->setup_queue(hw, vq) < 0) {
+		PMD_INIT_LOG(ERR, "setup_queue failed");
+		virtio_dev_queue_release(vq);
+		return -EINVAL;
+	}
 
-	*pvq = vq;
+	vq->configured = 1;
 	return 0;
+
+fail_q_alloc:
+	rte_free(sw_ring);
+	rte_memzone_free(hdr_mz);
+	rte_memzone_free(mz);
+	rte_free(vq);
+
+	return ret;
 }
 
 static int
 virtio_dev_cq_queue_setup(struct rte_eth_dev *dev, uint16_t vtpci_queue_idx,
 		uint32_t socket_id)
 {
-	struct virtqueue *vq;
+	struct virtnet_ctl *cvq;
 	int ret;
 	struct virtio_hw *hw = dev->data->dev_private;
 
 	PMD_INIT_FUNC_TRACE();
 	ret = virtio_dev_queue_setup(dev, VTNET_CQ, VTNET_SQ_CQ_QUEUE_IDX,
-			vtpci_queue_idx, 0, socket_id, &vq);
+			vtpci_queue_idx, 0, socket_id, (void **)&cvq);
 	if (ret < 0) {
 		PMD_INIT_LOG(ERR, "control vq initialization failed");
 		return ret;
 	}
 
-	hw->cvq = vq;
+	hw->cvq = cvq;
 	return 0;
 }
 
@@ -491,7 +546,6 @@ static void
 virtio_dev_close(struct rte_eth_dev *dev)
 {
 	struct virtio_hw *hw = dev->data->dev_private;
-	struct rte_pci_device *pci_dev = dev->pci_dev;
 
 	PMD_INIT_LOG(DEBUG, "virtio_dev_close");
 
@@ -499,7 +553,7 @@ virtio_dev_close(struct rte_eth_dev *dev)
 		virtio_dev_stop(dev);
 
 	/* reset the NIC */
-	if (pci_dev->driver->drv_flags & RTE_PCI_DRV_INTR_LSC)
+	if (dev->data->dev_flags & RTE_ETH_DEV_INTR_LSC)
 		vtpci_irq_config(hw, VIRTIO_MSI_NO_VECTOR);
 	vtpci_reset(hw);
 	virtio_dev_free_mbufs(dev);
@@ -614,6 +668,7 @@ static const struct eth_dev_ops virtio_eth_dev_ops = {
 	.dev_infos_get           = virtio_dev_info_get,
 	.stats_get               = virtio_dev_stats_get,
 	.xstats_get              = virtio_dev_xstats_get,
+	.xstats_get_names        = virtio_dev_xstats_get_names,
 	.stats_reset             = virtio_dev_stats_reset,
 	.xstats_reset            = virtio_dev_stats_reset,
 	.link_update             = virtio_dev_link_update,
@@ -675,83 +730,121 @@ virtio_update_stats(struct rte_eth_dev *dev, struct rte_eth_stats *stats)
 	unsigned i;
 
 	for (i = 0; i < dev->data->nb_tx_queues; i++) {
-		const struct virtqueue *txvq = dev->data->tx_queues[i];
+		const struct virtnet_tx *txvq = dev->data->tx_queues[i];
 		if (txvq == NULL)
 			continue;
 
-		stats->opackets += txvq->packets;
-		stats->obytes += txvq->bytes;
-		stats->oerrors += txvq->errors;
+		stats->opackets += txvq->stats.packets;
+		stats->obytes += txvq->stats.bytes;
+		stats->oerrors += txvq->stats.errors;
 
 		if (i < RTE_ETHDEV_QUEUE_STAT_CNTRS) {
-			stats->q_opackets[i] = txvq->packets;
-			stats->q_obytes[i] = txvq->bytes;
+			stats->q_opackets[i] = txvq->stats.packets;
+			stats->q_obytes[i] = txvq->stats.bytes;
 		}
 	}
 
 	for (i = 0; i < dev->data->nb_rx_queues; i++) {
-		const struct virtqueue *rxvq = dev->data->rx_queues[i];
+		const struct virtnet_rx *rxvq = dev->data->rx_queues[i];
 		if (rxvq == NULL)
 			continue;
 
-		stats->ipackets += rxvq->packets;
-		stats->ibytes += rxvq->bytes;
-		stats->ierrors += rxvq->errors;
+		stats->ipackets += rxvq->stats.packets;
+		stats->ibytes += rxvq->stats.bytes;
+		stats->ierrors += rxvq->stats.errors;
 
 		if (i < RTE_ETHDEV_QUEUE_STAT_CNTRS) {
-			stats->q_ipackets[i] = rxvq->packets;
-			stats->q_ibytes[i] = rxvq->bytes;
+			stats->q_ipackets[i] = rxvq->stats.packets;
+			stats->q_ibytes[i] = rxvq->stats.bytes;
 		}
 	}
 
 	stats->rx_nombuf = dev->data->rx_mbuf_alloc_failed;
 }
 
+static int virtio_dev_xstats_get_names(struct rte_eth_dev *dev,
+				       struct rte_eth_xstat_name *xstats_names,
+				       __rte_unused unsigned limit)
+{
+	unsigned i;
+	unsigned count = 0;
+	unsigned t;
+
+	unsigned nstats = dev->data->nb_tx_queues * VIRTIO_NB_TXQ_XSTATS +
+		dev->data->nb_rx_queues * VIRTIO_NB_RXQ_XSTATS;
+
+	if (xstats_names != NULL) {
+		/* Note: limit checked in rte_eth_xstats_names() */
+
+		for (i = 0; i < dev->data->nb_rx_queues; i++) {
+			struct virtqueue *rxvq = dev->data->rx_queues[i];
+			if (rxvq == NULL)
+				continue;
+			for (t = 0; t < VIRTIO_NB_RXQ_XSTATS; t++) {
+				snprintf(xstats_names[count].name,
+					sizeof(xstats_names[count].name),
+					"rx_q%u_%s", i,
+					rte_virtio_rxq_stat_strings[t].name);
+				count++;
+			}
+		}
+
+		for (i = 0; i < dev->data->nb_tx_queues; i++) {
+			struct virtqueue *txvq = dev->data->tx_queues[i];
+			if (txvq == NULL)
+				continue;
+			for (t = 0; t < VIRTIO_NB_TXQ_XSTATS; t++) {
+				snprintf(xstats_names[count].name,
+					sizeof(xstats_names[count].name),
+					"tx_q%u_%s", i,
+					rte_virtio_txq_stat_strings[t].name);
+				count++;
+			}
+		}
+		return count;
+	}
+	return nstats;
+}
+
 static int
-virtio_dev_xstats_get(struct rte_eth_dev *dev, struct rte_eth_xstats *xstats,
+virtio_dev_xstats_get(struct rte_eth_dev *dev, struct rte_eth_xstat *xstats,
 		      unsigned n)
 {
 	unsigned i;
 	unsigned count = 0;
 
-	unsigned nstats = dev->data->nb_tx_queues * VIRTIO_NB_Q_XSTATS +
-		dev->data->nb_rx_queues * VIRTIO_NB_Q_XSTATS;
+	unsigned nstats = dev->data->nb_tx_queues * VIRTIO_NB_TXQ_XSTATS +
+		dev->data->nb_rx_queues * VIRTIO_NB_RXQ_XSTATS;
 
 	if (n < nstats)
 		return nstats;
 
 	for (i = 0; i < dev->data->nb_rx_queues; i++) {
-		struct virtqueue *rxvq = dev->data->rx_queues[i];
+		struct virtnet_rx *rxvq = dev->data->rx_queues[i];
 
 		if (rxvq == NULL)
 			continue;
 
 		unsigned t;
 
-		for (t = 0; t < VIRTIO_NB_Q_XSTATS; t++) {
-			snprintf(xstats[count].name, sizeof(xstats[count].name),
-				 "rx_q%u_%s", i,
-				 rte_virtio_q_stat_strings[t].name);
+		for (t = 0; t < VIRTIO_NB_RXQ_XSTATS; t++) {
 			xstats[count].value = *(uint64_t *)(((char *)rxvq) +
-				rte_virtio_q_stat_strings[t].offset);
+				rte_virtio_rxq_stat_strings[t].offset);
 			count++;
 		}
 	}
 
 	for (i = 0; i < dev->data->nb_tx_queues; i++) {
-		struct virtqueue *txvq = dev->data->tx_queues[i];
+		struct virtnet_tx *txvq = dev->data->tx_queues[i];
 
 		if (txvq == NULL)
 			continue;
 
 		unsigned t;
 
-		for (t = 0; t < VIRTIO_NB_Q_XSTATS; t++) {
-			snprintf(xstats[count].name, sizeof(xstats[count].name),
-				 "tx_q%u_%s", i,
-				 rte_virtio_q_stat_strings[t].name);
+		for (t = 0; t < VIRTIO_NB_TXQ_XSTATS; t++) {
 			xstats[count].value = *(uint64_t *)(((char *)txvq) +
-				rte_virtio_q_stat_strings[t].offset);
+				rte_virtio_txq_stat_strings[t].offset);
 			count++;
 		}
 	}
@@ -771,29 +864,31 @@ virtio_dev_stats_reset(struct rte_eth_dev *dev)
 	unsigned int i;
 
 	for (i = 0; i < dev->data->nb_tx_queues; i++) {
-		struct virtqueue *txvq = dev->data->tx_queues[i];
+		struct virtnet_tx *txvq = dev->data->tx_queues[i];
 		if (txvq == NULL)
 			continue;
 
-		txvq->packets = 0;
-		txvq->bytes = 0;
-		txvq->errors = 0;
-		txvq->multicast = 0;
-		txvq->broadcast = 0;
-		memset(txvq->size_bins, 0, sizeof(txvq->size_bins[0]) * 8);
+		txvq->stats.packets = 0;
+		txvq->stats.bytes = 0;
+		txvq->stats.errors = 0;
+		txvq->stats.multicast = 0;
+		txvq->stats.broadcast = 0;
+		memset(txvq->stats.size_bins, 0,
+		       sizeof(txvq->stats.size_bins[0]) * 8);
 	}
 
 	for (i = 0; i < dev->data->nb_rx_queues; i++) {
-		struct virtqueue *rxvq = dev->data->rx_queues[i];
+		struct virtnet_rx *rxvq = dev->data->rx_queues[i];
 		if (rxvq == NULL)
 			continue;
 
-		rxvq->packets = 0;
-		rxvq->bytes = 0;
-		rxvq->errors = 0;
-		rxvq->multicast = 0;
-		rxvq->broadcast = 0;
-		memset(rxvq->size_bins, 0, sizeof(rxvq->size_bins[0]) * 8);
+		rxvq->stats.packets = 0;
+		rxvq->stats.bytes = 0;
+		rxvq->stats.errors = 0;
+		rxvq->stats.multicast = 0;
+		rxvq->stats.broadcast = 0;
+		memset(rxvq->stats.size_bins, 0,
+		       sizeof(rxvq->stats.size_bins[0]) * 8);
 	}
 }
 
@@ -827,7 +922,7 @@ virtio_mac_table_set(struct virtio_hw *hw,
 	int err, len[2];
 
 	if (!vtpci_with_feature(hw, VIRTIO_NET_F_CTRL_MAC_ADDR)) {
-		PMD_DRV_LOG(INFO, "host does not support mac table\n");
+		PMD_DRV_LOG(INFO, "host does not support mac table");
 		return;
 	}
 
@@ -1027,16 +1122,17 @@ rx_func_get(struct rte_eth_dev *eth_dev)
  * This function is based on probe() function in virtio_pci.c
  * It returns 0 on success.
  */
-static int
+int
 eth_virtio_dev_init(struct rte_eth_dev *eth_dev)
 {
 	struct virtio_hw *hw = eth_dev->data->dev_private;
 	struct virtio_net_config *config;
 	struct virtio_net_config local_config;
 	struct rte_pci_device *pci_dev;
+	uint32_t dev_flags = RTE_ETH_DEV_DETACHABLE;
 	int ret;
 
-	RTE_BUILD_BUG_ON(RTE_PKTMBUF_HEADROOM < sizeof(struct virtio_net_hdr));
+	RTE_BUILD_BUG_ON(RTE_PKTMBUF_HEADROOM < sizeof(struct virtio_net_hdr_mrg_rxbuf));
 
 	eth_dev->dev_ops = &virtio_eth_dev_ops;
 	eth_dev->tx_pkt_burst = &virtio_xmit_pkts;
@@ -1057,9 +1153,11 @@ eth_virtio_dev_init(struct rte_eth_dev *eth_dev)
 
 	pci_dev = eth_dev->pci_dev;
 
-	ret = vtpci_init(pci_dev, hw);
-	if (ret)
-		return ret;
+	if (pci_dev) {
+		ret = vtpci_init(pci_dev, hw, &dev_flags);
+		if (ret)
+			return ret;
+	}
 
 	/* Reset the device although not necessary at startup */
 	vtpci_reset(hw);
@@ -1074,9 +1172,10 @@ eth_virtio_dev_init(struct rte_eth_dev *eth_dev)
 
 	/* If host does not support status then disable LSC */
 	if (!vtpci_with_feature(hw, VIRTIO_NET_F_STATUS))
-		pci_dev->driver->drv_flags &= ~RTE_PCI_DRV_INTR_LSC;
+		dev_flags &= ~RTE_ETH_DEV_INTR_LSC;
 
 	rte_eth_copy_pci_info(eth_dev, pci_dev);
+	eth_dev->data->dev_flags = dev_flags;
 
 	rx_func_get(eth_dev);
 
@@ -1150,12 +1249,13 @@ eth_virtio_dev_init(struct rte_eth_dev *eth_dev)
 
 	PMD_INIT_LOG(DEBUG, "hw->max_rx_queues=%d   hw->max_tx_queues=%d",
 			hw->max_rx_queues, hw->max_tx_queues);
-	PMD_INIT_LOG(DEBUG, "port %d vendorID=0x%x deviceID=0x%x",
+	if (pci_dev)
+		PMD_INIT_LOG(DEBUG, "port %d vendorID=0x%x deviceID=0x%x",
 			eth_dev->data->port_id, pci_dev->id.vendor_id,
 			pci_dev->id.device_id);
 
 	/* Setup interrupt callback  */
-	if (pci_dev->driver->drv_flags & RTE_PCI_DRV_INTR_LSC)
+	if (eth_dev->data->dev_flags & RTE_ETH_DEV_INTR_LSC)
 		rte_intr_callback_register(&pci_dev->intr_handle,
 				   virtio_interrupt_handler, eth_dev);
 
@@ -1184,13 +1284,14 @@ eth_virtio_dev_uninit(struct rte_eth_dev *eth_dev)
 	eth_dev->tx_pkt_burst = NULL;
 	eth_dev->rx_pkt_burst = NULL;
 
-	virtio_dev_queue_release(hw->cvq);
+	if (hw->cvq)
+		virtio_dev_queue_release(hw->cvq->vq);
 
 	rte_free(eth_dev->data->mac_addrs);
 	eth_dev->data->mac_addrs = NULL;
 
 	/* reset interrupt callback  */
-	if (pci_dev->driver->drv_flags & RTE_PCI_DRV_INTR_LSC)
+	if (eth_dev->data->dev_flags & RTE_ETH_DEV_INTR_LSC)
 		rte_intr_callback_unregister(&pci_dev->intr_handle,
 						virtio_interrupt_handler,
 						eth_dev);
@@ -1240,7 +1341,6 @@ virtio_dev_configure(struct rte_eth_dev *dev)
 {
 	const struct rte_eth_rxmode *rxmode = &dev->data->dev_conf.rxmode;
 	struct virtio_hw *hw = dev->data->dev_private;
-	struct rte_pci_device *pci_dev = dev->pci_dev;
 
 	PMD_INIT_LOG(DEBUG, "configure");
 
@@ -1258,7 +1358,7 @@ virtio_dev_configure(struct rte_eth_dev *dev)
 		return -ENOTSUP;
 	}
 
-	if (pci_dev->driver->drv_flags & RTE_PCI_DRV_INTR_LSC)
+	if (dev->data->dev_flags & RTE_ETH_DEV_INTR_LSC)
 		if (vtpci_irq_config(hw, 0) == VIRTIO_MSI_NO_VECTOR) {
 			PMD_DRV_LOG(ERR, "failed to set config vector");
 			return -EBUSY;
@@ -1273,11 +1373,12 @@ virtio_dev_start(struct rte_eth_dev *dev)
 {
 	uint16_t nb_queues, i;
 	struct virtio_hw *hw = dev->data->dev_private;
-	struct rte_pci_device *pci_dev = dev->pci_dev;
+	struct virtnet_rx *rxvq;
+	struct virtnet_tx *txvq __rte_unused;
 
 	/* check if lsc interrupt feature is enabled */
 	if (dev->data->dev_conf.intr_conf.lsc) {
-		if (!(pci_dev->driver->drv_flags & RTE_PCI_DRV_INTR_LSC)) {
+		if (!(dev->data->dev_flags & RTE_ETH_DEV_INTR_LSC)) {
 			PMD_DRV_LOG(ERR, "link status not supported by host");
 			return -ENOTSUP;
 		}
@@ -1313,16 +1414,22 @@ virtio_dev_start(struct rte_eth_dev *dev)
 
 	PMD_INIT_LOG(DEBUG, "nb_queues=%d", nb_queues);
 
-	for (i = 0; i < nb_queues; i++)
-		virtqueue_notify(dev->data->rx_queues[i]);
+	for (i = 0; i < nb_queues; i++) {
+		rxvq = dev->data->rx_queues[i];
+		virtqueue_notify(rxvq->vq);
+	}
 
 	PMD_INIT_LOG(DEBUG, "Notified backend at initialization");
 
-	for (i = 0; i < dev->data->nb_rx_queues; i++)
-		VIRTQUEUE_DUMP((struct virtqueue *)dev->data->rx_queues[i]);
+	for (i = 0; i < dev->data->nb_rx_queues; i++) {
+		rxvq = dev->data->rx_queues[i];
+		VIRTQUEUE_DUMP(rxvq->vq);
+	}
 
-	for (i = 0; i < dev->data->nb_tx_queues; i++)
-		VIRTQUEUE_DUMP((struct virtqueue *)dev->data->tx_queues[i]);
+	for (i = 0; i < dev->data->nb_tx_queues; i++) {
+		txvq = dev->data->tx_queues[i];
+		VIRTQUEUE_DUMP(txvq->vq);
+	}
 
 	return 0;
 }
@@ -1333,14 +1440,14 @@ static void virtio_dev_free_mbufs(struct rte_eth_dev *dev)
 	int i, mbuf_num = 0;
 
 	for (i = 0; i < dev->data->nb_rx_queues; i++) {
+		struct virtnet_rx *rxvq = dev->data->rx_queues[i];
+
 		PMD_INIT_LOG(DEBUG,
 			     "Before freeing rxq[%d] used and unused buf", i);
-		VIRTQUEUE_DUMP((struct virtqueue *)dev->data->rx_queues[i]);
+		VIRTQUEUE_DUMP(rxvq->vq);
 
-		PMD_INIT_LOG(DEBUG, "rx_queues[%d]=%p",
-				i, dev->data->rx_queues[i]);
-		while ((buf = (struct rte_mbuf *)virtqueue_detatch_unused(
-					dev->data->rx_queues[i])) != NULL) {
+		PMD_INIT_LOG(DEBUG, "rx_queues[%d]=%p", i, rxvq);
+		while ((buf = virtqueue_detatch_unused(rxvq->vq)) != NULL) {
 			rte_pktmbuf_free(buf);
 			mbuf_num++;
 		}
@@ -1348,27 +1455,27 @@ static void virtio_dev_free_mbufs(struct rte_eth_dev *dev)
 		PMD_INIT_LOG(DEBUG, "free %d mbufs", mbuf_num);
 		PMD_INIT_LOG(DEBUG,
 			     "After freeing rxq[%d] used and unused buf", i);
-		VIRTQUEUE_DUMP((struct virtqueue *)dev->data->rx_queues[i]);
+		VIRTQUEUE_DUMP(rxvq->vq);
 	}
 
 	for (i = 0; i < dev->data->nb_tx_queues; i++) {
+		struct virtnet_tx *txvq = dev->data->tx_queues[i];
+
 		PMD_INIT_LOG(DEBUG,
 			     "Before freeing txq[%d] used and unused bufs",
 			     i);
-		VIRTQUEUE_DUMP((struct virtqueue *)dev->data->tx_queues[i]);
+		VIRTQUEUE_DUMP(txvq->vq);
 
 		mbuf_num = 0;
-		while ((buf = (struct rte_mbuf *)virtqueue_detatch_unused(
-					dev->data->tx_queues[i])) != NULL) {
+		while ((buf = virtqueue_detatch_unused(txvq->vq)) != NULL) {
 			rte_pktmbuf_free(buf);
-
 			mbuf_num++;
 		}
 
 		PMD_INIT_LOG(DEBUG, "free %d mbufs", mbuf_num);
 		PMD_INIT_LOG(DEBUG,
 			     "After freeing txq[%d] used and unused buf", i);
-		VIRTQUEUE_DUMP((struct virtqueue *)dev->data->tx_queues[i]);
+		VIRTQUEUE_DUMP(txvq->vq);
 	}
 }
 
@@ -1431,7 +1538,10 @@ virtio_dev_info_get(struct rte_eth_dev *dev, struct rte_eth_dev_info *dev_info)
 {
 	struct virtio_hw *hw = dev->data->dev_private;
 
-	dev_info->driver_name = dev->driver->pci_drv.name;
+	if (dev->pci_dev)
+		dev_info->driver_name = dev->driver->pci_drv.name;
+	else
+		dev_info->driver_name = "virtio_user PMD";
 	dev_info->max_rx_queues = (uint16_t)hw->max_rx_queues;
 	dev_info->max_tx_queues = (uint16_t)hw->max_tx_queues;
 	dev_info->min_rx_bufsize = VIRTIO_MIN_RX_BUFSIZE;
@@ -1458,4 +1568,5 @@ static struct rte_driver rte_virtio_driver = {
 	.init = rte_virtio_pmd_init,
 };
 
-PMD_REGISTER_DRIVER(rte_virtio_driver);
+PMD_REGISTER_DRIVER(rte_virtio_driver, virtio_net);
+DRIVER_REGISTER_PCI_TABLE(virtio_net, pci_id_virtio_map);

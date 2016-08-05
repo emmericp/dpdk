@@ -80,8 +80,9 @@ virtqueue_enqueue_recv_refill_simple(struct virtqueue *vq,
 	vq->sw_ring[desc_idx] = cookie;
 
 	start_dp = vq->vq_ring.desc;
-	start_dp[desc_idx].addr = (uint64_t)((uintptr_t)cookie->buf_physaddr +
-		RTE_PKTMBUF_HEADROOM - vq->hw->vtnet_hdr_size);
+	start_dp[desc_idx].addr =
+		VIRTIO_MBUF_ADDR(cookie, vq) +
+		RTE_PKTMBUF_HEADROOM - vq->hw->vtnet_hdr_size;
 	start_dp[desc_idx].len = cookie->buf_len -
 		RTE_PKTMBUF_HEADROOM + vq->hw->vtnet_hdr_size;
 
@@ -92,17 +93,18 @@ virtqueue_enqueue_recv_refill_simple(struct virtqueue *vq,
 }
 
 static inline void
-virtio_rxq_rearm_vec(struct virtqueue *rxvq)
+virtio_rxq_rearm_vec(struct virtnet_rx *rxvq)
 {
 	int i;
 	uint16_t desc_idx;
 	struct rte_mbuf **sw_ring;
 	struct vring_desc *start_dp;
 	int ret;
+	struct virtqueue *vq = rxvq->vq;
 
-	desc_idx = rxvq->vq_avail_idx & (rxvq->vq_nentries - 1);
-	sw_ring = &rxvq->sw_ring[desc_idx];
-	start_dp = &rxvq->vq_ring.desc[desc_idx];
+	desc_idx = vq->vq_avail_idx & (vq->vq_nentries - 1);
+	sw_ring = &vq->sw_ring[desc_idx];
+	start_dp = &vq->vq_ring.desc[desc_idx];
 
 	ret = rte_mempool_get_bulk(rxvq->mpool, (void **)sw_ring,
 		RTE_VIRTIO_VPMD_RX_REARM_THRESH);
@@ -119,15 +121,15 @@ virtio_rxq_rearm_vec(struct virtqueue *rxvq)
 		*(uint64_t *)p = rxvq->mbuf_initializer;
 
 		start_dp[i].addr =
-			(uint64_t)((uintptr_t)sw_ring[i]->buf_physaddr +
-			RTE_PKTMBUF_HEADROOM - rxvq->hw->vtnet_hdr_size);
+			VIRTIO_MBUF_ADDR(sw_ring[i], vq) +
+			RTE_PKTMBUF_HEADROOM - vq->hw->vtnet_hdr_size;
 		start_dp[i].len = sw_ring[i]->buf_len -
-			RTE_PKTMBUF_HEADROOM + rxvq->hw->vtnet_hdr_size;
+			RTE_PKTMBUF_HEADROOM + vq->hw->vtnet_hdr_size;
 	}
 
-	rxvq->vq_avail_idx += RTE_VIRTIO_VPMD_RX_REARM_THRESH;
-	rxvq->vq_free_cnt -= RTE_VIRTIO_VPMD_RX_REARM_THRESH;
-	vq_update_avail_idx(rxvq);
+	vq->vq_avail_idx += RTE_VIRTIO_VPMD_RX_REARM_THRESH;
+	vq->vq_free_cnt -= RTE_VIRTIO_VPMD_RX_REARM_THRESH;
+	vq_update_avail_idx(vq);
 }
 
 /* virtio vPMD receive routine, only accept(nb_pkts >= RTE_VIRTIO_DESC_PER_LOOP)
@@ -143,7 +145,8 @@ uint16_t
 virtio_recv_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
 	uint16_t nb_pkts)
 {
-	struct virtqueue *rxvq = rx_queue;
+	struct virtnet_rx *rxvq = rx_queue;
+	struct virtqueue *vq = rxvq->vq;
 	uint16_t nb_used;
 	uint16_t desc_idx;
 	struct vring_used_elem *rused;
@@ -175,15 +178,14 @@ virtio_recv_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
 	len_adjust = _mm_set_epi16(
 		0, 0,
 		0,
-		(uint16_t)-rxvq->hw->vtnet_hdr_size,
-		0, (uint16_t)-rxvq->hw->vtnet_hdr_size,
+		(uint16_t)-vq->hw->vtnet_hdr_size,
+		0, (uint16_t)-vq->hw->vtnet_hdr_size,
 		0, 0);
 
 	if (unlikely(nb_pkts < RTE_VIRTIO_DESC_PER_LOOP))
 		return 0;
 
-	nb_used = *(volatile uint16_t *)&rxvq->vq_ring.used->idx -
-		rxvq->vq_used_cons_idx;
+	nb_used = VIRTQUEUE_NUSED(vq);
 
 	rte_compiler_barrier();
 
@@ -193,17 +195,17 @@ virtio_recv_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
 	nb_pkts = RTE_ALIGN_FLOOR(nb_pkts, RTE_VIRTIO_DESC_PER_LOOP);
 	nb_used = RTE_MIN(nb_used, nb_pkts);
 
-	desc_idx = (uint16_t)(rxvq->vq_used_cons_idx & (rxvq->vq_nentries - 1));
-	rused = &rxvq->vq_ring.used->ring[desc_idx];
-	sw_ring  = &rxvq->sw_ring[desc_idx];
-	sw_ring_end = &rxvq->sw_ring[rxvq->vq_nentries];
+	desc_idx = (uint16_t)(vq->vq_used_cons_idx & (vq->vq_nentries - 1));
+	rused = &vq->vq_ring.used->ring[desc_idx];
+	sw_ring  = &vq->sw_ring[desc_idx];
+	sw_ring_end = &vq->sw_ring[vq->vq_nentries];
 
 	_mm_prefetch((const void *)rused, _MM_HINT_T0);
 
-	if (rxvq->vq_free_cnt >= RTE_VIRTIO_VPMD_RX_REARM_THRESH) {
+	if (vq->vq_free_cnt >= RTE_VIRTIO_VPMD_RX_REARM_THRESH) {
 		virtio_rxq_rearm_vec(rxvq);
-		if (unlikely(virtqueue_kick_prepare(rxvq)))
-			virtqueue_notify(rxvq);
+		if (unlikely(virtqueue_kick_prepare(vq)))
+			virtqueue_notify(vq);
 	}
 
 	for (nb_pkts_received = 0;
@@ -286,9 +288,9 @@ virtio_recv_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
 		}
 	}
 
-	rxvq->vq_used_cons_idx += nb_pkts_received;
-	rxvq->vq_free_cnt += nb_pkts_received;
-	rxvq->packets += nb_pkts_received;
+	vq->vq_used_cons_idx += nb_pkts_received;
+	vq->vq_free_cnt += nb_pkts_received;
+	rxvq->stats.packets += nb_pkts_received;
 	return nb_pkts_received;
 }
 
@@ -300,7 +302,7 @@ static inline void
 virtio_xmit_cleanup(struct virtqueue *vq)
 {
 	uint16_t i, desc_idx;
-	int nb_free = 0;
+	uint32_t nb_free = 0;
 	struct rte_mbuf *m, *free[VIRTIO_TX_MAX_FREE_BUF_SZ];
 
 	desc_idx = (uint16_t)(vq->vq_used_cons_idx &
@@ -318,13 +320,16 @@ virtio_xmit_cleanup(struct virtqueue *vq)
 					free[nb_free++] = m;
 				else {
 					rte_mempool_put_bulk(free[0]->pool,
-						(void **)free, nb_free);
+						(void **)free,
+						RTE_MIN(RTE_DIM(free),
+							nb_free));
 					free[0] = m;
 					nb_free = 1;
 				}
 			}
 		}
-		rte_mempool_put_bulk(free[0]->pool, (void **)free, nb_free);
+		rte_mempool_put_bulk(free[0]->pool, (void **)free,
+			RTE_MIN(RTE_DIM(free), nb_free));
 	} else {
 		for (i = 1; i < VIRTIO_TX_FREE_NR; i++) {
 			m = (struct rte_mbuf *)vq->vq_descx[desc_idx++].cookie;
@@ -342,31 +347,32 @@ uint16_t
 virtio_xmit_pkts_simple(void *tx_queue, struct rte_mbuf **tx_pkts,
 	uint16_t nb_pkts)
 {
-	struct virtqueue *txvq = tx_queue;
+	struct virtnet_tx *txvq = tx_queue;
+	struct virtqueue *vq = txvq->vq;
 	uint16_t nb_used;
 	uint16_t desc_idx;
 	struct vring_desc *start_dp;
 	uint16_t nb_tail, nb_commit;
 	int i;
-	uint16_t desc_idx_max = (txvq->vq_nentries >> 1) - 1;
+	uint16_t desc_idx_max = (vq->vq_nentries >> 1) - 1;
 
-	nb_used = VIRTQUEUE_NUSED(txvq);
+	nb_used = VIRTQUEUE_NUSED(vq);
 	rte_compiler_barrier();
 
 	if (nb_used >= VIRTIO_TX_FREE_THRESH)
-		virtio_xmit_cleanup(tx_queue);
+		virtio_xmit_cleanup(vq);
 
-	nb_commit = nb_pkts = RTE_MIN((txvq->vq_free_cnt >> 1), nb_pkts);
-	desc_idx = (uint16_t) (txvq->vq_avail_idx & desc_idx_max);
-	start_dp = txvq->vq_ring.desc;
+	nb_commit = nb_pkts = RTE_MIN((vq->vq_free_cnt >> 1), nb_pkts);
+	desc_idx = (uint16_t)(vq->vq_avail_idx & desc_idx_max);
+	start_dp = vq->vq_ring.desc;
 	nb_tail = (uint16_t) (desc_idx_max + 1 - desc_idx);
 
 	if (nb_commit >= nb_tail) {
 		for (i = 0; i < nb_tail; i++)
-			txvq->vq_descx[desc_idx + i].cookie = tx_pkts[i];
+			vq->vq_descx[desc_idx + i].cookie = tx_pkts[i];
 		for (i = 0; i < nb_tail; i++) {
 			start_dp[desc_idx].addr =
-				rte_mbuf_data_dma_addr(*tx_pkts);
+				VIRTIO_MBUF_DATA_DMA_ADDR(*tx_pkts, vq);
 			start_dp[desc_idx].len = (*tx_pkts)->pkt_len;
 			tx_pkts++;
 			desc_idx++;
@@ -375,9 +381,10 @@ virtio_xmit_pkts_simple(void *tx_queue, struct rte_mbuf **tx_pkts,
 		desc_idx = 0;
 	}
 	for (i = 0; i < nb_commit; i++)
-		txvq->vq_descx[desc_idx + i].cookie = tx_pkts[i];
+		vq->vq_descx[desc_idx + i].cookie = tx_pkts[i];
 	for (i = 0; i < nb_commit; i++) {
-		start_dp[desc_idx].addr = rte_mbuf_data_dma_addr(*tx_pkts);
+		start_dp[desc_idx].addr =
+			VIRTIO_MBUF_DATA_DMA_ADDR(*tx_pkts, vq);
 		start_dp[desc_idx].len = (*tx_pkts)->pkt_len;
 		tx_pkts++;
 		desc_idx++;
@@ -385,21 +392,21 @@ virtio_xmit_pkts_simple(void *tx_queue, struct rte_mbuf **tx_pkts,
 
 	rte_compiler_barrier();
 
-	txvq->vq_free_cnt -= (uint16_t)(nb_pkts << 1);
-	txvq->vq_avail_idx += nb_pkts;
-	txvq->vq_ring.avail->idx = txvq->vq_avail_idx;
-	txvq->packets += nb_pkts;
+	vq->vq_free_cnt -= (uint16_t)(nb_pkts << 1);
+	vq->vq_avail_idx += nb_pkts;
+	vq->vq_ring.avail->idx = vq->vq_avail_idx;
+	txvq->stats.packets += nb_pkts;
 
 	if (likely(nb_pkts)) {
-		if (unlikely(virtqueue_kick_prepare(txvq)))
-			virtqueue_notify(txvq);
+		if (unlikely(virtqueue_kick_prepare(vq)))
+			virtqueue_notify(vq);
 	}
 
 	return nb_pkts;
 }
 
 int __attribute__((cold))
-virtio_rxq_vec_setup(struct virtqueue *rxq)
+virtio_rxq_vec_setup(struct virtnet_rx *rxq)
 {
 	uintptr_t p;
 	struct rte_mbuf mb_def = { .buf_addr = 0 }; /* zeroed mbuf */

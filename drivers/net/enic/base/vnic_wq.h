@@ -38,6 +38,7 @@
 
 #include "vnic_dev.h"
 #include "vnic_cq.h"
+#include <rte_memzone.h>
 
 /* Work queue control */
 struct vnic_wq_ctrl {
@@ -64,42 +65,23 @@ struct vnic_wq_ctrl {
 	u32 pad9;
 };
 
+/* 16 bytes */
 struct vnic_wq_buf {
-	struct vnic_wq_buf *next;
-	dma_addr_t dma_addr;
-	void *os_buf;
-	unsigned int len;
-	unsigned int index;
-	int sop;
-	void *desc;
-	uint64_t wr_id; /* Cookie */
-	uint8_t cq_entry; /* Gets completion event from hw */
-	uint8_t desc_skip_cnt; /* Num descs to occupy */
-	uint8_t compressed_send; /* Both hdr and payload in one desc */
+	struct rte_mempool *pool;
+	void *mb;
 };
-
-/* Break the vnic_wq_buf allocations into blocks of 32/64 entries */
-#define VNIC_WQ_BUF_MIN_BLK_ENTRIES 32
-#define VNIC_WQ_BUF_DFLT_BLK_ENTRIES 64
-#define VNIC_WQ_BUF_BLK_ENTRIES(entries) \
-	((unsigned int)((entries < VNIC_WQ_BUF_DFLT_BLK_ENTRIES) ? \
-	VNIC_WQ_BUF_MIN_BLK_ENTRIES : VNIC_WQ_BUF_DFLT_BLK_ENTRIES))
-#define VNIC_WQ_BUF_BLK_SZ(entries) \
-	(VNIC_WQ_BUF_BLK_ENTRIES(entries) * sizeof(struct vnic_wq_buf))
-#define VNIC_WQ_BUF_BLKS_NEEDED(entries) \
-	DIV_ROUND_UP(entries, VNIC_WQ_BUF_BLK_ENTRIES(entries))
-#define VNIC_WQ_BUF_BLKS_MAX VNIC_WQ_BUF_BLKS_NEEDED(4096)
 
 struct vnic_wq {
 	unsigned int index;
 	struct vnic_dev *vdev;
 	struct vnic_wq_ctrl __iomem *ctrl;              /* memory-mapped */
 	struct vnic_dev_ring ring;
-	struct vnic_wq_buf *bufs[VNIC_WQ_BUF_BLKS_MAX];
-	struct vnic_wq_buf *to_use;
-	struct vnic_wq_buf *to_clean;
-	unsigned int pkts_outstanding;
+	struct vnic_wq_buf *bufs;
+	unsigned int head_idx;
+	unsigned int tail_idx;
 	unsigned int socket_id;
+	const struct rte_memzone *cqmsg_rz;
+	uint16_t last_completed_index;
 };
 
 static inline unsigned int vnic_wq_desc_avail(struct vnic_wq *wq)
@@ -112,11 +94,6 @@ static inline unsigned int vnic_wq_desc_used(struct vnic_wq *wq)
 {
 	/* how many does HW own? */
 	return wq->ring.desc_count - wq->ring.desc_avail - 1;
-}
-
-static inline void *vnic_wq_next_desc(struct vnic_wq *wq)
-{
-	return wq->to_use->desc;
 }
 
 #define PI_LOG2_CACHE_LINE_SIZE        5
@@ -191,73 +168,13 @@ static inline u64 vnic_cached_posted_index(dma_addr_t addr, unsigned int len,
 	PI_PREFETCH_ADDR_MASK) << PI_PREFETCH_ADDR_OFF);
 }
 
-static inline void vnic_wq_post(struct vnic_wq *wq,
-	void *os_buf, dma_addr_t dma_addr,
-	unsigned int len, int sop, int eop,
-	uint8_t desc_skip_cnt, uint8_t cq_entry,
-	uint8_t compressed_send, uint64_t wrid)
+static inline uint32_t
+buf_idx_incr(uint32_t n_descriptors, uint32_t idx)
 {
-	struct vnic_wq_buf *buf = wq->to_use;
-
-	buf->sop = sop;
-	buf->cq_entry = cq_entry;
-	buf->compressed_send = compressed_send;
-	buf->desc_skip_cnt = desc_skip_cnt;
-	buf->os_buf = os_buf;
-	buf->dma_addr = dma_addr;
-	buf->len = len;
-	buf->wr_id = wrid;
-
-	buf = buf->next;
-	if (eop) {
-#ifdef DO_PREFETCH
-		uint64_t wr = vnic_cached_posted_index(dma_addr, len,
-							buf->index);
-#endif
-		/* Adding write memory barrier prevents compiler and/or CPU
-		 * reordering, thus avoiding descriptor posting before
-		 * descriptor is initialized. Otherwise, hardware can read
-		 * stale descriptor fields.
-		 */
-		wmb();
-#ifdef DO_PREFETCH
-		/* Intel chipsets seem to limit the rate of PIOs that we can
-		 * push on the bus.  Thus, it is very important to do a single
-		 * 64 bit write here.  With two 32-bit writes, my maximum
-		 * pkt/sec rate was cut almost in half. -AJF
-		 */
-		iowrite64((uint64_t)wr, &wq->ctrl->posted_index);
-#else
-		iowrite32(buf->index, &wq->ctrl->posted_index);
-#endif
-	}
-	wq->to_use = buf;
-
-	wq->ring.desc_avail -= desc_skip_cnt;
-}
-
-static inline void vnic_wq_service(struct vnic_wq *wq,
-	struct cq_desc *cq_desc, u16 completed_index,
-	void (*buf_service)(struct vnic_wq *wq,
-	struct cq_desc *cq_desc, struct vnic_wq_buf *buf, void *opaque),
-	void *opaque)
-{
-	struct vnic_wq_buf *buf;
-
-	buf = wq->to_clean;
-	while (1) {
-
-		(*buf_service)(wq, cq_desc, buf, opaque);
-
-		wq->ring.desc_avail++;
-
-		wq->to_clean = buf->next;
-
-		if (buf->index == completed_index)
-			break;
-
-		buf = wq->to_clean;
-	}
+	idx++;
+	if (unlikely(idx == n_descriptors))
+		idx = 0;
+	return idx;
 }
 
 void vnic_wq_free(struct vnic_wq *wq);
@@ -275,8 +192,5 @@ unsigned int vnic_wq_error_status(struct vnic_wq *wq);
 void vnic_wq_enable(struct vnic_wq *wq);
 int vnic_wq_disable(struct vnic_wq *wq);
 void vnic_wq_clean(struct vnic_wq *wq,
-	void (*buf_clean)(struct vnic_wq *wq, struct vnic_wq_buf *buf));
-int vnic_wq_mem_size(struct vnic_wq *wq, unsigned int desc_count,
-	unsigned int desc_size);
-
+		   void (*buf_clean)(struct vnic_wq_buf *buf));
 #endif /* _VNIC_WQ_H_ */

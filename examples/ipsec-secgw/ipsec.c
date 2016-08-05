@@ -42,11 +42,12 @@
 #include <rte_hash.h>
 
 #include "ipsec.h"
+#include "esp.h"
 
 static inline int
 create_session(struct ipsec_ctx *ipsec_ctx __rte_unused, struct ipsec_sa *sa)
 {
-	uint32_t cdev_id_qp = 0;
+	unsigned long cdev_id_qp = 0;
 	int32_t ret;
 	struct cdev_key key = { 0 };
 
@@ -58,14 +59,15 @@ create_session(struct ipsec_ctx *ipsec_ctx __rte_unused, struct ipsec_sa *sa)
 	ret = rte_hash_lookup_data(ipsec_ctx->cdev_map, &key,
 			(void **)&cdev_id_qp);
 	if (ret < 0) {
-		IPSEC_LOG(ERR, IPSEC, "No cryptodev: core %u, cipher_algo %u, "
+		RTE_LOG(ERR, IPSEC, "No cryptodev: core %u, cipher_algo %u, "
 				"auth_algo %u\n", key.lcore_id, key.cipher_algo,
 				key.auth_algo);
 		return -1;
 	}
 
-	IPSEC_LOG(DEBUG, IPSEC, "Create session for SA spi %u on cryptodev "
-			"%u qp %u\n", sa->spi, ipsec_ctx->tbl[cdev_id_qp].id,
+	RTE_LOG(DEBUG, IPSEC, "Create session for SA spi %u on cryptodev "
+			"%u qp %u\n", sa->spi,
+			ipsec_ctx->tbl[cdev_id_qp].id,
 			ipsec_ctx->tbl[cdev_id_qp].qp);
 
 	sa->crypto_session = rte_cryptodev_sym_session_create(
@@ -79,7 +81,7 @@ create_session(struct ipsec_ctx *ipsec_ctx __rte_unused, struct ipsec_sa *sa)
 static inline void
 enqueue_cop(struct cdev_qp *cqp, struct rte_crypto_op *cop)
 {
-	int ret, i;
+	int32_t ret, i;
 
 	cqp->buf[cqp->len++] = cop;
 
@@ -87,7 +89,7 @@ enqueue_cop(struct cdev_qp *cqp, struct rte_crypto_op *cop)
 		ret = rte_cryptodev_enqueue_burst(cqp->id, cqp->qp,
 				cqp->buf, cqp->len);
 		if (ret < cqp->len) {
-			IPSEC_LOG(DEBUG, IPSEC, "Cryptodev %u queue %u:"
+			RTE_LOG(DEBUG, IPSEC, "Cryptodev %u queue %u:"
 					" enqueued %u crypto ops out of %u\n",
 					 cqp->id, cqp->qp,
 					 ret, cqp->len);
@@ -99,25 +101,27 @@ enqueue_cop(struct cdev_qp *cqp, struct rte_crypto_op *cop)
 	}
 }
 
-static inline uint16_t
-ipsec_processing(struct ipsec_ctx *ipsec_ctx, struct rte_mbuf *pkts[],
-		struct ipsec_sa *sas[], uint16_t nb_pkts, uint16_t max_pkts)
+static inline void
+ipsec_enqueue(ipsec_xform_fn xform_func, struct ipsec_ctx *ipsec_ctx,
+		struct rte_mbuf *pkts[], struct ipsec_sa *sas[],
+		uint16_t nb_pkts)
 {
-	int ret = 0, i, j, nb_cops;
+	int32_t ret = 0, i;
 	struct ipsec_mbuf_metadata *priv;
-	struct rte_crypto_op *cops[max_pkts];
 	struct ipsec_sa *sa;
-	struct rte_mbuf *pkt;
 
 	for (i = 0; i < nb_pkts; i++) {
+		if (unlikely(sas[i] == NULL)) {
+			rte_pktmbuf_free(pkts[i]);
+			continue;
+		}
+
 		rte_prefetch0(sas[i]);
 		rte_prefetch0(pkts[i]);
 
 		priv = get_priv(pkts[i]);
 		sa = sas[i];
 		priv->sa = sa;
-
-		IPSEC_ASSERT(sa != NULL);
 
 		priv->cop.type = RTE_CRYPTO_OP_TYPE_SYMMETRIC;
 
@@ -133,17 +137,27 @@ ipsec_processing(struct ipsec_ctx *ipsec_ctx, struct rte_mbuf *pkts[],
 		rte_crypto_op_attach_sym_session(&priv->cop,
 				sa->crypto_session);
 
-		ret = sa->pre_crypto(pkts[i], sa, &priv->cop);
+		ret = xform_func(pkts[i], sa, &priv->cop);
 		if (unlikely(ret)) {
 			rte_pktmbuf_free(pkts[i]);
 			continue;
 		}
 
-		IPSEC_ASSERT(sa->cdev_id_qp < ipsec_ctx->nb_qps);
+		RTE_ASSERT(sa->cdev_id_qp < ipsec_ctx->nb_qps);
 		enqueue_cop(&ipsec_ctx->tbl[sa->cdev_id_qp], &priv->cop);
 	}
+}
 
-	nb_pkts = 0;
+static inline int
+ipsec_dequeue(ipsec_xform_fn xform_func, struct ipsec_ctx *ipsec_ctx,
+		struct rte_mbuf *pkts[], uint16_t max_pkts)
+{
+	int32_t nb_pkts = 0, ret = 0, i, j, nb_cops;
+	struct ipsec_mbuf_metadata *priv;
+	struct rte_crypto_op *cops[max_pkts];
+	struct ipsec_sa *sa;
+	struct rte_mbuf *pkt;
+
 	for (i = 0; i < ipsec_ctx->nb_qps && nb_pkts < max_pkts; i++) {
 		struct cdev_qp *cqp;
 
@@ -166,9 +180,9 @@ ipsec_processing(struct ipsec_ctx *ipsec_ctx, struct rte_mbuf *pkts[],
 			priv = get_priv(pkt);
 			sa = priv->sa;
 
-			IPSEC_ASSERT(sa != NULL);
+			RTE_ASSERT(sa != NULL);
 
-			ret = sa->post_crypto(pkt, sa, cops[j]);
+			ret = xform_func(pkt, sa, cops[j]);
 			if (unlikely(ret))
 				rte_pktmbuf_free(pkt);
 			else
@@ -188,7 +202,9 @@ ipsec_inbound(struct ipsec_ctx *ctx, struct rte_mbuf *pkts[],
 
 	inbound_sa_lookup(ctx->sa_ctx, pkts, sas, nb_pkts);
 
-	return ipsec_processing(ctx, pkts, sas, nb_pkts, len);
+	ipsec_enqueue(esp_inbound, ctx, pkts, sas, nb_pkts);
+
+	return ipsec_dequeue(esp_inbound_post, ctx, pkts, len);
 }
 
 uint16_t
@@ -199,5 +215,7 @@ ipsec_outbound(struct ipsec_ctx *ctx, struct rte_mbuf *pkts[],
 
 	outbound_sa_lookup(ctx->sa_ctx, sa_idx, sas, nb_pkts);
 
-	return ipsec_processing(ctx, pkts, sas, nb_pkts, len);
+	ipsec_enqueue(esp_outbound, ctx, pkts, sas, nb_pkts);
+
+	return ipsec_dequeue(esp_outbound_post, ctx, pkts, len);
 }

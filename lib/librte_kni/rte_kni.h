@@ -113,6 +113,9 @@ void rte_kni_init(unsigned int max_kni_ifaces);
  * The rte_kni_alloc shall not be called before rte_kni_init() has been
  * called. rte_kni_alloc is thread safe.
  *
+ * The mempool should have capacity of more than "2 x KNI_FIFO_COUNT_MAX"
+ * elements for each KNI interface allocated.
+ *
  * @param pktmbuf_pool
  *  The mempool for allocting mbufs for packets.
  * @param conf
@@ -160,8 +163,8 @@ int rte_kni_handle_request(struct rte_kni *kni);
 /**
  * Retrieve a burst of packets from a KNI interface. The retrieved packets are
  * stored in rte_mbuf structures whose pointers are supplied in the array of
- * mbufs, and the maximum number is indicated by num. It handles the freeing of
- * the mbufs in the free queue of KNI interface.
+ * mbufs, and the maximum number is indicated by num. It handles allocating
+ * the mbufs for KNI interface alloc queue.
  *
  * @param kni
  *  The KNI interface context.
@@ -179,8 +182,8 @@ unsigned rte_kni_rx_burst(struct rte_kni *kni, struct rte_mbuf **mbufs,
 /**
  * Send a burst of packets to a KNI interface. The packets to be sent out are
  * stored in rte_mbuf structures whose pointers are supplied in the array of
- * mbufs, and the maximum number is indicated by num. It handles allocating
- * the mbufs for KNI interface alloc queue.
+ * mbufs, and the maximum number is indicated by num. It handles the freeing of
+ * the mbufs in the free queue of KNI interface.
  *
  * @param kni
  *  The KNI interface context.

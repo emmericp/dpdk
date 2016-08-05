@@ -40,6 +40,7 @@
 #include <rte_ethdev.h>
 
 struct virtqueue;
+struct virtnet_ctl;
 
 /* VirtIO PCI vendor/device ID. */
 #define VIRTIO_PCI_VENDORID     0x1AF4
@@ -234,7 +235,7 @@ struct virtio_pci_ops {
 	uint16_t (*set_config_irq)(struct virtio_hw *hw, uint16_t vec);
 
 	uint16_t (*get_queue_num)(struct virtio_hw *hw, uint16_t queue_id);
-	void (*setup_queue)(struct virtio_hw *hw, struct virtqueue *vq);
+	int (*setup_queue)(struct virtio_hw *hw, struct virtqueue *vq);
 	void (*del_queue)(struct virtio_hw *hw, struct virtqueue *vq);
 	void (*notify_queue)(struct virtio_hw *hw, struct virtqueue *vq);
 };
@@ -242,7 +243,7 @@ struct virtio_pci_ops {
 struct virtio_net_config;
 
 struct virtio_hw {
-	struct virtqueue *cvq;
+	struct virtnet_ctl *cvq;
 	struct rte_pci_ioport io;
 	uint64_t    guest_features;
 	uint32_t    max_tx_queues;
@@ -260,6 +261,7 @@ struct virtio_hw {
 	struct virtio_pci_common_cfg *common_cfg;
 	struct virtio_net_config *dev_cfg;
 	const struct virtio_pci_ops *vtpci_ops;
+	void	    *virtio_user_dev;
 };
 
 /*
@@ -293,7 +295,8 @@ vtpci_with_feature(struct virtio_hw *hw, uint64_t bit)
 /*
  * Function declaration from virtio_pci.c
  */
-int vtpci_init(struct rte_pci_device *, struct virtio_hw *);
+int vtpci_init(struct rte_pci_device *, struct virtio_hw *,
+	       uint32_t *dev_flags);
 void vtpci_reset(struct virtio_hw *);
 
 void vtpci_reinit_complete(struct virtio_hw *);

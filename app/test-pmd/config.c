@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2010-2014 Intel Corporation. All rights reserved.
+ *   Copyright(c) 2010-2016 Intel Corporation. All rights reserved.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -92,6 +92,7 @@
 #include <rte_ether.h>
 #include <rte_ethdev.h>
 #include <rte_string_fns.h>
+#include <rte_cycles.h>
 
 #include "testpmd.h"
 
@@ -137,6 +138,11 @@ static const struct rss_type_info rss_type_table[] = {
 	{ "ipv6-ex", ETH_RSS_IPV6_EX },
 	{ "ipv6-tcp-ex", ETH_RSS_IPV6_TCP_EX },
 	{ "ipv6-udp-ex", ETH_RSS_IPV6_UDP_EX },
+	{ "port", ETH_RSS_PORT },
+	{ "vxlan", ETH_RSS_VXLAN },
+	{ "geneve", ETH_RSS_GENEVE },
+	{ "nvgre", ETH_RSS_NVGRE },
+
 };
 
 static void
@@ -150,6 +156,11 @@ print_ethaddr(const char *name, struct ether_addr *eth_addr)
 void
 nic_stats_display(portid_t port_id)
 {
+	static uint64_t prev_pkts_rx[RTE_MAX_ETHPORTS];
+	static uint64_t prev_pkts_tx[RTE_MAX_ETHPORTS];
+	static uint64_t prev_cycles[RTE_MAX_ETHPORTS];
+	uint64_t diff_pkts_rx, diff_pkts_tx, diff_cycles;
+	uint64_t mpps_rx, mpps_tx;
 	struct rte_eth_stats stats;
 	struct rte_port *port = &ports[port_id];
 	uint8_t i;
@@ -209,6 +220,23 @@ nic_stats_display(portid_t port_id)
 		}
 	}
 
+	diff_cycles = prev_cycles[port_id];
+	prev_cycles[port_id] = rte_rdtsc();
+	if (diff_cycles > 0)
+		diff_cycles = prev_cycles[port_id] - diff_cycles;
+
+	diff_pkts_rx = stats.ipackets - prev_pkts_rx[port_id];
+	diff_pkts_tx = stats.opackets - prev_pkts_tx[port_id];
+	prev_pkts_rx[port_id] = stats.ipackets;
+	prev_pkts_tx[port_id] = stats.opackets;
+	mpps_rx = diff_cycles > 0 ?
+		diff_pkts_rx * rte_get_tsc_hz() / diff_cycles : 0;
+	mpps_tx = diff_cycles > 0 ?
+		diff_pkts_tx * rte_get_tsc_hz() / diff_cycles : 0;
+	printf("\n  Throughput (since last show)\n");
+	printf("  Rx-pps: %12"PRIu64"\n  Tx-pps: %12"PRIu64"\n",
+			mpps_rx, mpps_tx);
+
 	printf("  %s############################%s\n",
 	       nic_stats_border, nic_stats_border);
 }
@@ -232,29 +260,56 @@ nic_stats_clear(portid_t port_id)
 void
 nic_xstats_display(portid_t port_id)
 {
-	struct rte_eth_xstats *xstats;
-	int len, ret, i;
+	struct rte_eth_xstat *xstats;
+	int cnt_xstats, idx_xstat;
+	struct rte_eth_xstat_name *xstats_names;
 
 	printf("###### NIC extended statistics for port %-2d\n", port_id);
-
-	len = rte_eth_xstats_get(port_id, NULL, 0);
-	if (len < 0) {
-		printf("Cannot get xstats count\n");
+	if (!rte_eth_dev_is_valid_port(port_id)) {
+		printf("Error: Invalid port number %i\n", port_id);
 		return;
 	}
-	xstats = malloc(sizeof(xstats[0]) * len);
+
+	/* Get count */
+	cnt_xstats = rte_eth_xstats_get_names(port_id, NULL, 0);
+	if (cnt_xstats  < 0) {
+		printf("Error: Cannot get count of xstats\n");
+		return;
+	}
+
+	/* Get id-name lookup table */
+	xstats_names = malloc(sizeof(struct rte_eth_xstat_name) * cnt_xstats);
+	if (xstats_names == NULL) {
+		printf("Cannot allocate memory for xstats lookup\n");
+		return;
+	}
+	if (cnt_xstats != rte_eth_xstats_get_names(
+			port_id, xstats_names, cnt_xstats)) {
+		printf("Error: Cannot get xstats lookup\n");
+		free(xstats_names);
+		return;
+	}
+
+	/* Get stats themselves */
+	xstats = malloc(sizeof(struct rte_eth_xstat) * cnt_xstats);
 	if (xstats == NULL) {
 		printf("Cannot allocate memory for xstats\n");
+		free(xstats_names);
 		return;
 	}
-	ret = rte_eth_xstats_get(port_id, xstats, len);
-	if (ret < 0 || ret > len) {
-		printf("Cannot get xstats\n");
+	if (cnt_xstats != rte_eth_xstats_get(port_id, xstats, cnt_xstats)) {
+		printf("Error: Unable to get xstats\n");
+		free(xstats_names);
 		free(xstats);
 		return;
 	}
-	for (i = 0; i < len; i++)
-		printf("%s: %"PRIu64"\n", xstats[i].name, xstats[i].value);
+
+	/* Display xstats */
+	for (idx_xstat = 0; idx_xstat < cnt_xstats; idx_xstat++)
+		printf("%s: %"PRIu64"\n",
+			xstats_names[idx_xstat].name,
+			xstats[idx_xstat].value);
+	free(xstats_names);
 	free(xstats);
 }
 
@@ -893,8 +948,9 @@ fwd_lcores_config_display(void)
 void
 rxtx_config_display(void)
 {
-	printf("  %s packet forwarding - CRC stripping %s - "
+	printf("  %s packet forwarding%s - CRC stripping %s - "
 	       "packets/burst=%d\n", cur_fwd_eng->fwd_mode_name,
+	       retry_enabled == 0 ? "" : " with retry",
 	       rx_mode.hw_strip_crc ? "enabled" : "disabled",
 	       nb_pkt_per_burst);
 
@@ -1131,6 +1187,7 @@ simple_fwd_config_setup(void)
 		fwd_streams[i]->tx_port   = fwd_ports_ids[j];
 		fwd_streams[i]->tx_queue  = 0;
 		fwd_streams[i]->peer_addr = j;
+		fwd_streams[i]->retry_enabled = retry_enabled;
 
 		if (port_topology == PORT_TOPOLOGY_PAIRED) {
 			fwd_streams[j]->rx_port   = fwd_ports_ids[j];
@@ -1138,19 +1195,15 @@ simple_fwd_config_setup(void)
 			fwd_streams[j]->tx_port   = fwd_ports_ids[i];
 			fwd_streams[j]->tx_queue  = 0;
 			fwd_streams[j]->peer_addr = i;
+			fwd_streams[j]->retry_enabled = retry_enabled;
 		}
 	}
 }
 
 /**
- * For the RSS forwarding test, each core is assigned on every port a transmit
- * queue whose index is the index of the core itself. This approach limits the
- * maximumm number of processing cores of the RSS test to the maximum number of
- * TX queues supported by the devices.
- *
- * Each core is assigned a single stream, each stream being composed of
- * a RX queue to poll on a RX port for input messages, associated with
- * a TX queue of a TX port where to send forwarded packets.
+ * For the RSS forwarding test all streams distributed over lcores. Each stream
+ * being composed of a RX queue to poll on a RX port for input messages,
+ * associated with a TX queue of a TX port where to send forwarded packets.
  * All packets received on the RX queue of index "RxQj" of the RX port "RxPi"
  * are sent on the TX queue "TxQl" of the TX port "TxPk" according to the two
  * following rules:
@@ -1164,7 +1217,7 @@ rss_fwd_config_setup(void)
 	portid_t   txp;
 	queueid_t  rxq;
 	queueid_t  nb_q;
-	lcoreid_t  lc_id;
+	streamid_t  sm_id;
 
 	nb_q = nb_rxq;
 	if (nb_q > nb_txq)
@@ -1173,10 +1226,8 @@ rss_fwd_config_setup(void)
 	cur_fwd_config.nb_fwd_ports = nb_fwd_ports;
 	cur_fwd_config.nb_fwd_streams =
 		(streamid_t) (nb_q * cur_fwd_config.nb_fwd_ports);
-	if (cur_fwd_config.nb_fwd_streams > cur_fwd_config.nb_fwd_lcores)
-		cur_fwd_config.nb_fwd_streams =
-			(streamid_t)cur_fwd_config.nb_fwd_lcores;
-	else
+
+	if (cur_fwd_config.nb_fwd_streams < cur_fwd_config.nb_fwd_lcores)
 		cur_fwd_config.nb_fwd_lcores =
 			(lcoreid_t)cur_fwd_config.nb_fwd_streams;
 
@@ -1185,10 +1236,10 @@ rss_fwd_config_setup(void)
 
 	setup_fwd_config_of_each_lcore(&cur_fwd_config);
 	rxp = 0; rxq = 0;
-	for (lc_id = 0; lc_id < cur_fwd_config.nb_fwd_lcores; lc_id++) {
+	for (sm_id = 0; sm_id < cur_fwd_config.nb_fwd_streams; sm_id++) {
 		struct fwd_stream *fs;
 
-		fs = fwd_streams[lc_id];
+		fs = fwd_streams[sm_id];
 
 		if ((rxp & 0x1) == 0)
 			txp = (portid_t) (rxp + 1);
@@ -1206,6 +1257,7 @@ rss_fwd_config_setup(void)
 		fs->tx_port = fwd_ports_ids[txp];
 		fs->tx_queue = rxq;
 		fs->peer_addr = fs->tx_port;
+		fs->retry_enabled = retry_enabled;
 		rxq = (queueid_t) (rxq + 1);
 		if (rxq < nb_q)
 			continue;
@@ -1280,6 +1332,7 @@ dcb_fwd_config_setup(void)
 				fs->tx_port = fwd_ports_ids[txp];
 				fs->tx_queue = txq + j % nb_tx_queue;
 				fs->peer_addr = fs->tx_port;
+				fs->retry_enabled = retry_enabled;
 			}
 			fwd_lcores[lc_id]->stream_nb +=
 				rxp_dcb_info.tc_queue.tc_rxq[i][tc].nb_queue;
@@ -1350,6 +1403,7 @@ icmp_echo_config_setup(void)
 			fs->tx_port = fs->rx_port;
 			fs->tx_queue = rxq;
 			fs->peer_addr = fs->tx_port;
+			fs->retry_enabled = retry_enabled;
 			if (verbose_level > 0)
 				printf("  stream=%d port=%d rxq=%d txq=%d\n",
 				       sm_id, fs->rx_port, fs->rx_queue,
@@ -1381,21 +1435,22 @@ fwd_config_setup(void)
 		simple_fwd_config_setup();
 }
 
-static void
+void
 pkt_fwd_config_display(struct fwd_config *cfg)
 {
 	struct fwd_stream *fs;
 	lcoreid_t  lc_id;
 	streamid_t sm_id;
 
-	printf("%s packet forwarding - ports=%d - cores=%d - streams=%d - "
+	printf("%s packet forwarding%s - ports=%d - cores=%d - streams=%d - "
 		"NUMA support %s, MP over anonymous pages %s\n",
 		cfg->fwd_eng->fwd_mode_name,
+		retry_enabled == 0 ? "" : " with retry",
 		cfg->nb_fwd_ports, cfg->nb_fwd_lcores, cfg->nb_fwd_streams,
 		numa_support == 1 ? "enabled" : "disabled",
 		mp_anon != 0 ? "enabled" : "disabled");
 
-	if (strcmp(cfg->fwd_eng->fwd_mode_name, "mac_retry") == 0)
+	if (retry_enabled)
 		printf("TX retry num: %u, delay between TX retries: %uus\n",
 			burst_tx_retry_num, burst_tx_delay_time);
 	for (lc_id = 0; lc_id < cfg->nb_fwd_lcores; lc_id++) {
@@ -1418,14 +1473,6 @@ pkt_fwd_config_display(struct fwd_config *cfg)
 		printf("\n");
 	}
 	printf("\n");
-}
-
-
-void
-fwd_config_display(void)
-{
-	fwd_config_setup();
-	pkt_fwd_config_display(&cur_fwd_config);
 }
 
 int
@@ -1565,6 +1612,22 @@ set_fwd_ports_number(uint16_t nb_pt)
 	       (unsigned int) nb_fwd_ports);
 }
 
+int
+port_is_forwarding(portid_t port_id)
+{
+	unsigned int i;
+
+	if (port_id_is_invalid(port_id, ENABLED_WARN))
+		return -1;
+
+	for (i = 0; i < nb_fwd_ports; i++) {
+		if (fwd_ports_ids[i] == port_id)
+			return 1;
+	}
+
+	return 0;
+}
+
 void
 set_nb_pkt_per_burst(uint16_t nb)
 {
@@ -1673,8 +1736,35 @@ list_pkt_forwarding_modes(void)
 
 	if (strlen (fwd_modes) == 0) {
 		while ((fwd_eng = fwd_engines[i++]) != NULL) {
-			strcat(fwd_modes, fwd_eng->fwd_mode_name);
-			strcat(fwd_modes, separator);
+			strncat(fwd_modes, fwd_eng->fwd_mode_name,
+					sizeof(fwd_modes) - strlen(fwd_modes) - 1);
+			strncat(fwd_modes, separator,
+					sizeof(fwd_modes) - strlen(fwd_modes) - 1);
+		}
+		fwd_modes[strlen(fwd_modes) - strlen(separator)] = '\0';
+	}
+
+	return fwd_modes;
+}
+
+char*
+list_pkt_forwarding_retry_modes(void)
+{
+	static char fwd_modes[128] = "";
+	const char *separator = "|";
+	struct fwd_engine *fwd_eng;
+	unsigned i = 0;
+
+	if (strlen(fwd_modes) == 0) {
+		while ((fwd_eng = fwd_engines[i++]) != NULL) {
+			if (fwd_eng == &rx_only_engine)
+				continue;
+			strncat(fwd_modes, fwd_eng->fwd_mode_name,
+					sizeof(fwd_modes) -
+					strlen(fwd_modes) - 1);
+			strncat(fwd_modes, separator,
+					sizeof(fwd_modes) -
+					strlen(fwd_modes) - 1);
 		}
 		fwd_modes[strlen(fwd_modes) - strlen(separator)] = '\0';
 	}
@@ -1691,8 +1781,9 @@ set_pkt_forwarding_mode(const char *fwd_mode_name)
 	i = 0;
 	while ((fwd_eng = fwd_engines[i]) != NULL) {
 		if (! strcmp(fwd_eng->fwd_mode_name, fwd_mode_name)) {
-			printf("Set %s packet forwarding mode\n",
-			       fwd_mode_name);
+			printf("Set %s packet forwarding mode%s\n",
+			       fwd_mode_name,
+			       retry_enabled == 0 ? "" : " with retry");
 			cur_fwd_eng = fwd_eng;
 			return;
 		}
@@ -2028,6 +2119,10 @@ flowtype_to_str(uint16_t flow_type)
 		{"ipv6-sctp", RTE_ETH_FLOW_NONFRAG_IPV6_SCTP},
 		{"ipv6-other", RTE_ETH_FLOW_NONFRAG_IPV6_OTHER},
 		{"l2_payload", RTE_ETH_FLOW_L2_PAYLOAD},
+		{"port", RTE_ETH_FLOW_PORT},
+		{"vxlan", RTE_ETH_FLOW_VXLAN},
+		{"geneve", RTE_ETH_FLOW_GENEVE},
+		{"nvgre", RTE_ETH_FLOW_NVGRE},
 	};
 
 	for (i = 0; i < RTE_DIM(flowtype_str_table); i++) {

@@ -144,23 +144,24 @@ desc_to_olflags_v(__m128i descs[4], struct rte_mbuf **rx_pkts)
 		uint64_t dword;
 	} vol;
 
-	/* mask everything except rss and vlan flags
-	*bit2 is for vlan tag, bits 13:12 for rss
-	*/
+	/* mask everything except RSS, flow director and VLAN flags
+	 * bit2 is for VLAN tag, bit11 for flow director indication
+	 * bit13:12 for RSS indication.
+	 */
 	const __m128i rss_vlan_msk = _mm_set_epi16(
 			0x0000, 0x0000, 0x0000, 0x0000,
-			0x3004, 0x3004, 0x3004, 0x3004);
+			0x3804, 0x3804, 0x3804, 0x3804);
 
 	/* map rss and vlan type to rss hash and vlan flag */
 	const __m128i vlan_flags = _mm_set_epi8(0, 0, 0, 0,
 			0, 0, 0, 0,
-			0, 0, 0, PKT_RX_VLAN_PKT,
+			0, 0, 0, PKT_RX_VLAN_PKT | PKT_RX_VLAN_STRIPPED,
 			0, 0, 0, 0);
 
 	const __m128i rss_flags = _mm_set_epi8(0, 0, 0, 0,
 			0, 0, 0, 0,
-			0, 0, 0, 0,
-			PKT_RX_FDIR, 0, PKT_RX_RSS_HASH, 0);
+			PKT_RX_RSS_HASH | PKT_RX_FDIR, PKT_RX_RSS_HASH, 0, 0,
+			0, 0, PKT_RX_FDIR, 0);
 
 	vlan0 = _mm_unpackhi_epi16(descs[0], descs[1]);
 	vlan1 = _mm_unpackhi_epi16(descs[2], descs[3]);
@@ -169,7 +170,7 @@ desc_to_olflags_v(__m128i descs[4], struct rte_mbuf **rx_pkts)
 	vlan1 = _mm_and_si128(vlan0, rss_vlan_msk);
 	vlan0 = _mm_shuffle_epi8(vlan_flags, vlan1);
 
-	rss = _mm_srli_epi16(vlan1, 12);
+	rss = _mm_srli_epi16(vlan1, 11);
 	rss = _mm_shuffle_epi8(rss_flags, rss);
 
 	vlan0 = _mm_or_si128(vlan0, rss);
@@ -184,41 +185,7 @@ desc_to_olflags_v(__m128i descs[4], struct rte_mbuf **rx_pkts)
 #define desc_to_olflags_v(desc, rx_pkts) do {} while (0)
 #endif
 
-#define PKTLEN_SHIFT     (6)
-#define PKTLEN_MASK      (0x3FFF)
-/* Handling the pkt len field is not aligned with 1byte, so shift is
- * needed to let it align
- */
-static inline void
-desc_pktlen_align(__m128i descs[4])
-{
-	__m128i pktlen0, pktlen1, zero;
-	union {
-		uint16_t e[4];
-		uint64_t dword;
-	} vol;
-
-	/* mask everything except pktlen field*/
-	const __m128i pktlen_msk = _mm_set_epi32(PKTLEN_MASK, PKTLEN_MASK,
-						PKTLEN_MASK, PKTLEN_MASK);
-
-	pktlen0 = _mm_unpackhi_epi32(descs[0], descs[2]);
-	pktlen1 = _mm_unpackhi_epi32(descs[1], descs[3]);
-	pktlen0 = _mm_unpackhi_epi32(pktlen0, pktlen1);
-
-	zero = _mm_xor_si128(pktlen0, pktlen0);
-
-	pktlen0 = _mm_srli_epi32(pktlen0, PKTLEN_SHIFT);
-	pktlen0 = _mm_and_si128(pktlen0, pktlen_msk);
-
-	pktlen0 = _mm_packs_epi32(pktlen0, zero);
-	vol.dword = _mm_cvtsi128_si64(pktlen0);
-	/* let the descriptor byte 15-14 store the pkt len */
-	*((uint16_t *)&descs[0]+7) = vol.e[0];
-	*((uint16_t *)&descs[1]+7) = vol.e[1];
-	*((uint16_t *)&descs[2]+7) = vol.e[2];
-	*((uint16_t *)&descs[3]+7) = vol.e[3];
-}
+#define PKTLEN_SHIFT     10
 
  /*
  * Notice:
@@ -302,7 +269,7 @@ _recv_raw_pkts_vec(struct i40e_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 	 * D. fill info. from desc to mbuf
 	 */
 
-	for (pos = 0, nb_pkts_recd = 0; pos < RTE_I40E_VPMD_RX_BURST;
+	for (pos = 0, nb_pkts_recd = 0; pos < nb_pkts;
 			pos += RTE_I40E_DESCS_PER_LOOP,
 			rxdp += RTE_I40E_DESCS_PER_LOOP) {
 		__m128i descs[RTE_I40E_DESCS_PER_LOOP];
@@ -331,17 +298,22 @@ _recv_raw_pkts_vec(struct i40e_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 		_mm_storeu_si128((__m128i *)&rx_pkts[pos+2], mbp2);
 
 		if (split_packet) {
-			rte_prefetch0(&rx_pkts[pos]->cacheline1);
-			rte_prefetch0(&rx_pkts[pos + 1]->cacheline1);
-			rte_prefetch0(&rx_pkts[pos + 2]->cacheline1);
-			rte_prefetch0(&rx_pkts[pos + 3]->cacheline1);
+			rte_mbuf_prefetch_part2(rx_pkts[pos]);
+			rte_mbuf_prefetch_part2(rx_pkts[pos + 1]);
+			rte_mbuf_prefetch_part2(rx_pkts[pos + 2]);
+			rte_mbuf_prefetch_part2(rx_pkts[pos + 3]);
 		}
-
-		/*shift the pktlen field*/
-		desc_pktlen_align(descs);
 
 		/* avoid compiler reorder optimization */
 		rte_compiler_barrier();
+
+		/* pkt 3,4 shift the pktlen field to be 16-bit aligned*/
+		const __m128i len3 = _mm_slli_epi32(descs[3], PKTLEN_SHIFT);
+		const __m128i len2 = _mm_slli_epi32(descs[2], PKTLEN_SHIFT);
+
+		/* merge the now-aligned packet length fields back in */
+		descs[3] = _mm_blend_epi16(descs[3], len3, 0x80);
+		descs[2] = _mm_blend_epi16(descs[2], len2, 0x80);
 
 		/* D.1 pkt 3,4 convert format from desc to pktmbuf */
 		pkt_mb4 = _mm_shuffle_epi8(descs[3], shuf_msk);
@@ -357,6 +329,14 @@ _recv_raw_pkts_vec(struct i40e_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 		/* D.2 pkt 3,4 set in_port/nb_seg and remove crc */
 		pkt_mb4 = _mm_add_epi16(pkt_mb4, crc_adjust);
 		pkt_mb3 = _mm_add_epi16(pkt_mb3, crc_adjust);
+
+		/* pkt 1,2 shift the pktlen field to be 16-bit aligned*/
+		const __m128i len1 = _mm_slli_epi32(descs[1], PKTLEN_SHIFT);
+		const __m128i len0 = _mm_slli_epi32(descs[0], PKTLEN_SHIFT);
+
+		/* merge the now-aligned packet length fields back in */
+		descs[1] = _mm_blend_epi16(descs[1], len1, 0x80);
+		descs[0] = _mm_blend_epi16(descs[0], len0, 0x80);
 
 		/* D.1 pkt 1,2 convert format from desc to pktmbuf */
 		pkt_mb2 = _mm_shuffle_epi8(descs[1], shuf_msk);
@@ -750,6 +730,10 @@ i40e_rx_vec_dev_conf_condition_check(struct rte_eth_dev *dev)
 #ifndef RTE_LIBRTE_IEEE1588
 	struct rte_eth_rxmode *rxmode = &dev->data->dev_conf.rxmode;
 	struct rte_fdir_conf *fconf = &dev->data->dev_conf.fdir_conf;
+
+	/* need SSE4.1 support */
+	if (!rte_cpu_get_flag_enabled(RTE_CPUFLAG_SSE4_1))
+		return -1;
 
 #ifndef RTE_LIBRTE_I40E_RX_OLFLAGS_ENABLE
 	/* whithout rx ol_flags, no VP flag report */

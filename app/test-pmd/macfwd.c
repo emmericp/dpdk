@@ -81,6 +81,7 @@ pkt_burst_mac_forward(struct fwd_stream *fs)
 	struct rte_port  *txp;
 	struct rte_mbuf  *mb;
 	struct ether_hdr *eth_hdr;
+	uint32_t retry;
 	uint16_t nb_rx;
 	uint16_t nb_tx;
 	uint16_t i;
@@ -113,6 +114,9 @@ pkt_burst_mac_forward(struct fwd_stream *fs)
 	if (txp->tx_ol_flags & TESTPMD_TX_OFFLOAD_INSERT_QINQ)
 		ol_flags |= PKT_TX_QINQ_PKT;
 	for (i = 0; i < nb_rx; i++) {
+		if (likely(i < nb_rx - 1))
+			rte_prefetch0(rte_pktmbuf_mtod(pkts_burst[i + 1],
+						       void *));
 		mb = pkts_burst[i];
 		eth_hdr = rte_pktmbuf_mtod(mb, struct ether_hdr *);
 		ether_addr_copy(&peer_eth_addrs[fs->peer_addr],
@@ -126,6 +130,18 @@ pkt_burst_mac_forward(struct fwd_stream *fs)
 		mb->vlan_tci_outer = txp->tx_vlan_id_outer;
 	}
 	nb_tx = rte_eth_tx_burst(fs->tx_port, fs->tx_queue, pkts_burst, nb_rx);
+	/*
+	 * Retry if necessary
+	 */
+	if (unlikely(nb_tx < nb_rx) && fs->retry_enabled) {
+		retry = 0;
+		while (nb_tx < nb_rx && retry++ < burst_tx_retry_num) {
+			rte_delay_us(burst_tx_delay_time);
+			nb_tx += rte_eth_tx_burst(fs->tx_port, fs->tx_queue,
+					&pkts_burst[nb_tx], nb_rx - nb_tx);
+		}
+	}
+
 	fs->tx_packets += nb_tx;
 #ifdef RTE_TEST_PMD_RECORD_BURST_STATS
 	fs->tx_burst_stats.pkt_burst_spread[nb_tx]++;

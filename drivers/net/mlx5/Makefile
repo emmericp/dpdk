@@ -47,18 +47,22 @@ SRCS-$(CONFIG_RTE_LIBRTE_MLX5_PMD) += mlx5_vlan.c
 SRCS-$(CONFIG_RTE_LIBRTE_MLX5_PMD) += mlx5_stats.c
 SRCS-$(CONFIG_RTE_LIBRTE_MLX5_PMD) += mlx5_rss.c
 SRCS-$(CONFIG_RTE_LIBRTE_MLX5_PMD) += mlx5_fdir.c
+SRCS-$(CONFIG_RTE_LIBRTE_MLX5_PMD) += mlx5_mr.c
 
 # Dependencies.
 DEPDIRS-$(CONFIG_RTE_LIBRTE_MLX5_PMD) += lib/librte_ether
 DEPDIRS-$(CONFIG_RTE_LIBRTE_MLX5_PMD) += lib/librte_mbuf
 DEPDIRS-$(CONFIG_RTE_LIBRTE_MLX5_PMD) += lib/librte_eal
 DEPDIRS-$(CONFIG_RTE_LIBRTE_MLX5_PMD) += lib/librte_mempool
+DEPDIRS-$(CONFIG_RTE_LIBRTE_MLX5_PMD) += lib/librte_kvargs
 
 # Basic CFLAGS.
 CFLAGS += -O3
 CFLAGS += -std=gnu99 -Wall -Wextra
 CFLAGS += -g
 CFLAGS += -I.
+CFLAGS += -D_BSD_SOURCE
+CFLAGS += -D_DEFAULT_SOURCE
 CFLAGS += -D_XOPEN_SOURCE=600
 CFLAGS += $(WERROR_FLAGS)
 CFLAGS += -Wno-strict-prototypes
@@ -83,14 +87,6 @@ else
 CFLAGS += -DNDEBUG -UPEDANTIC
 endif
 
-ifdef CONFIG_RTE_LIBRTE_MLX5_SGE_WR_N
-CFLAGS += -DMLX5_PMD_SGE_WR_N=$(CONFIG_RTE_LIBRTE_MLX5_SGE_WR_N)
-endif
-
-ifdef CONFIG_RTE_LIBRTE_MLX5_MAX_INLINE
-CFLAGS += -DMLX5_PMD_MAX_INLINE=$(CONFIG_RTE_LIBRTE_MLX5_MAX_INLINE)
-endif
-
 ifdef CONFIG_RTE_LIBRTE_MLX5_TX_MP_CACHE
 CFLAGS += -DMLX5_PMD_TX_MP_CACHE=$(CONFIG_RTE_LIBRTE_MLX5_TX_MP_CACHE)
 endif
@@ -106,50 +102,31 @@ ifndef V
 AUTOCONF_OUTPUT := >/dev/null
 endif
 
-mlx5_autoconf.h: $(RTE_SDK)/scripts/auto-config-h.sh
+mlx5_autoconf.h.new: FORCE
+
+mlx5_autoconf.h.new: $(RTE_SDK)/scripts/auto-config-h.sh
 	$Q $(RM) -f -- '$@'
 	$Q sh -- '$<' '$@' \
-		HAVE_EXP_QUERY_DEVICE \
-		infiniband/verbs.h \
-		type 'struct ibv_exp_device_attr' $(AUTOCONF_OUTPUT)
-	$Q sh -- '$<' '$@' \
-		HAVE_FLOW_SPEC_IPV6 \
-		infiniband/verbs.h \
-		type 'struct ibv_exp_flow_spec_ipv6' $(AUTOCONF_OUTPUT)
-	$Q sh -- '$<' '$@' \
-		HAVE_EXP_QP_BURST_CREATE_ENABLE_MULTI_PACKET_SEND_WR \
-		infiniband/verbs.h \
-		enum IBV_EXP_QP_BURST_CREATE_ENABLE_MULTI_PACKET_SEND_WR \
+		HAVE_VERBS_IBV_EXP_CQ_COMPRESSED_CQE \
+		infiniband/verbs_exp.h \
+		enum IBV_EXP_CQ_COMPRESSED_CQE \
 		$(AUTOCONF_OUTPUT)
 	$Q sh -- '$<' '$@' \
-		HAVE_EXP_DEVICE_ATTR_VLAN_OFFLOADS \
-		infiniband/verbs.h \
-		enum IBV_EXP_DEVICE_ATTR_VLAN_OFFLOADS \
+		HAVE_VERBS_MLX5_ETH_VLAN_INLINE_HEADER_SIZE \
+		infiniband/mlx5_hw.h \
+		enum MLX5_ETH_VLAN_INLINE_HEADER_SIZE \
 		$(AUTOCONF_OUTPUT)
-	$Q sh -- '$<' '$@' \
-		HAVE_EXP_CQ_RX_TCP_PACKET \
-		infiniband/verbs.h \
-		enum IBV_EXP_CQ_RX_TCP_PACKET \
-		$(AUTOCONF_OUTPUT)
-	$Q sh -- '$<' '$@' \
-		HAVE_VERBS_FCS \
-		infiniband/verbs.h \
-		enum IBV_EXP_CREATE_WQ_FLAG_SCATTER_FCS \
-		$(AUTOCONF_OUTPUT)
-	$Q sh -- '$<' '$@' \
-		HAVE_VERBS_RX_END_PADDING \
-		infiniband/verbs.h \
-		enum IBV_EXP_CREATE_WQ_FLAG_RX_END_PADDING \
-		$(AUTOCONF_OUTPUT)
-	$Q sh -- '$<' '$@' \
-		HAVE_VERBS_VLAN_INSERTION \
-		infiniband/verbs.h \
-		enum IBV_EXP_RECEIVE_WQ_CVLAN_INSERTION \
-		$(AUTOCONF_OUTPUT)
+
+# Create mlx5_autoconf.h or update it in case it differs from the new one.
+
+mlx5_autoconf.h: mlx5_autoconf.h.new
+	$Q [ -f '$@' ] && \
+		cmp '$<' '$@' $(AUTOCONF_OUTPUT) || \
+		mv '$<' '$@'
 
 $(SRCS-$(CONFIG_RTE_LIBRTE_MLX5_PMD):.c=.o): mlx5_autoconf.h
 
 clean_mlx5: FORCE
-	$Q rm -f -- mlx5_autoconf.h
+	$Q rm -f -- mlx5_autoconf.h mlx5_autoconf.h.new
 
 clean: clean_mlx5

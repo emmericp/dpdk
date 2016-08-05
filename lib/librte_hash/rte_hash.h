@@ -60,6 +60,9 @@ extern "C" {
 /** Enable Hardware transactional memory support. */
 #define RTE_HASH_EXTRA_FLAGS_TRANS_MEM_SUPPORT	0x01
 
+/** Default behavior of insertion, single writer/multi writer */
+#define RTE_HASH_EXTRA_FLAGS_MULTI_WRITER_ADD 0x02
+
 /** Signature of key that is stored internally. */
 typedef uint32_t hash_sig_t;
 
@@ -268,6 +271,24 @@ rte_hash_del_key(const struct rte_hash *h, const void *key);
 int32_t
 rte_hash_del_key_with_hash(const struct rte_hash *h, const void *key, hash_sig_t sig);
 
+/**
+ * Find a key in the hash table given the position.
+ * This operation is multi-thread safe.
+ *
+ * @param h
+ *   Hash table to get the key from.
+ * @param position
+ *   Position returned when the key was inserted.
+ * @param key
+ *   Output containing a pointer to the key
+ * @return
+ *   - 0 if retrieved successfully
+ *   - EINVAL if the parameters are invalid.
+ *   - ENOENT if no valid key is found in the given position.
+ */
+int
+rte_hash_get_key_with_position(const struct rte_hash *h, const int32_t position,
+			       void **key);
 
 /**
  * Find a key-value pair in the hash table.
@@ -362,8 +383,6 @@ rte_hash_lookup_with_hash(const struct rte_hash *h,
 hash_sig_t
 rte_hash_hash(const struct rte_hash *h, const void *key);
 
-#define rte_hash_lookup_multi rte_hash_lookup_bulk
-#define rte_hash_lookup_multi_data rte_hash_lookup_bulk_data
 /**
  * Find multiple keys in the hash table.
  * This operation is multi-thread safe.

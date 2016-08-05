@@ -58,6 +58,12 @@ parallel_test_group_list = [
 	"Tests" :
 	[
 		{
+		 "Name" :	"Cycles autotest",
+		 "Command" : 	"cycles_autotest",
+		 "Func" :	default_autotest,
+		 "Report" :	None,
+		},
+		{
 		 "Name" :	"Timer autotest",
 		 "Command" : 	"timer_autotest",
 		 "Func" :	timer_autotest,
@@ -88,28 +94,16 @@ parallel_test_group_list = [
 		 "Report" :	None,
 		},
 		{
-		 "Name" :	"Dump log history",
-		 "Command" :	"dump_log_history",
-		 "Func" :	dump_autotest,
-		 "Report" :	None,
-		},
-		{
-		 "Name" :	"Dump rings",
-		 "Command" :	"dump_ring",
-		 "Func" :	dump_autotest,
-		 "Report" :	None,
-		},
-		{
-		 "Name" :	"Dump mempools",
-		 "Command" :	"dump_mempool",
-		 "Func" :	dump_autotest,
+		 "Name" :	"Resource autotest",
+		 "Command" :	"resource_autotest",
+		 "Func" :	default_autotest,
 		 "Report" :	None,
 		},
 	]
 },
 {
 	"Prefix":	"group_2",
-	"Memory" :	"128",
+	"Memory" :	"16",
 	"Tests" :
 	[
 		{
@@ -164,7 +158,7 @@ parallel_test_group_list = [
 },
 {
 	"Prefix":	"group_3",
-	"Memory" :	per_sockets(1024),
+	"Memory" :	per_sockets(512),
 	"Tests" :
 	[
 		{
@@ -172,6 +166,12 @@ parallel_test_group_list = [
 		 "Command" : 	"lpm_autotest",
 		 "Func" :	default_autotest,
 		 "Report" :	None,
+		},
+		{
+			"Name" :    "LPM6 autotest",
+			"Command" : "lpm6_autotest",
+			"Func" :    default_autotest,
+			"Report" :  None,
 		},
 		{
 		 "Name" :	"IVSHMEM autotest",
@@ -287,7 +287,7 @@ parallel_test_group_list = [
 },
 {
 	"Prefix":	"group_6",
-	"Memory" :	per_sockets(620),
+	"Memory" :	per_sockets(512),
 	"Tests" :
 	[
 		{
@@ -324,7 +324,7 @@ parallel_test_group_list = [
 },
 {
 	"Prefix" :	"group_7",
-	"Memory" :	"400",
+	"Memory" :	"64",
 	"Tests" :
 	[
 		{
@@ -371,12 +371,6 @@ non_parallel_test_group_list = [
 	"Tests" :
 	[
 		{
-		 "Name" :	"Cycles autotest",
-		 "Command" : 	"cycles_autotest",
-		 "Func" :	default_autotest,
-		 "Report" :	None,
-		},
-		{
 		 "Name" :	"Mempool performance autotest",
 		 "Command" : 	"mempool_perf_autotest",
 		 "Func" :	default_autotest,
@@ -412,7 +406,7 @@ non_parallel_test_group_list = [
 },
 {
 	"Prefix" :      "power",
-	"Memory" :      per_sockets(512),
+	"Memory" :      "16",
 	"Tests" :
 	[
 		{
@@ -425,7 +419,7 @@ non_parallel_test_group_list = [
 },
 {
 	"Prefix" :      "power_acpi_cpufreq",
-	"Memory" :      per_sockets(512),
+	"Memory" :      "16",
 	"Tests" :
 	[
 		{
@@ -438,7 +432,7 @@ non_parallel_test_group_list = [
 },
 {
 	"Prefix" :      "power_kvm_vm",
-	"Memory" :      "512",
+	"Memory" :      "16",
 	"Tests" :
 	[
 		{
@@ -447,19 +441,6 @@ non_parallel_test_group_list = [
 		 "Func" :       default_autotest,
 		 "Report" :     None,
 		},
-	]
-},
-{
-	"Prefix" :	"lpm6",
-	"Memory" :	"512",
-	"Tests" :
-	[
-		{
-                 "Name" :       "LPM6 autotest",
-                 "Command" :    "lpm6_autotest",
-                 "Func" :       default_autotest,
-                 "Report" :     None,
-                },
 	]
 },
 {

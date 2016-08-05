@@ -81,62 +81,10 @@ store_max_vfs(struct device *dev, struct device_attribute *attr,
 	return err ? err : count;
 }
 
-#ifdef RTE_PCI_CONFIG
-static ssize_t
-show_extended_tag(struct device *dev, struct device_attribute *attr, char *buf)
-{
-	dev_info(dev, "Deprecated\n");
-
-	return 0;
-}
-
-static ssize_t
-store_extended_tag(struct device *dev,
-		   struct device_attribute *attr,
-		   const char *buf,
-		   size_t count)
-{
-	dev_info(dev, "Deprecated\n");
-
-	return 0;
-}
-
-static ssize_t
-show_max_read_request_size(struct device *dev,
-			   struct device_attribute *attr,
-			   char *buf)
-{
-	dev_info(dev, "Deprecated\n");
-
-	return 0;
-}
-
-static ssize_t
-store_max_read_request_size(struct device *dev,
-			    struct device_attribute *attr,
-			    const char *buf,
-			    size_t count)
-{
-	dev_info(dev, "Deprecated\n");
-
-	return 0;
-}
-#endif
-
 static DEVICE_ATTR(max_vfs, S_IRUGO | S_IWUSR, show_max_vfs, store_max_vfs);
-#ifdef RTE_PCI_CONFIG
-static DEVICE_ATTR(extended_tag, S_IRUGO | S_IWUSR, show_extended_tag,
-	store_extended_tag);
-static DEVICE_ATTR(max_read_request_size, S_IRUGO | S_IWUSR,
-	show_max_read_request_size, store_max_read_request_size);
-#endif
 
 static struct attribute *dev_attrs[] = {
 	&dev_attr_max_vfs.attr,
-#ifdef RTE_PCI_CONFIG
-	&dev_attr_extended_tag.attr,
-	&dev_attr_max_read_request_size.attr,
-#endif
 	NULL,
 };
 
@@ -394,16 +342,6 @@ igbuio_pci_probe(struct pci_dev *dev, const struct pci_device_id *id)
 		goto fail_free;
 	}
 
-	/*
-	 * reserve device's PCI memory regions for use by this
-	 * module
-	 */
-	err = pci_request_regions(dev, "igb_uio");
-	if (err != 0) {
-		dev_err(&dev->dev, "Cannot request regions\n");
-		goto fail_disable;
-	}
-
 	/* enable bus mastering on the device */
 	pci_set_master(dev);
 
@@ -493,8 +431,6 @@ fail_release_iomem:
 	igbuio_pci_release_iomem(&udev->info);
 	if (udev->mode == RTE_INTR_MODE_MSIX)
 		pci_disable_msix(udev->pdev);
-	pci_release_regions(dev);
-fail_disable:
 	pci_disable_device(dev);
 fail_free:
 	kfree(udev);
@@ -512,7 +448,6 @@ igbuio_pci_remove(struct pci_dev *dev)
 	igbuio_pci_release_iomem(&udev->info);
 	if (udev->mode == RTE_INTR_MODE_MSIX)
 		pci_disable_msix(dev);
-	pci_release_regions(dev);
 	pci_disable_device(dev);
 	pci_set_drvdata(dev, NULL);
 	kfree(udev);

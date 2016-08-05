@@ -60,18 +60,14 @@ check_for_bonded_ethdev(const struct rte_eth_dev *eth_dev)
 int
 valid_bonded_port_id(uint8_t port_id)
 {
-	if (!rte_eth_dev_is_valid_port(port_id))
-		return -1;
-
+	RTE_ETH_VALID_PORTID_OR_ERR_RET(port_id, -1);
 	return check_for_bonded_ethdev(&rte_eth_devices[port_id]);
 }
 
 int
 valid_slave_port_id(uint8_t port_id)
 {
-	/* Verify that port id's are valid */
-	if (!rte_eth_dev_is_valid_port(port_id))
-		return -1;
+	RTE_ETH_VALID_PORTID_OR_ERR_RET(port_id, -1);
 
 	/* Verify that port_id refers to a non bonded port */
 	if (check_for_bonded_ethdev(&rte_eth_devices[port_id]) == 0)
@@ -95,7 +91,7 @@ activate_slave(struct rte_eth_dev *eth_dev, uint8_t port_id)
 		internals->tlb_slaves_order[active_count] = port_id;
 	}
 
-	RTE_VERIFY(internals->active_slave_count <
+	RTE_ASSERT(internals->active_slave_count <
 			(RTE_DIM(internals->active_slaves) - 1));
 
 	internals->active_slaves[internals->active_slave_count] = port_id;
@@ -134,7 +130,7 @@ deactivate_slave(struct rte_eth_dev *eth_dev, uint8_t port_id)
 					sizeof(internals->active_slaves[0]));
 	}
 
-	RTE_VERIFY(active_count < RTE_DIM(internals->active_slaves));
+	RTE_ASSERT(active_count < RTE_DIM(internals->active_slaves));
 	internals->active_slave_count = active_count;
 
 	if (eth_dev->data->dev_started) {
@@ -247,6 +243,8 @@ rte_eth_bond_create(const char *name, uint8_t mode, uint8_t socket_id)
 	internals->active_slave_count = 0;
 	internals->rx_offload_capa = 0;
 	internals->tx_offload_capa = 0;
+	internals->candidate_max_rx_pktlen = 0;
+	internals->max_rx_pktlen = 0;
 
 	/* Initially allow to choose any offload type */
 	internals->flow_type_rss_offloads = ETH_RSS_PROTO_MASK;
@@ -331,9 +329,15 @@ __eth_bond_slave_add_lock_free(uint8_t bonded_port_id, uint8_t slave_port_id)
 
 	/* Add slave details to bonded device */
 	slave_eth_dev->data->dev_flags |= RTE_ETH_DEV_BONDED_SLAVE;
-	slave_add(internals, slave_eth_dev);
 
 	rte_eth_dev_info_get(slave_port_id, &dev_info);
+	if (dev_info.max_rx_pktlen < internals->max_rx_pktlen) {
+		RTE_BOND_LOG(ERR, "Slave (port %u) max_rx_pktlen too small",
+			     slave_port_id);
+		return -1;
+	}
+
+	slave_add(internals, slave_eth_dev);
 
 	/* We need to store slaves reta_size to be able to synchronize RETA for all
 	 * slave devices even if its sizes are different.
@@ -365,6 +369,9 @@ __eth_bond_slave_add_lock_free(uint8_t bonded_port_id, uint8_t slave_port_id)
 		internals->tx_offload_capa = dev_info.tx_offload_capa;
 		internals->flow_type_rss_offloads = dev_info.flow_type_rss_offloads;
 
+		/* Inherit first slave's max rx packet size */
+		internals->candidate_max_rx_pktlen = dev_info.max_rx_pktlen;
+
 	} else {
 		/* Check slave link properties are supported if props are set,
 		 * all slaves must be the same */
@@ -391,6 +398,9 @@ __eth_bond_slave_add_lock_free(uint8_t bonded_port_id, uint8_t slave_port_id)
 		if (internals->reta_size > dev_info.reta_size)
 			internals->reta_size = dev_info.reta_size;
 
+		if (!internals->max_rx_pktlen &&
+		    dev_info.max_rx_pktlen < internals->candidate_max_rx_pktlen)
+			internals->candidate_max_rx_pktlen = dev_info.max_rx_pktlen;
 	}
 
 	bonded_eth_dev->data->dev_conf.rx_adv_conf.rss_conf.rss_hf &=
@@ -536,6 +546,8 @@ __eth_bond_slave_remove_lock_free(uint8_t bonded_port_id, uint8_t slave_port_id)
 		internals->tx_offload_capa = 0;
 		internals->flow_type_rss_offloads = ETH_RSS_PROTO_MASK;
 		internals->reta_size = 0;
+		internals->candidate_max_rx_pktlen = 0;
+		internals->max_rx_pktlen = 0;
 	}
 	return 0;
 }

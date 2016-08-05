@@ -183,7 +183,7 @@ contains the kernel modules to install:
 
     ls x86_64-native-bsdapp-gcc
 
-    app build hostapp include kmod lib Makefile
+    app build include kmod lib Makefile
 
 
 .. _loading_contigmem:
@@ -263,7 +263,7 @@ To avoid this error, reduce the number of buffers or the buffer size.
 Loading the DPDK nic_uio Module
 -------------------------------
 
-After loading the contigmem module, the ``nic_uio must`` also be loaded into the
+After loading the contigmem module, the ``nic_uio`` module must also be loaded into the
 running kernel prior to running any DPDK application.  This module must
 be loaded using the kldload command as shown below (assuming that the current
 directory is the DPDK target directory).

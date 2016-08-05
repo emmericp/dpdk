@@ -182,6 +182,16 @@ app_msg_send_recv(struct app_params *app,
 	return msg_recv;
 }
 
+struct app_link_params *
+app_pipeline_track_pktq_out_to_link(struct app_params *app,
+	uint32_t pipeline_id,
+	uint32_t pktq_out_id);
+
+int
+app_pipeline_track_default(struct pipeline_params *params,
+	uint32_t port_in,
+	uint32_t *port_out);
+
 int
 app_pipeline_ping(struct app_params *app,
 	uint32_t pipeline_id);
@@ -215,6 +225,13 @@ app_pipeline_port_in_disable(struct app_params *app,
 	uint32_t port_id);
 
 int
+app_link_set_op(struct app_params *app,
+	uint32_t link_id,
+	uint32_t pipeline_id,
+	app_link_op op,
+	void *arg);
+
+int
 app_link_config(struct app_params *app,
 	uint32_t link_id,
 	uint32_t ip,
@@ -230,5 +247,14 @@ app_link_down(struct app_params *app,
 
 int
 app_pipeline_common_cmd_push(struct app_params *app);
+
+#define CMD_MSG_OUT_OF_MEMORY	"Not enough memory\n"
+#define CMD_MSG_NOT_ENOUGH_ARGS	"Not enough arguments for command \"%s\"\n"
+#define CMD_MSG_TOO_MANY_ARGS	"Too many arguments for command \"%s\"\n"
+#define CMD_MSG_MISMATCH_ARGS	"Incorrect set of arguments for command \"%s\"\n"
+#define CMD_MSG_INVALID_ARG	"Invalid value for argument \"%s\"\n"
+#define CMD_MSG_ARG_NOT_FOUND	"Syntax error: \"%s\" not found\n"
+#define CMD_MSG_FILE_ERR	"Error in file \"%s\" at line %u\n"
+#define CMD_MSG_FAIL		"Command \"%s\" failed\n"
 
 #endif

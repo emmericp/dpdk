@@ -37,6 +37,7 @@ Network Interface Controller Drivers
 
     overview
     bnx2x
+    bnxt
     cxgbe
     e1000em
     ena
@@ -48,7 +49,9 @@ Network Interface Controller Drivers
     mlx4
     mlx5
     nfp
+    qede
     szedata2
+    thunderx
     virtio
     vhost
     vmxnet3

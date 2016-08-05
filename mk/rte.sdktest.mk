@@ -46,14 +46,14 @@ DIR := $(shell basename $(RTE_OUTPUT))
 #
 # test: launch auto-tests, very simple for now.
 #
-PHONY: test fast_test
+.PHONY: test fast_test perf_test coverage
 
-coverage: BLACKLIST=-Mempool_perf,Memcpy_perf,Hash_perf
-fast_test: BLACKLIST=-Ring_perf,Mempool_perf,Memcpy_perf,Hash_perf,Lpm6
-ring_test: WHITELIST=Ring,Ring_perf
-mempool_test: WHITELIST=Mempool,Mempool_perf
-perf_test:WHITELIST=Mempool_perf,Memcpy_perf,Hash_perf,Ring_perf
-test fast_test ring_test mempool_test perf_test:
+PERFLIST=ring_perf,mempool_perf,memcpy_perf,hash_perf,timer_perf
+coverage: BLACKLIST=-$(PERFLIST)
+fast_test: BLACKLIST=-$(PERFLIST)
+perf_test: WHITELIST=$(PERFLIST)
+
+test fast_test perf_test:
 	@mkdir -p $(AUTOTEST_DIR) ; \
 	cd $(AUTOTEST_DIR) ; \
 	if [ -f $(RTE_OUTPUT)/app/test ]; then \
@@ -66,7 +66,7 @@ test fast_test ring_test mempool_test perf_test:
 	fi
 
 # this is a special target to ease the pain of running coverage tests
-# this runs all the autotests, cmdline_test script and dpdk_proc_info
+# this runs all the autotests, cmdline_test script and dpdk-procinfo
 coverage:
 	@mkdir -p $(AUTOTEST_DIR) ; \
 	cd $(AUTOTEST_DIR) ; \
@@ -78,7 +78,7 @@ coverage:
 			$(RTE_OUTPUT)/app/test \
 			$(RTE_TARGET) \
 			$(BLACKLIST) $(WHITELIST) ; \
-		$(RTE_OUTPUT)/app/dpdk_proc_info --file-prefix=ring_perf -- -m; \
+		$(RTE_OUTPUT)/app/dpdk-procinfo --file-prefix=ring_perf -- -m; \
 	else \
 		echo "No test found, please do a 'make build' first, or specify O=" ;\
 	fi

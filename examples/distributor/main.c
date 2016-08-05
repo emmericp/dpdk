@@ -52,19 +52,6 @@
 #define BURST_SIZE 32
 #define RTE_RING_SZ 1024
 
-/* uncommnet below line to enable debug logs */
-/* #define DEBUG */
-
-#ifdef DEBUG
-#define LOG_LEVEL RTE_LOG_DEBUG
-#define LOG_DEBUG(log_type, fmt, args...) do {	\
-	RTE_LOG(DEBUG, log_type, fmt, ##args);		\
-} while (0)
-#else
-#define LOG_LEVEL RTE_LOG_INFO
-#define LOG_DEBUG(log_type, fmt, args...) do {} while (0)
-#endif
-
 #define RTE_LOGTYPE_DISTRAPP RTE_LOGTYPE_USER1
 
 /* mask of enabled ports */
@@ -178,19 +165,25 @@ struct lcore_params {
 	struct rte_mempool *mem_pool;
 };
 
-static void
+static int
 quit_workers(struct rte_distributor *d, struct rte_mempool *p)
 {
 	const unsigned num_workers = rte_lcore_count() - 2;
 	unsigned i;
 	struct rte_mbuf *bufs[num_workers];
-	rte_mempool_get_bulk(p, (void *)bufs, num_workers);
+
+	if (rte_mempool_get_bulk(p, (void *)bufs, num_workers) != 0) {
+		printf("line %d: Error getting mbufs from pool\n", __LINE__);
+		return -1;
+	}
 
 	for (i = 0; i < num_workers; i++)
 		bufs[i]->hash.rss = i << 1;
 
 	rte_distributor_process(d, bufs, num_workers);
 	rte_mempool_put_bulk(p, (void *)bufs, num_workers);
+
+	return 0;
 }
 
 static int
@@ -228,19 +221,28 @@ lcore_rx(struct lcore_params *p)
 		struct rte_mbuf *bufs[BURST_SIZE*2];
 		const uint16_t nb_rx = rte_eth_rx_burst(port, 0, bufs,
 				BURST_SIZE);
+		if (unlikely(nb_rx == 0)) {
+			if (++port == nb_ports)
+				port = 0;
+			continue;
+		}
 		app_stats.rx.rx_pkts += nb_rx;
 
 		rte_distributor_process(d, bufs, nb_rx);
 		const uint16_t nb_ret = rte_distributor_returned_pkts(d,
 				bufs, BURST_SIZE*2);
 		app_stats.rx.returned_pkts += nb_ret;
-		if (unlikely(nb_ret == 0))
+		if (unlikely(nb_ret == 0)) {
+			if (++port == nb_ports)
+				port = 0;
 			continue;
+		}
 
 		uint16_t sent = rte_ring_enqueue_burst(r, (void *)bufs, nb_ret);
 		app_stats.rx.enqueued_pkts += sent;
 		if (unlikely(sent < nb_ret)) {
-			LOG_DEBUG(DISTRAPP, "%s:Packet loss due to full ring\n", __func__);
+			RTE_LOG(DEBUG, DISTRAPP,
+				"%s:Packet loss due to full ring\n", __func__);
 			while (sent < nb_ret)
 				rte_pktmbuf_free(bufs[sent++]);
 		}
@@ -258,7 +260,8 @@ lcore_rx(struct lcore_params *p)
 	 * get packets till quit_signal is actually been
 	 * received and they gracefully shutdown
 	 */
-	quit_workers(d, mem_pool);
+	if (quit_workers(d, mem_pool) != 0)
+		return -1;
 	/* rx thread should quit at last */
 	return 0;
 }
@@ -271,7 +274,8 @@ flush_one_port(struct output_buffer *outbuf, uint8_t outp)
 	app_stats.tx.tx_pkts += nb_tx;
 
 	if (unlikely(nb_tx < outbuf->count)) {
-		LOG_DEBUG(DISTRAPP, "%s:Packet loss with tx_burst\n", __func__);
+		RTE_LOG(DEBUG, DISTRAPP,
+			"%s:Packet loss with tx_burst\n", __func__);
 		do {
 			rte_pktmbuf_free(outbuf->mbufs[nb_tx]);
 		} while (++nb_tx < outbuf->count);
@@ -588,7 +592,9 @@ main(int argc, char *argv[])
 	}
 	/* call lcore_main on master core only */
 	struct lcore_params p = { 0, d, output_ring, mbuf_pool};
-	lcore_rx(&p);
+
+	if (lcore_rx(&p) != 0)
+		return -1;
 
 	RTE_LCORE_FOREACH_SLAVE(lcore_id) {
 		if (rte_eal_wait_lcore(lcore_id) < 0)

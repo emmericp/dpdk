@@ -30,6 +30,9 @@ F: scripts/checkpatches.sh
 F: scripts/load-devel-config.sh
 F: scripts/test-build.sh
 
+Stable Branches
+---------------
+T: git://dpdk.org/dpdk-stable
 
 Security Issues
 ---------------
@@ -56,7 +59,6 @@ F: scripts/auto-config-h.sh
 F: scripts/depdirs-rule.sh
 F: scripts/gen-build-mk.sh
 F: scripts/gen-config-h.sh
-F: scripts/merge-maps.sh
 F: scripts/relpath.sh
 F: doc/build-sdk-quick.txt
 F: doc/guides/prog_guide/build_app.rst
@@ -68,6 +70,10 @@ M: Neil Horman <nhorman@tuxdriver.com>
 F: lib/librte_compat/
 F: doc/guides/rel_notes/deprecation.rst
 F: scripts/validate-abi.sh
+
+Driver information
+F: buildtools/pmdinfogen/
+F: tools/dpdk-pmdinfo.py
 
 
 Environment Abstraction Layer
@@ -93,6 +99,7 @@ F: app/test/test_interrupts.c
 F: app/test/test_logs.c
 F: app/test/test_memcpy*
 F: app/test/test_pci.c
+F: app/test/test_pci_sysfs/
 F: app/test/test_per_lcore.c
 F: app/test/test_prefetch.c
 F: app/test/test_rwlock.c
@@ -142,6 +149,7 @@ F: lib/librte_eal/common/include/arch/arm/*_64.h
 F: lib/librte_acl/acl_run_neon.*
 F: lib/librte_lpm/rte_lpm_neon.h
 F: lib/librte_hash/rte*_arm64.h
+F: drivers/net/ixgbe/ixgbe_rxtx_vec_neon.c
 
 EZchip TILE-Gx
 M: Zhigang Lu <zlu@ezchip.com>
@@ -180,10 +188,8 @@ Linux Xen
 F: lib/librte_eal/linuxapp/xen_dom0/
 F: lib/librte_eal/linuxapp/eal/*xen*
 F: lib/librte_eal/linuxapp/eal/include/exec-env/rte_dom0_common.h
-F: lib/librte_mempool/rte_dom0_mempool.c
 F: drivers/net/xenvirt/
 F: doc/guides/xen/
-F: app/test-pmd/mempool_*
 F: examples/vhost_xen/
 
 FreeBSD EAL (with overlaps)
@@ -239,8 +245,8 @@ F: app/test/test_cryptodev*
 F: examples/l2fwd-crypto/
 
 
-Drivers
--------
+Networking Drivers
+------------------
 
 Link bonding
 M: Declan Doherty <declan.doherty@intel.com>
@@ -250,7 +256,7 @@ F: app/test/test_link_bonding*
 F: examples/bond/
 
 Linux KNI
-M: Helin Zhang <helin.zhang@intel.com>
+M: Ferruh Yigit <ferruh.yigit@intel.com>
 F: lib/librte_eal/linuxapp/kni/
 F: lib/librte_kni/
 F: doc/guides/prog_guide/kernel_nic_interface.rst
@@ -269,6 +275,17 @@ M: Netanel Belgazal <netanel@amazon.com>
 M: Evgeny Schemeilin <evgenys@amazon.com>
 F: drivers/net/ena/
 F: doc/guides/nics/ena.rst
+
+Broadcom bnxt
+M: Stephen Hurd <stephen.hurd@broadcom.com>
+F: drivers/net/bnxt/
+F: doc/guides/nics/bnxt.rst
+
+Cavium ThunderX nicvf
+M: Jerin Jacob <jerin.jacob@caviumnetworks.com>
+M: Maciej Czekaj <maciej.czekaj@caviumnetworks.com>
+F: drivers/net/thunderx/
+F: doc/guides/nics/thunderx.rst
 
 Chelsio cxgbe
 M: Rahul Lakkireddy <rahul.lakkireddy@chelsio.com>
@@ -332,9 +349,17 @@ M: Rasesh Mody <rasesh.mody@qlogic.com>
 F: drivers/net/bnx2x/
 F: doc/guides/nics/bnx2x.rst
 
+QLogic qede PMD
+M: Harish Patil <harish.patil@qlogic.com>
+M: Rasesh Mody <rasesh.mody@qlogic.com>
+M: Sony Chacko <sony.chacko@qlogic.com>
+F: drivers/net/qede/
+F: doc/guides/nics/qede.rst
+
 RedHat virtio
 M: Huawei Xie <huawei.xie@intel.com>
 M: Yuanhan Liu <yuanhan.liu@linux.intel.com>
+T: git://dpdk.org/next/dpdk-next-virtio
 F: drivers/net/virtio/
 F: doc/guides/nics/virtio.rst
 F: lib/librte_vhost/
@@ -348,8 +373,9 @@ F: drivers/net/vmxnet3/
 F: doc/guides/nics/vmxnet3.rst
 
 Vhost PMD
-M: Tetsuya Mukawa <mukawa@igel.co.jp>
+M: Tetsuya Mukawa <mtetsuyah@gmail.com>
 M: Yuanhan Liu <yuanhan.liu@linux.intel.com>
+T: git://dpdk.org/next/dpdk-next-virtio
 F: drivers/net/vhost/
 
 PCAP PMD
@@ -365,9 +391,13 @@ F: doc/guides/nics/pcap_ring.rst
 F: app/test/test_pmd_ring.c
 F: app/test/test_pmd_ring_perf.c
 
-Null PMD
-M: Tetsuya Mukawa <mukawa@igel.co.jp>
+Null Networking PMD
+M: Tetsuya Mukawa <mtetsuyah@gmail.com>
 F: drivers/net/null/
+
+
+Crypto Drivers
+--------------
 
 Intel AES-NI GCM PMD
 M: Declan Doherty <declan.doherty@intel.com>
@@ -390,6 +420,11 @@ SNOW 3G PMD
 M: Pablo de Lara <pablo.de.lara.guarch@intel.com>
 F: drivers/crypto/snow3g/
 F: doc/guides/cryptodevs/snow3g.rst
+
+KASUMI PMD
+M: Pablo de Lara <pablo.de.lara.guarch@intel.com>
+F: drivers/crypto/kasumi/
+F: doc/guides/cryptodevs/kasumi.rst
 
 Null Crypto PMD
 M: Declan Doherty <declan.doherty@intel.com>
@@ -436,6 +471,13 @@ F: app/test/test_red.c
 F: app/test/test_sched.c
 F: examples/qos_sched/
 F: doc/guides/sample_app_ug/qos_scheduler.rst
+
+Packet capture
+M: Reshma Pattan <reshma.pattan@intel.com>
+F: lib/librte_pdump/
+F: doc/guides/prog_guide/pdump_lib.rst
+F: app/pdump/
+F: doc/guides/sample_app_ug/pdump.rst
 
 
 Packet Framework
@@ -550,9 +592,11 @@ F: app/test/commands.c
 F: app/test/packet_burst_generator.c
 F: app/test/packet_burst_generator.h
 F: app/test/process.h
+F: app/test/resource.*
 F: app/test/test.c
 F: app/test/test.h
 F: app/test/test_pmd_perf.c
+F: app/test/test_resource.c
 F: app/test/virtual_pmd.c
 F: app/test/virtual_pmd.h
 
