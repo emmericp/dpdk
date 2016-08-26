@@ -36,6 +36,7 @@ import sys
 import os
 import getopt
 import subprocess
+
 from os.path import exists, abspath, dirname, basename
 
 # The PCI base class for NETWORK devices
@@ -222,8 +223,19 @@ def get_pci_device_details(dev_id):
         device[name] = value
     # check for a unix interface name
     sys_path = "/sys/bus/pci/devices/%s/net/" % dev_id
+    # the path for virtio devices are different, so get the correct path
+    virtio = "/sys/bus/pci/devices/%s/" % dev_id
+    ls = subprocess.Popen(['ls', virtio], stdout=subprocess.PIPE)
+    grep = subprocess.Popen('grep virt'.split(), stdin=ls.stdout,
+                            stdout=subprocess.PIPE)
+    ls.stdout.close()
+    virtio = grep.communicate()[0].rstrip()
+    ls.wait()
+    virtio_sys_path = "/sys/bus/pci/devices/%s/%s/net/" % (dev_id, virtio)
     if exists(sys_path):
         device["Interface"] = ",".join(os.listdir(sys_path))
+    elif exists(virtio_sys_path):
+        device["Interface"] = ",".join(os.listdir(virtio_sys_path))
     else:
         device["Interface"] = ""
     # check if a port is used for ssh connection
