@@ -129,3 +129,6 @@ space:= $(empty) $(empty)
 CPUFLAGSTMP1 := $(addprefix RTE_CPUFLAG_,$(CPUFLAGS))
 CPUFLAGSTMP2 := $(subst $(space),$(comma),$(CPUFLAGSTMP1))
 CPUFLAGS_LIST := -DRTE_COMPILE_TIME_CPUFLAGS=$(CPUFLAGSTMP2)
+# create cflags.txt like expected by mtcp
+MACHINE_CFLAGS += -DRTE_COMPILE_TIME_CPUFLAGS=$(CPUFLAGSTMP2)
+$(shell echo ${MACHINE_CFLAGS} > ${RTE_SDK}/${RTE_TARGET}/include/cflags.txt)
