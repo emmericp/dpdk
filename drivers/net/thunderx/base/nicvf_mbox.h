@@ -36,6 +36,7 @@
 #include <stdint.h>
 
 #include "nicvf_plat.h"
+#include "../nicvf_struct.h"
 
 /* PF <--> VF Mailbox communication
  * Two 64bit registers are shared between PF and VF for each VF
@@ -150,9 +151,18 @@ struct rss_cfg_msg {
 /* Physical interface link status */
 struct bgx_link_status {
 	uint8_t    msg;
+	uint8_t    mac_type;
 	uint8_t    link_up;
 	uint8_t    duplex;
 	uint32_t   speed;
+};
+
+/* Allocate additional SQS to VF */
+struct sqs_alloc {
+	uint8_t    msg;
+	uint8_t    spec;
+	uint8_t    qs_count;
+	uint8_t    svf[MAX_SQS_PER_VF];
 };
 
 /* Set interface in loopback mode */
@@ -201,6 +211,7 @@ union {
 	struct rss_sz_msg	rss_size;
 	struct rss_cfg_msg	rss_cfg;
 	struct bgx_link_status  link_status;
+	struct sqs_alloc	sqs_alloc;
 	struct set_loopback	lbk;
 	struct reset_stat_cfg	reset_stat;
 };
@@ -211,6 +222,7 @@ NICVF_STATIC_ASSERT(sizeof(struct nic_mbx) <= 16);
 int nicvf_handle_mbx_intr(struct nicvf *nic);
 int nicvf_mbox_check_pf_ready(struct nicvf *nic);
 int nicvf_mbox_qset_config(struct nicvf *nic, struct pf_qs_cfg *qs_cfg);
+int nicvf_mbox_request_sqs(struct nicvf *nic);
 int nicvf_mbox_rq_config(struct nicvf *nic, uint16_t qidx,
 			 struct pf_rq_cfg *pf_rq_cfg);
 int nicvf_mbox_sq_config(struct nicvf *nic, uint16_t qidx);

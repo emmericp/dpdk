@@ -133,6 +133,31 @@ The macros exported are:
   fully qualified function ``p``, so that if a symbol becomes versioned, it
   can still be mapped back to the public symbol name.
 
+Setting a Major ABI version
+---------------------------
+
+Downstreams might want to provide different DPDK releases at the same time to
+support multiple consumers of DPDK linked against older and newer sonames.
+
+Also due to the interdependencies that DPDK libraries can have applications
+might end up with an executable space in which multiple versions of a library
+are mapped by ld.so.
+
+Think of LibA that got an ABI bump and LibB that did not get an ABI bump but is
+depending on LibA.
+
+.. note::
+
+    Application
+    \-> LibA.old
+    \-> LibB.new -> LibA.new
+
+That is a conflict which can be avoided by setting ``CONFIG_RTE_MAJOR_ABI``.
+If set, the value of ``CONFIG_RTE_MAJOR_ABI`` overwrites all - otherwise per
+library - versions defined in the libraries ``LIBABIVER``.
+An example might be ``CONFIG_RTE_MAJOR_ABI=16.11`` which will make all libraries
+``librte<?>.so.16.11`` instead of ``librte<?>.so.<LIBABIVER>``.
+
 Examples of ABI Macro use
 -------------------------
 
@@ -331,11 +356,12 @@ defined, we add this
 
 .. code-block:: c
 
-   struct rte_acl_create_v21(const struct rte_acl_param *param, int debug)
+   struct rte_acl_ctx *
+   rte_acl_create_v21(const struct rte_acl_param *param, int debug)
    {
         ...
    }
-   MAP_STATIC_SYMBOL(struct rte_acl_create(const struct rte_acl_param *param, int debug), rte_acl_create_v21);
+   MAP_STATIC_SYMBOL(struct rte_acl_ctx *rte_acl_create(const struct rte_acl_param *param, int debug), rte_acl_create_v21);
 
 That tells the compiler that, when building a static library, any calls to the
 symbol ``rte_acl_create`` should be linked to ``rte_acl_create_v21``
@@ -456,7 +482,7 @@ versions of the symbol.
 Running the ABI Validator
 -------------------------
 
-The ``scripts`` directory in the DPDK source tree contains a utility program,
+The ``devtools`` directory in the DPDK source tree contains a utility program,
 ``validate-abi.sh``, for validating the DPDK ABI based on the Linux `ABI
 Compliance Checker
 <http://ispras.linuxbase.org/index.php/ABI_compliance_checker>`_.
@@ -469,7 +495,7 @@ utilities which can be installed via a package manager. For example::
 
 The syntax of the ``validate-abi.sh`` utility is::
 
-   ./scripts/validate-abi.sh <REV1> <REV2> <TARGET>
+   ./devtools/validate-abi.sh <REV1> <REV2> <TARGET>
 
 Where ``REV1`` and ``REV2`` are valid gitrevisions(7)
 https://www.kernel.org/pub/software/scm/git/docs/gitrevisions.html
@@ -478,13 +504,13 @@ on the local repo and target is the usual DPDK compilation target.
 For example::
 
    # Check between the previous and latest commit:
-   ./scripts/validate-abi.sh HEAD~1 HEAD x86_64-native-linuxapp-gcc
+   ./devtools/validate-abi.sh HEAD~1 HEAD x86_64-native-linuxapp-gcc
 
    # Check between two tags:
-   ./scripts/validate-abi.sh v2.0.0 v2.1.0 x86_64-native-linuxapp-gcc
+   ./devtools/validate-abi.sh v2.0.0 v2.1.0 x86_64-native-linuxapp-gcc
 
    # Check between git master and local topic-branch "vhost-hacking":
-   ./scripts/validate-abi.sh master vhost-hacking x86_64-native-linuxapp-gcc
+   ./devtools/validate-abi.sh master vhost-hacking x86_64-native-linuxapp-gcc
 
 After the validation script completes (it can take a while since it need to
 compile both tags) it will create compatibility reports in the

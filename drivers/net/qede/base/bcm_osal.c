@@ -6,8 +6,6 @@
  * See LICENSE.qede_pmd for copyright and licensing details.
  */
 
-#include <zlib.h>
-
 #include <rte_memzone.h>
 #include <rte_errno.h>
 
@@ -65,6 +63,27 @@ inline bool qede_test_bit(u32 nr, unsigned long *addr)
 	return res;
 }
 
+static inline u32 qede_ffb(unsigned long word)
+{
+	unsigned long first_bit;
+
+	first_bit = __builtin_ffsl(word);
+	return first_bit ? (first_bit - 1) : OSAL_BITS_PER_UL;
+}
+
+inline u32 qede_find_first_bit(unsigned long *addr, u32 limit)
+{
+	u32 i;
+	u32 nwords = 0;
+	OSAL_BUILD_BUG_ON(!limit);
+	nwords = (limit - 1) / OSAL_BITS_PER_UL + 1;
+	for (i = 0; i < nwords; i++)
+		if (addr[i] != 0)
+			break;
+
+	return (i == nwords) ? limit : i * OSAL_BITS_PER_UL + qede_ffb(addr[i]);
+}
+
 static inline u32 qede_ffz(unsigned long word)
 {
 	unsigned long first_zero;
@@ -79,9 +98,7 @@ inline u32 qede_find_first_zero_bit(unsigned long *addr, u32 limit)
 	u32 nwords = 0;
 	OSAL_BUILD_BUG_ON(!limit);
 	nwords = (limit - 1) / OSAL_BITS_PER_UL + 1;
-	for (i = 0; i < nwords; i++)
-		if (~(addr[i] != 0))
-			break;
+	for (i = 0; i < nwords && ~(addr[i]) == 0; i++);
 	return (i == nwords) ? limit : i * OSAL_BITS_PER_UL + qede_ffz(addr[i]);
 }
 
@@ -152,6 +169,7 @@ void *osal_dma_alloc_coherent_aligned(struct ecore_dev *p_dev,
 	return mz->addr;
 }
 
+#ifdef CONFIG_ECORE_ZIPPED_FW
 u32 qede_unzip_data(struct ecore_hwfn *p_hwfn, u32 input_len,
 		    u8 *input_buf, u32 max_size, u8 *unzip_buf)
 {
@@ -182,6 +200,7 @@ u32 qede_unzip_data(struct ecore_hwfn *p_hwfn, u32 input_len,
 
 	return p_hwfn->stream->total_out / 4;
 }
+#endif
 
 void
 qede_get_mcp_proto_stats(struct ecore_dev *edev,

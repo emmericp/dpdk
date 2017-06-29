@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2010-2016 Intel Corporation. All rights reserved.
+ *   Copyright(c) 2010-2017 Intel Corporation. All rights reserved.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -43,6 +43,12 @@
 #define RTE_PORT_STARTED        (uint16_t)1
 #define RTE_PORT_CLOSED         (uint16_t)2
 #define RTE_PORT_HANDLING       (uint16_t)3
+
+/*
+ * It is used to allocate the memory for hash key.
+ * The hash key size is NIC dependent.
+ */
+#define RSS_HASH_KEY_LENGTH 64
 
 /*
  * Default size of the mbuf data buffer to receive standard 1518-byte
@@ -137,12 +143,26 @@ struct fwd_stream {
 #define TESTPMD_TX_OFFLOAD_INSERT_VLAN       0x0040
 /** Insert double VLAN header in forward engine */
 #define TESTPMD_TX_OFFLOAD_INSERT_QINQ       0x0080
+/** Offload MACsec in forward engine */
+#define TESTPMD_TX_OFFLOAD_MACSEC            0x0100
+
+/** Descriptor for a single flow. */
+struct port_flow {
+	size_t size; /**< Allocated space including data[]. */
+	struct port_flow *next; /**< Next flow in list. */
+	struct port_flow *tmp; /**< Temporary linking. */
+	uint32_t id; /**< Flow rule ID. */
+	struct rte_flow *flow; /**< Opaque flow object returned by PMD. */
+	struct rte_flow_attr attr; /**< Attributes. */
+	struct rte_flow_item *pattern; /**< Pattern. */
+	struct rte_flow_action *actions; /**< Actions. */
+	uint8_t data[]; /**< Storage for pattern/actions. */
+};
 
 /**
  * The data structure associated with each port.
  */
 struct rte_port {
-	uint8_t                 enabled;    /**< Port enabled or not */
 	struct rte_eth_dev_info dev_info;   /**< PCI info + driver name */
 	struct rte_eth_conf     dev_conf;   /**< Port configuration. */
 	struct ether_addr       eth_addr;   /**< Port ethernet address */
@@ -152,7 +172,8 @@ struct rte_port {
 	struct fwd_stream       *tx_stream; /**< Port TX stream, if unique */
 	unsigned int            socket_id;  /**< For NUMA support */
 	uint16_t                tx_ol_flags;/**< TX Offload Flags (TESTPMD_TX_OFFLOAD...). */
-	uint16_t                tso_segsz;  /**< MSS for segmentation offload. */
+	uint16_t                tso_segsz;  /**< Segmentation offload MSS for non-tunneled packets. */
+	uint16_t                tunnel_tso_segsz; /**< Segmentation offload MSS for tunneled pkts. */
 	uint16_t                tx_vlan_id;/**< The tag ID */
 	uint16_t                tx_vlan_id_outer;/**< The outer tag ID */
 	void                    *fwd_ctx;   /**< Forwarding mode context */
@@ -170,15 +191,8 @@ struct rte_port {
 	struct ether_addr       *mc_addr_pool; /**< pool of multicast addrs */
 	uint32_t                mc_addr_nb; /**< nb. of addr. in mc_addr_pool */
 	uint8_t                 slave_flag; /**< bonding slave port */
+	struct port_flow        *flow_list; /**< Associated flows. */
 };
-
-extern portid_t __rte_unused
-find_next_port(portid_t p, struct rte_port *ports, int size);
-
-#define FOREACH_PORT(p, ports) \
-	for (p = find_next_port(0, ports, RTE_MAX_ETHPORTS); \
-	    p < RTE_MAX_ETHPORTS; \
-	    p = find_next_port(p + 1, ports, RTE_MAX_ETHPORTS))
 
 /**
  * The data structure associated with each forwarding logical core.
@@ -285,12 +299,17 @@ extern uint16_t nb_rx_queue_stats_mappings;
 extern uint16_t verbose_level; /**< Drives messages being displayed, if any. */
 extern uint8_t  interactive;
 extern uint8_t  auto_start;
+extern char cmdline_filename[PATH_MAX]; /**< offline commands file */
 extern uint8_t  numa_support; /**< set by "--numa" parameter */
 extern uint16_t port_topology; /**< set by "--port-topology" parameter */
 extern uint8_t no_flush_rx; /**<set by "--no-flush-rx" parameter */
 extern uint8_t  mp_anon; /**< set by "--mp-anon" parameter */
 extern uint8_t no_link_check; /**<set by "--disable-link-check" parameter */
 extern volatile int test_done; /* stop packet forwarding when set to 1. */
+extern uint8_t lsc_interrupt; /**< disabled by "--no-lsc-interrupt" parameter */
+extern uint8_t rmv_interrupt; /**< disabled by "--no-rmv-interrupt" parameter */
+extern uint32_t event_print_mask;
+/**< set by "--print-event xxxx" and "--mask-event xxxx parameters */
 
 #ifdef RTE_NIC_BYPASS
 extern uint32_t bypass_timeout; /**< Store the NIC bypass watchdog timeout */
@@ -324,7 +343,8 @@ extern lcoreid_t nb_lcores; /**< Number of logical cores probed at init time. */
 extern lcoreid_t nb_cfg_lcores; /**< Number of configured logical cores. */
 extern lcoreid_t nb_fwd_lcores; /**< Number of forwarding logical cores. */
 extern unsigned int fwd_lcores_cpuids[RTE_MAX_LCORE];
-extern unsigned max_socket;
+extern unsigned int num_sockets;
+extern unsigned int socket_ids[RTE_MAX_NUMA_NODES];
 
 /*
  * Configuration of Ethernet ports:
@@ -357,6 +377,17 @@ extern enum dcb_queue_mapping_mode dcb_q_mapping;
 
 extern uint16_t mbuf_data_size; /**< Mbuf data space size. */
 extern uint32_t param_total_num_mbufs;
+
+
+#ifdef RTE_LIBRTE_LATENCY_STATS
+extern uint8_t latencystats_enabled;
+extern lcoreid_t latencystats_lcore_id;
+#endif
+
+#ifdef RTE_LIBRTE_BITRATE
+extern lcoreid_t bitrate_lcore_id;
+extern uint8_t bitrate_enabled;
+#endif
 
 extern struct rte_fdir_conf fdir_conf;
 
@@ -469,6 +500,7 @@ unsigned int parse_item_list(char* str, const char* item_name,
 			unsigned int max_items,
 			unsigned int *parsed_items, int check_unique_values);
 void launch_args_parse(int argc, char** argv);
+void cmdline_read_from_file(const char *filename);
 void prompt(void);
 void prompt_exit(void);
 void nic_stats_display(portid_t port_id);
@@ -477,6 +509,7 @@ void nic_xstats_display(portid_t port_id);
 void nic_xstats_clear(portid_t port_id);
 void nic_stats_mapping_display(portid_t port_id);
 void port_infos_display(portid_t port_id);
+void port_offload_cap_display(portid_t port_id);
 void rx_queue_infos_display(portid_t port_idi, uint16_t queue_id);
 void tx_queue_infos_display(portid_t port_idi, uint16_t queue_id);
 void fwd_lcores_config_display(void);
@@ -497,6 +530,19 @@ void port_reg_bit_field_set(portid_t port_id, uint32_t reg_off,
 			    uint8_t bit1_pos, uint8_t bit2_pos, uint32_t value);
 void port_reg_display(portid_t port_id, uint32_t reg_off);
 void port_reg_set(portid_t port_id, uint32_t reg_off, uint32_t value);
+int port_flow_validate(portid_t port_id,
+		       const struct rte_flow_attr *attr,
+		       const struct rte_flow_item *pattern,
+		       const struct rte_flow_action *actions);
+int port_flow_create(portid_t port_id,
+		     const struct rte_flow_attr *attr,
+		     const struct rte_flow_item *pattern,
+		     const struct rte_flow_action *actions);
+int port_flow_destroy(portid_t port_id, uint32_t n, const uint32_t *rule);
+int port_flow_flush(portid_t port_id);
+int port_flow_query(portid_t port_id, uint32_t rule,
+		    enum rte_flow_action_type action);
+void port_flow_list(portid_t port_id, uint32_t n, const uint32_t *group);
 
 void rx_ring_desc_display(portid_t port_id, queueid_t rxq_id, uint16_t rxd_id);
 void tx_ring_desc_display(portid_t port_id, queueid_t txq_id, uint16_t txd_id);
@@ -564,8 +610,6 @@ void port_rss_reta_info(portid_t port_id,
 			uint16_t nb_entries);
 
 void set_vf_traffic(portid_t port_id, uint8_t is_rx, uint16_t vf, uint8_t on);
-void set_vf_rx_vlan(portid_t port_id, uint16_t vlan_id,
-		uint64_t vf_mask, uint8_t on);
 
 int set_queue_rate_limit(portid_t port_id, uint16_t queue_idx, uint16_t rate);
 int set_vf_rate_limit(portid_t port_id, uint16_t vf, uint16_t rate,
@@ -587,11 +631,15 @@ void mcast_addr_add(uint8_t port_id, struct ether_addr *mc_addr);
 void mcast_addr_remove(uint8_t port_id, struct ether_addr *mc_addr);
 void port_dcb_info_display(uint8_t port_id);
 
+uint8_t *open_ddp_package_file(const char *file_path, uint32_t *size);
+int close_ddp_package_file(uint8_t *buf);
+
 enum print_warning {
 	ENABLED_WARN = 0,
 	DISABLED_WARN
 };
 int port_id_is_invalid(portid_t port_id, enum print_warning warning);
+int new_socket_id(unsigned int socket_id);
 
 /*
  * Work-around of a compilation error with ICC on invocations of the

@@ -67,6 +67,8 @@ fm10k_reset_tx_queue(struct fm10k_tx_queue *txq);
 #define RXEFLAG_SHIFT     (13)
 /* IPE/L4E flag shift */
 #define L3L4EFLAG_SHIFT     (14)
+/* shift PKT_RX_L4_CKSUM_GOOD into one byte by 1 bit */
+#define CKSUM_SHIFT     (1)
 
 static inline void
 fm10k_desc_to_olflags_v(__m128i descs[4], struct rte_mbuf **rx_pkts)
@@ -92,11 +94,18 @@ fm10k_desc_to_olflags_v(__m128i descs[4], struct rte_mbuf **rx_pkts)
 			0x0000, 0x0000, 0x0000, 0x0000,
 			0x0001, 0x0001, 0x0001, 0x0001);
 
+	/* mask the lower byte of ol_flags */
+	const __m128i ol_flags_msk = _mm_set_epi16(
+			0x0000, 0x0000, 0x0000, 0x0000,
+			0x00FF, 0x00FF, 0x00FF, 0x00FF);
+
 	const __m128i l3l4cksum_flag = _mm_set_epi8(0, 0, 0, 0,
 			0, 0, 0, 0,
 			0, 0, 0, 0,
-			PKT_RX_IP_CKSUM_BAD | PKT_RX_L4_CKSUM_BAD,
-			PKT_RX_IP_CKSUM_BAD, PKT_RX_L4_CKSUM_BAD, 0);
+			(PKT_RX_IP_CKSUM_BAD | PKT_RX_L4_CKSUM_BAD) >> CKSUM_SHIFT,
+			(PKT_RX_IP_CKSUM_BAD | PKT_RX_L4_CKSUM_GOOD) >> CKSUM_SHIFT,
+			(PKT_RX_IP_CKSUM_GOOD | PKT_RX_L4_CKSUM_BAD) >> CKSUM_SHIFT,
+			(PKT_RX_IP_CKSUM_GOOD | PKT_RX_L4_CKSUM_GOOD) >> CKSUM_SHIFT);
 
 	const __m128i rxe_flag = _mm_set_epi8(0, 0, 0, 0,
 			0, 0, 0, 0,
@@ -139,6 +148,10 @@ fm10k_desc_to_olflags_v(__m128i descs[4], struct rte_mbuf **rx_pkts)
 	/* Process L4/L3 checksum error flags */
 	cksumflag = _mm_srli_epi16(cksumflag, L3L4EFLAG_SHIFT);
 	cksumflag = _mm_shuffle_epi8(l3l4cksum_flag, cksumflag);
+
+	/* clean the higher byte and shift back the flag bits */
+	cksumflag = _mm_and_si128(cksumflag, ol_flags_msk);
+	cksumflag = _mm_slli_epi16(cksumflag, CKSUM_SHIFT);
 	vtag1 = _mm_or_si128(cksumflag, vtag1);
 
 	vol.dword = _mm_cvtsi128_si64(vtag1);
@@ -234,11 +247,8 @@ fm10k_rx_vec_condition_check(struct rte_eth_dev *dev)
 	if (fconf->mode != RTE_FDIR_MODE_NONE)
 		return -1;
 
-	/* - no csum error report support
-	 * - no header split support
-	 */
-	if (rxmode->hw_ip_checksum == 1 ||
-	    rxmode->header_split == 1)
+	/* no header split support */
+	if (rxmode->header_split == 1)
 		return -1;
 
 	return 0;
@@ -314,9 +324,6 @@ fm10k_rxq_rearm(struct fm10k_rx_queue *rxq)
 
 		/* Flush mbuf with pkt template.
 		 * Data to be rearmed is 6 bytes long.
-		 * Though, RX will overwrite ol_flags that are coming next
-		 * anyway. So overwrite whole 8 bytes with one load:
-		 * 6 bytes of rearm_data plus first 2 bytes of ol_flags.
 		 */
 		p0 = (uintptr_t)&mb0->rearm_data;
 		*(uint64_t *)p0 = rxq->mbuf_initializer;
@@ -406,7 +413,7 @@ fm10k_recv_raw_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
 	 */
 	rxdp = rxq->hw_ring + next_dd;
 
-	_mm_prefetch((const void *)rxdp, _MM_HINT_T0);
+	rte_prefetch0(rxdp);
 
 	/* See if we need to rearm the RX queue - gives the prefetch a bit
 	 * of time to act
@@ -460,28 +467,39 @@ fm10k_recv_raw_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
 		__m128i descs0[RTE_FM10K_DESCS_PER_LOOP];
 		__m128i pkt_mb1, pkt_mb2, pkt_mb3, pkt_mb4;
 		__m128i zero, staterr, sterr_tmp1, sterr_tmp2;
-		__m128i mbp1, mbp2; /* two mbuf pointer in one XMM reg. */
+		__m128i mbp1;
+		/* 2 64 bit or 4 32 bit mbuf pointers in one XMM reg. */
+#if defined(RTE_ARCH_X86_64)
+		__m128i mbp2;
+#endif
 
-		/* B.1 load 1 mbuf point */
+		/* B.1 load 2 (64 bit) or 4 (32 bit) mbuf points */
 		mbp1 = _mm_loadu_si128((__m128i *)&mbufp[pos]);
 
 		/* Read desc statuses backwards to avoid race condition */
 		/* A.1 load 4 pkts desc */
 		descs0[3] = _mm_loadu_si128((__m128i *)(rxdp + 3));
+		rte_compiler_barrier();
 
-		/* B.2 copy 2 mbuf point into rx_pkts  */
+		/* B.2 copy 2 64 bit or 4 32 bit mbuf point into rx_pkts */
 		_mm_storeu_si128((__m128i *)&rx_pkts[pos], mbp1);
 
-		/* B.1 load 1 mbuf point */
+#if defined(RTE_ARCH_X86_64)
+		/* B.1 load 2 64 bit mbuf poitns */
 		mbp2 = _mm_loadu_si128((__m128i *)&mbufp[pos+2]);
+#endif
 
 		descs0[2] = _mm_loadu_si128((__m128i *)(rxdp + 2));
+		rte_compiler_barrier();
 		/* B.1 load 2 mbuf point */
 		descs0[1] = _mm_loadu_si128((__m128i *)(rxdp + 1));
+		rte_compiler_barrier();
 		descs0[0] = _mm_loadu_si128((__m128i *)(rxdp));
 
+#if defined(RTE_ARCH_X86_64)
 		/* B.2 copy 2 mbuf point into rx_pkts  */
 		_mm_storeu_si128((__m128i *)&rx_pkts[pos+2], mbp2);
+#endif
 
 		/* avoid compiler reorder optimization */
 		rte_compiler_barrier();
@@ -741,12 +759,12 @@ fm10k_tx_free_bufs(struct fm10k_tx_queue *txq)
 	 * next_dd - (rs_thresh-1)
 	 */
 	txep = &txq->sw_ring[txq->next_dd - (n - 1)];
-	m = __rte_pktmbuf_prefree_seg(txep[0]);
+	m = rte_pktmbuf_prefree_seg(txep[0]);
 	if (likely(m != NULL)) {
 		free[0] = m;
 		nb_free = 1;
 		for (i = 1; i < n; i++) {
-			m = __rte_pktmbuf_prefree_seg(txep[i]);
+			m = rte_pktmbuf_prefree_seg(txep[i]);
 			if (likely(m != NULL)) {
 				if (likely(m->pool == free[0]->pool))
 					free[nb_free++] = m;
@@ -761,7 +779,7 @@ fm10k_tx_free_bufs(struct fm10k_tx_queue *txq)
 		rte_mempool_put_bulk(free[0]->pool, (void **)free, nb_free);
 	} else {
 		for (i = 1; i < n; i++) {
-			m = __rte_pktmbuf_prefree_seg(txep[i]);
+			m = rte_pktmbuf_prefree_seg(txep[i]);
 			if (m != NULL)
 				rte_mempool_put(m->pool, m);
 		}
@@ -787,8 +805,8 @@ tx_backlog_entry(struct rte_mbuf **txep,
 }
 
 uint16_t
-fm10k_xmit_pkts_vec(void *tx_queue, struct rte_mbuf **tx_pkts,
-			uint16_t nb_pkts)
+fm10k_xmit_fixed_burst_vec(void *tx_queue, struct rte_mbuf **tx_pkts,
+			   uint16_t nb_pkts)
 {
 	struct fm10k_tx_queue *txq = (struct fm10k_tx_queue *)tx_queue;
 	volatile struct fm10k_tx_desc *txdp;

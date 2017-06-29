@@ -1,6 +1,6 @@
 #   BSD LICENSE
 #
-#   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
+#   Copyright(c) 2010-2017 Intel Corporation. All rights reserved.
 #   All rights reserved.
 #
 #   Redistribution and use in source and binary forms, with or without
@@ -38,7 +38,7 @@ LIB = librte_pmd_i40e.a
 
 CFLAGS += -O3
 CFLAGS += $(WERROR_FLAGS) -DPF_DRIVER -DVF_DRIVER -DINTEGRATED_VF
-CFLAGS += -DX722_SUPPORT -DX722_A0_SUPPORT
+CFLAGS += -DX722_A0_SUPPORT
 
 EXPORT_MAP := rte_pmd_i40e_version.map
 
@@ -97,21 +97,25 @@ SRCS-$(CONFIG_RTE_LIBRTE_I40E_PMD) += i40e_dcb.c
 
 SRCS-$(CONFIG_RTE_LIBRTE_I40E_PMD) += i40e_ethdev.c
 SRCS-$(CONFIG_RTE_LIBRTE_I40E_PMD) += i40e_rxtx.c
-SRCS-$(CONFIG_RTE_LIBRTE_I40E_INC_VECTOR) += i40e_rxtx_vec.c
+ifeq ($(CONFIG_RTE_ARCH_ARM64),y)
+SRCS-$(CONFIG_RTE_LIBRTE_I40E_INC_VECTOR) += i40e_rxtx_vec_neon.c
+else ifeq ($(CONFIG_RTE_ARCH_PPC_64),y)
+SRCS-$(CONFIG_RTE_LIBRTE_I40E_INC_VECTOR) += i40e_rxtx_vec_altivec.c
+else
+SRCS-$(CONFIG_RTE_LIBRTE_I40E_INC_VECTOR) += i40e_rxtx_vec_sse.c
+endif
 SRCS-$(CONFIG_RTE_LIBRTE_I40E_PMD) += i40e_ethdev_vf.c
 SRCS-$(CONFIG_RTE_LIBRTE_I40E_PMD) += i40e_pf.c
 SRCS-$(CONFIG_RTE_LIBRTE_I40E_PMD) += i40e_fdir.c
+SRCS-$(CONFIG_RTE_LIBRTE_I40E_PMD) += i40e_flow.c
+SRCS-$(CONFIG_RTE_LIBRTE_I40E_PMD) += rte_pmd_i40e.c
 
 # vector PMD driver needs SSE4.1 support
 ifeq ($(findstring RTE_MACHINE_CPUFLAG_SSE4_1,$(CFLAGS)),)
-CFLAGS_i40e_rxtx_vec.o += -msse4.1
+CFLAGS_i40e_rxtx_vec_sse.o += -msse4.1
 endif
 
-
-# this lib depends upon:
-DEPDIRS-$(CONFIG_RTE_LIBRTE_I40E_PMD) += lib/librte_eal lib/librte_ether
-DEPDIRS-$(CONFIG_RTE_LIBRTE_I40E_PMD) += lib/librte_mempool lib/librte_mbuf
-DEPDIRS-$(CONFIG_RTE_LIBRTE_I40E_PMD) += lib/librte_net
-DEPDIRS-$(CONFIG_RTE_LIBRTE_I40E_PMD) += lib/librte_kvargs
+# install this header file
+SYMLINK-$(CONFIG_RTE_LIBRTE_I40E_PMD)-include := rte_pmd_i40e.h
 
 include $(RTE_SDK)/mk/rte.lib.mk

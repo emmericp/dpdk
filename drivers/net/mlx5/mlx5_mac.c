@@ -44,22 +44,22 @@
 /* Verbs header. */
 /* ISO C doesn't support unnamed structs/unions, disabling -pedantic. */
 #ifdef PEDANTIC
-#pragma GCC diagnostic ignored "-pedantic"
+#pragma GCC diagnostic ignored "-Wpedantic"
 #endif
 #include <infiniband/verbs.h>
 #ifdef PEDANTIC
-#pragma GCC diagnostic error "-pedantic"
+#pragma GCC diagnostic error "-Wpedantic"
 #endif
 
 /* DPDK headers don't like -pedantic. */
 #ifdef PEDANTIC
-#pragma GCC diagnostic ignored "-pedantic"
+#pragma GCC diagnostic ignored "-Wpedantic"
 #endif
 #include <rte_ether.h>
 #include <rte_ethdev.h>
 #include <rte_common.h>
 #ifdef PEDANTIC
-#pragma GCC diagnostic error "-pedantic"
+#pragma GCC diagnostic error "-Wpedantic"
 #endif
 
 #include "mlx5.h"
@@ -470,26 +470,30 @@ priv_mac_addrs_enable(struct priv *priv)
  * @param vmdq
  *   VMDq pool index to associate address with (ignored).
  */
-void
+int
 mlx5_mac_addr_add(struct rte_eth_dev *dev, struct ether_addr *mac_addr,
 		  uint32_t index, uint32_t vmdq)
 {
 	struct priv *priv = dev->data->dev_private;
+	int re;
 
 	if (mlx5_is_secondary())
-		return;
+		return -ENOTSUP;
 
 	(void)vmdq;
 	priv_lock(priv);
 	DEBUG("%p: adding MAC address at index %" PRIu32,
 	      (void *)dev, index);
-	if (index >= RTE_DIM(priv->mac))
+	if (index >= RTE_DIM(priv->mac)) {
+		re = EINVAL;
 		goto end;
-	priv_mac_addr_add(priv, index,
-			  (const uint8_t (*)[ETHER_ADDR_LEN])
-			  mac_addr->addr_bytes);
+	}
+	re = priv_mac_addr_add(priv, index,
+			       (const uint8_t (*)[ETHER_ADDR_LEN])
+			       mac_addr->addr_bytes);
 end:
 	priv_unlock(priv);
+	return -re;
 }
 
 /**

@@ -48,14 +48,13 @@ LDLIBS += -lgcc_s
 
 EXPORT_MAP := rte_eal_version.map
 
-LIBABIVER := 3
+LIBABIVER := 4
 
-# specific to linuxapp exec-env
+# specific to bsdapp exec-env
 SRCS-$(CONFIG_RTE_EXEC_ENV_BSDAPP) := eal.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_BSDAPP) += eal_memory.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_BSDAPP) += eal_hugepage_info.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_BSDAPP) += eal_thread.c
-SRCS-$(CONFIG_RTE_EXEC_ENV_BSDAPP) += eal_log.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_BSDAPP) += eal_pci.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_BSDAPP) += eal_debug.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_BSDAPP) += eal_lcore.c
@@ -69,6 +68,7 @@ SRCS-$(CONFIG_RTE_EXEC_ENV_BSDAPP) += eal_common_timer.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_BSDAPP) += eal_common_memzone.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_BSDAPP) += eal_common_log.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_BSDAPP) += eal_common_launch.c
+SRCS-$(CONFIG_RTE_EXEC_ENV_BSDAPP) += eal_common_vdev.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_BSDAPP) += eal_common_pci.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_BSDAPP) += eal_common_pci_uio.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_BSDAPP) += eal_common_memory.c
@@ -78,6 +78,7 @@ SRCS-$(CONFIG_RTE_EXEC_ENV_BSDAPP) += eal_common_cpuflags.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_BSDAPP) += eal_common_string_fns.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_BSDAPP) += eal_common_hexdump.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_BSDAPP) += eal_common_devargs.c
+SRCS-$(CONFIG_RTE_EXEC_ENV_BSDAPP) += eal_common_bus.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_BSDAPP) += eal_common_dev.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_BSDAPP) += eal_common_options.c
 SRCS-$(CONFIG_RTE_EXEC_ENV_BSDAPP) += eal_common_thread.c
@@ -109,8 +110,5 @@ INC := rte_interrupts.h
 
 SYMLINK-$(CONFIG_RTE_EXEC_ENV_BSDAPP)-include/exec-env := \
 	$(addprefix include/exec-env/,$(INC))
-
-DEPDIRS-$(CONFIG_RTE_EXEC_ENV_BSDAPP) += lib/librte_eal/common
-DEPDIRS-$(CONFIG_RTE_EXEC_ENV_BSDAPP) += lib/librte_eal/common/arch/$(ARCH_DIR)
 
 include $(RTE_SDK)/mk/rte.lib.mk

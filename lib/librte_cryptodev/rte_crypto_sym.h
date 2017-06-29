@@ -51,6 +51,7 @@ extern "C" {
 #include <rte_mbuf.h>
 #include <rte_memory.h>
 #include <rte_mempool.h>
+#include <rte_common.h>
 
 
 /** Symmetric Cipher Algorithms */
@@ -83,11 +84,11 @@ enum rte_crypto_cipher_algorithm {
 	/**< AES algorithm in F8 mode */
 	RTE_CRYPTO_CIPHER_AES_GCM,
 	/**< AES algorithm in GCM mode. When this cipher algorithm is used the
-	 * *RTE_CRYPTO_AUTH_AES_GCM* element of the
-	 * *rte_crypto_auth_algorithm* enum MUST be used to set up the related
-	 * *rte_crypto_auth_setup_data* structure in the session context or in
-	 * the op_params of the crypto operation structure in the case of a
-	 * session-less crypto operation.
+	 * *RTE_CRYPTO_AUTH_AES_GCM* or *RTE_CRYPTO_AUTH_AES_GMAC* element
+	 * of the *rte_crypto_auth_algorithm* enum MUST be used to set up
+	 * the related *rte_crypto_auth_setup_data* structure in the session
+	 * context or in the op_params of the crypto operation structure
+	 * in the case of a session-less crypto operation.
 	 */
 	RTE_CRYPTO_CIPHER_AES_XTS,
 	/**< AES algorithm in XTS mode */
@@ -96,16 +97,38 @@ enum rte_crypto_cipher_algorithm {
 	/**< (A)RC4 cipher algorithm */
 
 	RTE_CRYPTO_CIPHER_KASUMI_F8,
-	/**< Kasumi algorithm in F8 mode */
+	/**< KASUMI algorithm in F8 mode */
 
 	RTE_CRYPTO_CIPHER_SNOW3G_UEA2,
-	/**< SNOW3G algorithm in UEA2 mode */
+	/**< SNOW 3G algorithm in UEA2 mode */
 
 	RTE_CRYPTO_CIPHER_ZUC_EEA3,
 	/**< ZUC algorithm in EEA3 mode */
 
+	RTE_CRYPTO_CIPHER_DES_CBC,
+	/**< DES algorithm in CBC mode */
+
+	RTE_CRYPTO_CIPHER_AES_DOCSISBPI,
+	/**< AES algorithm using modes required by
+	 * DOCSIS Baseline Privacy Plus Spec.
+	 * Chained mbufs are not supported in this mode, i.e. rte_mbuf.next
+	 * for m_src and m_dst in the rte_crypto_sym_op must be NULL.
+	 */
+
+	RTE_CRYPTO_CIPHER_DES_DOCSISBPI,
+	/**< DES algorithm using modes required by
+	 * DOCSIS Baseline Privacy Plus Spec.
+	 * Chained mbufs are not supported in this mode, i.e. rte_mbuf.next
+	 * for m_src and m_dst in the rte_crypto_sym_op must be NULL.
+	 */
+
 	RTE_CRYPTO_CIPHER_LIST_END
+
 };
+
+/** Cipher algorithm name strings */
+extern const char *
+rte_crypto_cipher_algorithm_strings[];
 
 /** Symmetric Cipher Direction */
 enum rte_crypto_cipher_operation {
@@ -114,6 +137,10 @@ enum rte_crypto_cipher_operation {
 	RTE_CRYPTO_CIPHER_OP_DECRYPT
 	/**< Decrypt cipher operation */
 };
+
+/** Cipher operation name strings */
+extern const char *
+rte_crypto_cipher_operation_strings[];
 
 /**
  * Symmetric Cipher Setup Data.
@@ -203,7 +230,7 @@ enum rte_crypto_auth_algorithm {
 	/**< AES XCBC algorithm. */
 
 	RTE_CRYPTO_AUTH_KASUMI_F9,
-	/**< Kasumi algorithm in F9 mode. */
+	/**< KASUMI algorithm in F9 mode. */
 
 	RTE_CRYPTO_AUTH_MD5,
 	/**< MD5 algorithm */
@@ -232,7 +259,7 @@ enum rte_crypto_auth_algorithm {
 	/**< HMAC using 512 bit SHA algorithm. */
 
 	RTE_CRYPTO_AUTH_SNOW3G_UIA2,
-	/**< SNOW3G algorithm in UIA2 mode. */
+	/**< SNOW 3G algorithm in UIA2 mode. */
 
 	RTE_CRYPTO_AUTH_ZUC_EIA3,
 	/**< ZUC algorithm in EIA3 mode */
@@ -240,11 +267,19 @@ enum rte_crypto_auth_algorithm {
 	RTE_CRYPTO_AUTH_LIST_END
 };
 
+/** Authentication algorithm name strings */
+extern const char *
+rte_crypto_auth_algorithm_strings[];
+
 /** Symmetric Authentication / Hash Operations */
 enum rte_crypto_auth_operation {
 	RTE_CRYPTO_AUTH_OP_VERIFY,	/**< Verify authentication digest */
 	RTE_CRYPTO_AUTH_OP_GENERATE	/**< Generate authentication digest */
 };
+
+/** Authentication operation name strings */
+extern const char *
+rte_crypto_auth_operation_strings[];
 
 /**
  * Authentication / Hash transform data.
@@ -275,22 +310,21 @@ struct rte_crypto_auth_xform {
 	 * this specifies the length of the digest to be compared for the
 	 * session.
 	 *
+	 * It is the caller's responsibility to ensure that the
+	 * digest length is compliant with the hash algorithm being used.
 	 * If the value is less than the maximum length allowed by the hash,
-	 * the result shall be truncated.  If the value is greater than the
-	 * maximum length allowed by the hash then an error will be generated
-	 * by *rte_cryptodev_sym_session_create* or by the
-	 * *rte_cryptodev_sym_enqueue_burst* if using session-less APIs.
+	 * the result shall be truncated.
 	 */
 
 	uint32_t add_auth_data_length;
 	/**< The length of the additional authenticated data (AAD) in bytes.
-	 * The maximum permitted value is 240 bytes, unless otherwise specified
-	 * below.
+	 * The maximum permitted value is 65535 (2^16 - 1) bytes, unless
+	 * otherwise specified below.
 	 *
 	 * This field must be specified when the hash algorithm is one of the
 	 * following:
 	 *
-	 * - For SNOW3G (@ref RTE_CRYPTO_AUTH_SNOW3G_UIA2), this is the
+	 * - For SNOW 3G (@ref RTE_CRYPTO_AUTH_SNOW3G_UIA2), this is the
 	 *   length of the IV (which should be 16).
 	 *
 	 * - For GCM (@ref RTE_CRYPTO_AUTH_AES_GCM).  In this case, this is
@@ -307,8 +341,8 @@ struct rte_crypto_auth_xform {
 	 * @note
 	 *  For AES-GMAC (@ref RTE_CRYPTO_AUTH_AES_GMAC) mode of operation
 	 *  this field is not used and should be set to 0. Instead the length
-	 *  of the AAD data is specified in the message length to hash field of
-	 *  the rte_crypto_sym_op_data structure.
+	 *  of the AAD data is specified in additional authentication data
+	 *  length field of the rte_crypto_sym_op_data structure
 	 */
 };
 
@@ -333,6 +367,7 @@ struct rte_crypto_sym_xform {
 	/**< next xform in chain */
 	enum rte_crypto_sym_xform_type type
 	; /**< xform type */
+	RTE_STD_C11
 	union {
 		struct rte_crypto_auth_xform auth;
 		/**< Authentication / hash xform */
@@ -364,6 +399,25 @@ struct rte_cryptodev_sym_session;
  * it must have a valid *rte_mbuf* structure attached, via m_src parameter,
  * which contains the source data which the crypto operation is to be performed
  * on.
+ * While the mbuf is in use by a crypto operation no part of the mbuf should be
+ * changed by the application as the device may read or write to any part of the
+ * mbuf. In the case of hardware crypto devices some or all of the mbuf
+ * may be DMAed in and out of the device, so writing over the original data,
+ * though only the part specified by the rte_crypto_sym_op for transformation
+ * will be changed.
+ * Out-of-place (OOP) operation, where the source mbuf is different to the
+ * destination mbuf, is a special case. Data will be copied from m_src to m_dst.
+ * The part copied includes all the parts of the source mbuf that will be
+ * operated on, based on the cipher.data.offset+cipher.data.length and
+ * auth.data.offset+auth.data.length values in the rte_crypto_sym_op. The part
+ * indicated by the cipher parameters will be transformed, any extra data around
+ * this indicated by the auth parameters will be copied unchanged from source to
+ * destination mbuf.
+ * Also in OOP operation the cipher.data.offset and auth.data.offset apply to
+ * both source and destination mbufs. As these offsets are relative to the
+ * data_off parameter in each mbuf this can result in the data written to the
+ * destination buffer being at a different alignment, relative to buffer start,
+ * to the data in the source buffer.
  */
 struct rte_crypto_sym_op {
 	struct rte_mbuf *m_src;	/**< source mbuf */
@@ -371,6 +425,7 @@ struct rte_crypto_sym_op {
 
 	enum rte_crypto_sym_op_sess_type sess_type;
 
+	RTE_STD_C11
 	union {
 		struct rte_cryptodev_sym_session *session;
 		/**< Handle for the initialised session context */
@@ -388,8 +443,9 @@ struct rte_crypto_sym_op {
 			  * this location.
 			  *
 			  * @note
-			  * For Snow3G @ RTE_CRYPTO_CIPHER_SNOW3G_UEA2
-			  * and KASUMI @ RTE_CRYPTO_CIPHER_KASUMI_F8,
+			  * For SNOW 3G @ RTE_CRYPTO_CIPHER_SNOW3G_UEA2,
+			  * KASUMI @ RTE_CRYPTO_CIPHER_KASUMI_F8
+			  * and ZUC @ RTE_CRYPTO_CIPHER_ZUC_EEA3,
 			  * this field should be in bits.
 			  */
 
@@ -413,8 +469,9 @@ struct rte_crypto_sym_op {
 			  * field should be set to 0.
 			  *
 			  * @note
-			  * For Snow3G @ RTE_CRYPTO_AUTH_SNOW3G_UEA2
-			  * and KASUMI @ RTE_CRYPTO_CIPHER_KASUMI_F8,
+			  * For SNOW 3G @ RTE_CRYPTO_AUTH_SNOW3G_UEA2,
+			  * KASUMI @ RTE_CRYPTO_CIPHER_KASUMI_F8
+			  * and ZUC @ RTE_CRYPTO_CIPHER_ZUC_EEA3,
 			  * this field should be in bits.
 			  */
 		} data; /**< Data offsets and length for ciphering */
@@ -423,8 +480,8 @@ struct rte_crypto_sym_op {
 			uint8_t *data;
 			/**< Initialisation Vector or Counter.
 			 *
-			 * - For block ciphers in CBC or F8 mode, or for Kasumi
-			 * in F8 mode, or for SNOW3G in UEA2 mode, this is the
+			 * - For block ciphers in CBC or F8 mode, or for KASUMI
+			 * in F8 mode, or for SNOW 3G in UEA2 mode, this is the
 			 * Initialisation Vector (IV) value.
 			 *
 			 * - For block ciphers in CTR mode, this is the counter.
@@ -451,8 +508,8 @@ struct rte_crypto_sym_op {
 			uint16_t length;
 			/**< Length of valid IV data.
 			 *
-			 * - For block ciphers in CBC or F8 mode, or for Kasumi
-			 * in F8 mode, or for SNOW3G in UEA2 mode, this is the
+			 * - For block ciphers in CBC or F8 mode, or for KASUMI
+			 * in F8 mode, or for SNOW 3G in UEA2 mode, this is the
 			 * length of the IV (which must be the same as the
 			 * block length of the cipher).
 			 *
@@ -482,12 +539,14 @@ struct rte_crypto_sym_op {
 			  * should be set instead.
 			  *
 			  * @note For AES-GMAC (@ref RTE_CRYPTO_AUTH_AES_GMAC)
-			  * mode of operation, this field specifies the start
-			  * of the AAD data in the source buffer.
+			  * mode of operation, this field is set to 0. aad data
+			  * pointer of rte_crypto_sym_op_data structure is
+			  * used instead
 			  *
 			  * @note
-			  * For Snow3G @ RTE_CRYPTO_AUTH_SNOW3G_UIA2
-			  * and KASUMI @ RTE_CRYPTO_AUTH_KASUMI_F9,
+			  * For SNOW 3G @ RTE_CRYPTO_AUTH_SNOW3G_UIA2,
+			  * KASUMI @ RTE_CRYPTO_AUTH_KASUMI_F9
+			  * and ZUC @ RTE_CRYPTO_AUTH_ZUC_EIA3,
 			  * this field should be in bits.
 			  */
 
@@ -502,20 +561,20 @@ struct rte_crypto_sym_op {
 			  *
 			  * @note
 			  * For AES-GMAC @ref RTE_CRYPTO_AUTH_AES_GMAC mode
-			  * of operation, this field specifies the length of
-			  * the AAD data in the source buffer.
+			  * of operation, this field is set to 0.
+			  * Auth.aad.length is used instead.
 			  *
 			  * @note
-			  * For Snow3G @ RTE_CRYPTO_AUTH_SNOW3G_UIA2
-			  * and KASUMI @ RTE_CRYPTO_AUTH_KASUMI_F9,
+			  * For SNOW 3G @ RTE_CRYPTO_AUTH_SNOW3G_UIA2,
+			  * KASUMI @ RTE_CRYPTO_AUTH_KASUMI_F9
+			  * and ZUC @ RTE_CRYPTO_AUTH_ZUC_EIA3,
 			  * this field should be in bits.
 			  */
 		} data; /**< Data offsets and length for authentication */
 
 		struct {
 			uint8_t *data;
-			/**< If this member of this structure is set this is a
-			 * pointer to the location where the digest result
+			/**< This points to the location where the digest result
 			 * should be inserted (in the case of digest generation)
 			 * or where the purported digest exists (in the case of
 			 * digest verification).
@@ -533,25 +592,20 @@ struct rte_crypto_sym_op {
 			 * @note
 			 * For GCM (@ref RTE_CRYPTO_AUTH_AES_GCM), for
 			 * "digest result" read "authentication tag T".
-			 *
-			 * If this member is not set the digest result is
-			 * understood to be in the destination buffer for
-			 * digest generation, and in the source buffer for
-			 * digest verification. The location of the digest
-			 * result in this case is immediately following the
-			 * region over which the digest is computed.
 			 */
 			phys_addr_t phys_addr;
 			/**< Physical address of digest */
 			uint16_t length;
-			/**< Length of digest */
+			/**< Length of digest. This must be the same value as
+			 * @ref rte_crypto_auth_xform.digest_length.
+			 */
 		} digest; /**< Digest parameters */
 
 		struct {
 			uint8_t *data;
 			/**< Pointer to Additional Authenticated Data (AAD)
 			 * needed for authenticated cipher mechanisms (CCM and
-			 * GCM), and to the IV for SNOW3G authentication
+			 * GCM), and to the IV for SNOW 3G authentication
 			 * (@ref RTE_CRYPTO_AUTH_SNOW3G_UIA2). For other
 			 * authentication mechanisms this pointer is ignored.
 			 *
@@ -559,7 +613,7 @@ struct rte_crypto_sym_op {
 			 * set up for the session in the @ref
 			 * rte_crypto_auth_xform structure as part of the @ref
 			 * rte_cryptodev_sym_session_create function call.
-			 * This length must not exceed 240 bytes.
+			 * This length must not exceed 65535 (2^16-1) bytes.
 			 *
 			 * Specifically for CCM (@ref RTE_CRYPTO_AUTH_AES_CCM),
 			 * the caller should setup this field as follows:
@@ -589,12 +643,13 @@ struct rte_crypto_sym_op {
 			 *
 			 * @note
 			 * For AES-GMAC (@ref RTE_CRYPTO_AUTH_AES_GMAC) mode of
-			 * operation, this field is not used and should be set
-			 * to 0. Instead the AAD data should be placed in the
-			 * source buffer.
+			 * operation, this field is used to pass plaintext.
 			 */
 			phys_addr_t phys_addr;	/**< physical address */
-			uint16_t length;	/**< Length of digest */
+			uint16_t length;
+			/**< Length of additional authenticated data (AAD)
+			 * in bytes
+			 */
 		} aad;
 		/**< Additional authentication parameters */
 	} auth;

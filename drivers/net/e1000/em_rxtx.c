@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
+ *   Copyright(c) 2010-2016 Intel Corporation. All rights reserved.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -56,7 +56,6 @@
 #include <rte_lcore.h>
 #include <rte_atomic.h>
 #include <rte_branch_prediction.h>
-#include <rte_ring.h>
 #include <rte_mempool.h>
 #include <rte_malloc.h>
 #include <rte_mbuf.h>
@@ -67,6 +66,7 @@
 #include <rte_udp.h>
 #include <rte_tcp.h>
 #include <rte_sctp.h>
+#include <rte_net.h>
 #include <rte_string_fns.h>
 
 #include "e1000_logs.h"
@@ -77,6 +77,14 @@
 #define	E1000_TXD_VLAN_SHIFT	16
 
 #define E1000_RXDCTL_GRAN	0x01000000 /* RXDCTL Granularity */
+
+#define E1000_TX_OFFLOAD_MASK ( \
+		PKT_TX_IP_CKSUM |       \
+		PKT_TX_L4_MASK |        \
+		PKT_TX_VLAN_PKT)
+
+#define E1000_TX_OFFLOAD_NOTSUP_MASK \
+		(PKT_TX_OFFLOAD_MASK ^ E1000_TX_OFFLOAD_MASK)
 
 /**
  * Structure associated with each descriptor of the RX ring of a RX queue.
@@ -611,10 +619,47 @@ end_of_tx:
 	PMD_TX_LOG(DEBUG, "port_id=%u queue_id=%u tx_tail=%u nb_tx=%u",
 		(unsigned) txq->port_id, (unsigned) txq->queue_id,
 		(unsigned) tx_id, (unsigned) nb_tx);
-	E1000_PCI_REG_WRITE(txq->tdt_reg_addr, tx_id);
+	E1000_PCI_REG_WRITE_RELAXED(txq->tdt_reg_addr, tx_id);
 	txq->tx_tail = tx_id;
 
 	return nb_tx;
+}
+
+/*********************************************************************
+ *
+ *  TX prep functions
+ *
+ **********************************************************************/
+uint16_t
+eth_em_prep_pkts(__rte_unused void *tx_queue, struct rte_mbuf **tx_pkts,
+		uint16_t nb_pkts)
+{
+	int i, ret;
+	struct rte_mbuf *m;
+
+	for (i = 0; i < nb_pkts; i++) {
+		m = tx_pkts[i];
+
+		if (m->ol_flags & E1000_TX_OFFLOAD_NOTSUP_MASK) {
+			rte_errno = -ENOTSUP;
+			return i;
+		}
+
+#ifdef RTE_LIBRTE_ETHDEV_DEBUG
+		ret = rte_validate_tx_offload(m);
+		if (ret != 0) {
+			rte_errno = ret;
+			return i;
+		}
+#endif
+		ret = rte_net_intel_cksum_prepare(m);
+		if (ret != 0) {
+			rte_errno = ret;
+			return i;
+		}
+	}
+
+	return i;
 }
 
 /*********************************************************************
@@ -1391,11 +1436,6 @@ eth_em_rx_queue_count(struct rte_eth_dev *dev, uint16_t rx_queue_id)
 	struct em_rx_queue *rxq;
 	uint32_t desc = 0;
 
-	if (rx_queue_id >= dev->data->nb_rx_queues) {
-		PMD_RX_LOG(DEBUG, "Invalid RX queue_id=%d", rx_queue_id);
-		return 0;
-	}
-
 	rxq = dev->data->rx_queues[rx_queue_id];
 	rxdp = &(rxq->rx_ring[rxq->rx_tail]);
 
@@ -1426,6 +1466,57 @@ eth_em_rx_descriptor_done(void *rx_queue, uint16_t offset)
 
 	rxdp = &rxq->rx_ring[desc];
 	return !!(rxdp->status & E1000_RXD_STAT_DD);
+}
+
+int
+eth_em_rx_descriptor_status(void *rx_queue, uint16_t offset)
+{
+	struct em_rx_queue *rxq = rx_queue;
+	volatile uint8_t *status;
+	uint32_t desc;
+
+	if (unlikely(offset >= rxq->nb_rx_desc))
+		return -EINVAL;
+
+	if (offset >= rxq->nb_rx_desc - rxq->nb_rx_hold)
+		return RTE_ETH_RX_DESC_UNAVAIL;
+
+	desc = rxq->rx_tail + offset;
+	if (desc >= rxq->nb_rx_desc)
+		desc -= rxq->nb_rx_desc;
+
+	status = &rxq->rx_ring[desc].status;
+	if (*status & E1000_RXD_STAT_DD)
+		return RTE_ETH_RX_DESC_DONE;
+
+	return RTE_ETH_RX_DESC_AVAIL;
+}
+
+int
+eth_em_tx_descriptor_status(void *tx_queue, uint16_t offset)
+{
+	struct em_tx_queue *txq = tx_queue;
+	volatile uint8_t *status;
+	uint32_t desc;
+
+	if (unlikely(offset >= txq->nb_tx_desc))
+		return -EINVAL;
+
+	desc = txq->tx_tail + offset;
+	/* go to next desc that has the RS bit */
+	desc = ((desc + txq->tx_rs_thresh - 1) / txq->tx_rs_thresh) *
+		txq->tx_rs_thresh;
+	if (desc >= txq->nb_tx_desc) {
+		desc -= txq->nb_tx_desc;
+		if (desc >= txq->nb_tx_desc)
+			desc -= txq->nb_tx_desc;
+	}
+
+	status = &txq->tx_ring[desc].upper.fields.status;
+	if (*status & E1000_TXD_STAT_DD)
+		return RTE_ETH_TX_DESC_DONE;
+
+	return RTE_ETH_TX_DESC_FULL;
 }
 
 void

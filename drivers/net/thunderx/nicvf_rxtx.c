@@ -70,19 +70,20 @@ fill_sq_desc_header(union sq_entry_t *entry, struct rte_mbuf *pkt)
 	ol_flags = pkt->ol_flags & NICVF_TX_OFFLOAD_MASK;
 	if (unlikely(ol_flags)) {
 		/* L4 cksum */
-		if (ol_flags & PKT_TX_TCP_CKSUM)
+		uint64_t l4_flags = ol_flags & PKT_TX_L4_MASK;
+		if (l4_flags == PKT_TX_TCP_CKSUM)
 			sqe.hdr.csum_l4 = SEND_L4_CSUM_TCP;
-		else if (ol_flags & PKT_TX_UDP_CKSUM)
+		else if (l4_flags == PKT_TX_UDP_CKSUM)
 			sqe.hdr.csum_l4 = SEND_L4_CSUM_UDP;
 		else
 			sqe.hdr.csum_l4 = SEND_L4_CSUM_DISABLE;
+
+		sqe.hdr.l3_offset = pkt->l2_len;
 		sqe.hdr.l4_offset = pkt->l3_len + pkt->l2_len;
 
 		/* L3 cksum */
-		if (ol_flags & PKT_TX_IP_CKSUM) {
+		if (ol_flags & PKT_TX_IP_CKSUM)
 			sqe.hdr.csum_l3 = 1;
-			sqe.hdr.l3_offset = pkt->l2_len;
-		}
 	}
 
 	entry->buff[0] = sqe.buff[0];
@@ -367,7 +368,8 @@ nicvf_fill_rbdr(struct nicvf_rxq *rxq, int to_fill)
 	void *obj_p[NICVF_MAX_RX_FREE_THRESH] __rte_cache_aligned;
 
 	if (unlikely(rte_mempool_get_bulk(rxq->pool, obj_p, to_fill) < 0)) {
-		rxq->nic->eth_dev->data->rx_mbuf_alloc_failed += to_fill;
+		rte_eth_devices[rxq->port_id].data->rx_mbuf_alloc_failed +=
+			to_fill;
 		return 0;
 	}
 
@@ -428,9 +430,9 @@ nicvf_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 	union cq_entry_t *desc = rxq->desc;
 	const uint64_t cqe_mask = rxq->qlen_mask;
 	uint64_t rb0_ptr, mbuf_phys_off = rxq->mbuf_phys_off;
+	const uint64_t mbuf_init = rxq->mbuf_initializer.value;
 	uint32_t cqe_head = rxq->head & cqe_mask;
 	int32_t available_space = rxq->available_space;
-	uint8_t port_id = rxq->port_id;
 	const uint8_t rbptr_offset = rxq->rbptr_offset;
 
 	to_process = nicvf_rx_pkts_to_process(rxq, nb_pkts, available_space);
@@ -446,17 +448,12 @@ nicvf_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 		rb0_ptr = *((uint64_t *)cqe_rx + rbptr_offset);
 		pkt = (struct rte_mbuf *)nicvf_mbuff_phy2virt
 				(rb0_ptr - cqe_rx_w1.align_pad, mbuf_phys_off);
-
 		pkt->ol_flags = 0;
-		pkt->port = port_id;
 		pkt->data_len = cqe_rx_w3.rb0_sz;
-		pkt->data_off = RTE_PKTMBUF_HEADROOM + cqe_rx_w1.align_pad;
-		pkt->nb_segs = 1;
 		pkt->pkt_len = cqe_rx_w3.rb0_sz;
 		pkt->packet_type = nicvf_rx_classify_pkt(cqe_rx_w0);
-
+		nicvf_mbuff_init_update(pkt, mbuf_init, cqe_rx_w1.align_pad);
 		nicvf_rx_offload(cqe_rx_w0, cqe_rx_w2, pkt);
-		rte_mbuf_refcnt_set(pkt, 1);
 		rx_pkts[i] = pkt;
 		cqe_head = (cqe_head + 1) & cqe_mask;
 		nicvf_prefetch_store_keep(pkt);
@@ -467,11 +464,10 @@ nicvf_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 		rxq->head = cqe_head;
 		nicvf_addr_write(rxq->cq_door, to_process);
 		rxq->recv_buffers += to_process;
-		if (rxq->recv_buffers > rxq->rx_free_thresh) {
-			rxq->recv_buffers -= nicvf_fill_rbdr(rxq,
-						rxq->rx_free_thresh);
-			NICVF_RX_ASSERT(rxq->recv_buffers >= 0);
-		}
+	}
+	if (rxq->recv_buffers > rxq->rx_free_thresh) {
+		rxq->recv_buffers -= nicvf_fill_rbdr(rxq, rxq->rx_free_thresh);
+		NICVF_RX_ASSERT(rxq->recv_buffers >= 0);
 	}
 
 	return to_process;
@@ -479,8 +475,9 @@ nicvf_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts, uint16_t nb_pkts)
 
 static inline uint16_t __hot
 nicvf_process_cq_mseg_entry(struct cqe_rx_t *cqe_rx,
-			uint64_t mbuf_phys_off, uint8_t port_id,
-			struct rte_mbuf **rx_pkt, uint8_t rbptr_offset)
+			uint64_t mbuf_phys_off,
+			struct rte_mbuf **rx_pkt, uint8_t rbptr_offset,
+			uint64_t mbuf_init)
 {
 	struct rte_mbuf *pkt, *seg, *prev;
 	cqe_rx_word0_t cqe_rx_w0;
@@ -499,12 +496,10 @@ nicvf_process_cq_mseg_entry(struct cqe_rx_t *cqe_rx,
 			(rb_ptr[0] - cqe_rx_w1.align_pad, mbuf_phys_off);
 
 	pkt->ol_flags = 0;
-	pkt->port = port_id;
-	pkt->data_off = RTE_PKTMBUF_HEADROOM + cqe_rx_w1.align_pad;
-	pkt->nb_segs = nb_segs;
 	pkt->pkt_len = cqe_rx_w1.pkt_len;
 	pkt->data_len = rb_sz[nicvf_frag_num(0)];
-	rte_mbuf_refcnt_set(pkt, 1);
+	nicvf_mbuff_init_mseg_update(
+				pkt, mbuf_init, cqe_rx_w1.align_pad, nb_segs);
 	pkt->packet_type = nicvf_rx_classify_pkt(cqe_rx_w0);
 	nicvf_rx_offload(cqe_rx_w0, cqe_rx_w2, pkt);
 
@@ -516,9 +511,7 @@ nicvf_process_cq_mseg_entry(struct cqe_rx_t *cqe_rx,
 
 		prev->next = seg;
 		seg->data_len = rb_sz[nicvf_frag_num(seg_idx)];
-		seg->port = port_id;
-		seg->data_off = RTE_PKTMBUF_HEADROOM;
-		rte_mbuf_refcnt_set(seg, 1);
+		nicvf_mbuff_init_update(seg, mbuf_init, 0);
 
 		prev = seg;
 	}
@@ -539,7 +532,7 @@ nicvf_recv_pkts_multiseg(void *rx_queue, struct rte_mbuf **rx_pkts,
 	uint32_t i, to_process, cqe_head, buffers_consumed = 0;
 	int32_t available_space = rxq->available_space;
 	uint16_t nb_segs;
-	const uint8_t port_id = rxq->port_id;
+	const uint64_t mbuf_init = rxq->mbuf_initializer.value;
 	const uint8_t rbptr_offset = rxq->rbptr_offset;
 
 	cqe_head = rxq->head & cqe_mask;
@@ -550,7 +543,7 @@ nicvf_recv_pkts_multiseg(void *rx_queue, struct rte_mbuf **rx_pkts,
 		cq_entry = &desc[cqe_head];
 		cqe_rx = (struct cqe_rx_t *)cq_entry;
 		nb_segs = nicvf_process_cq_mseg_entry(cqe_rx, mbuf_phys_off,
-				port_id, rx_pkts + i, rbptr_offset);
+			rx_pkts + i, rbptr_offset, mbuf_init);
 		buffers_consumed += nb_segs;
 		cqe_head = (cqe_head + 1) & cqe_mask;
 		nicvf_prefetch_store_keep(rx_pkts[i]);
@@ -561,11 +554,10 @@ nicvf_recv_pkts_multiseg(void *rx_queue, struct rte_mbuf **rx_pkts,
 		rxq->head = cqe_head;
 		nicvf_addr_write(rxq->cq_door, to_process);
 		rxq->recv_buffers += buffers_consumed;
-		if (rxq->recv_buffers > rxq->rx_free_thresh) {
-			rxq->recv_buffers -=
-				nicvf_fill_rbdr(rxq, rxq->rx_free_thresh);
-			NICVF_RX_ASSERT(rxq->recv_buffers >= 0);
-		}
+	}
+	if (rxq->recv_buffers > rxq->rx_free_thresh) {
+		rxq->recv_buffers -= nicvf_fill_rbdr(rxq, rxq->rx_free_thresh);
+		NICVF_RX_ASSERT(rxq->recv_buffers >= 0);
 	}
 
 	return to_process;

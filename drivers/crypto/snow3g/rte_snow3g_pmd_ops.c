@@ -39,7 +39,7 @@
 #include "rte_snow3g_pmd_private.h"
 
 static const struct rte_cryptodev_capabilities snow3g_pmd_capabilities[] = {
-	{	/* SNOW3G (UIA2) */
+	{	/* SNOW 3G (UIA2) */
 		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
 		{.sym = {
 			.xform_type = RTE_CRYPTO_SYM_XFORM_AUTH,
@@ -64,7 +64,7 @@ static const struct rte_cryptodev_capabilities snow3g_pmd_capabilities[] = {
 			}, }
 		}, }
 	},
-	{	/* SNOW3G (UEA2) */
+	{	/* SNOW 3G (UEA2) */
 		.op = RTE_CRYPTO_OP_TYPE_SYMMETRIC,
 		{.sym = {
 			.xform_type = RTE_CRYPTO_SYM_XFORM_CIPHER,
@@ -89,7 +89,8 @@ static const struct rte_cryptodev_capabilities snow3g_pmd_capabilities[] = {
 
 /** Configure device */
 static int
-snow3g_pmd_config(__rte_unused struct rte_cryptodev *dev)
+snow3g_pmd_config(__rte_unused struct rte_cryptodev *dev,
+		__rte_unused struct rte_cryptodev_config *config)
 {
 	return 0;
 }
@@ -198,7 +199,7 @@ snow3g_pmd_qp_create_processed_ops_ring(struct snow3g_qp *qp,
 
 	r = rte_ring_lookup(qp->name);
 	if (r) {
-		if (r->prod.size >= ring_size) {
+		if (rte_ring_get_size(r) >= ring_size) {
 			SNOW3G_LOG_INFO("Reusing existing ring %s"
 					" for processed packets",
 					 qp->name);
@@ -228,7 +229,7 @@ snow3g_pmd_qp_setup(struct rte_cryptodev *dev, uint16_t qp_id,
 		snow3g_pmd_qp_release(dev, qp_id);
 
 	/* Allocate the queue pair data structure. */
-	qp = rte_zmalloc_socket("SNOW3G PMD Queue Pair", sizeof(*qp),
+	qp = rte_zmalloc_socket("SNOW 3G PMD Queue Pair", sizeof(*qp),
 					RTE_CACHE_LINE_SIZE, socket_id);
 	if (qp == NULL)
 		return (-ENOMEM);

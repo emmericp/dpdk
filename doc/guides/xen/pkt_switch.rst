@@ -323,7 +323,7 @@ Building and Running the Switching Backend
     .. code-block:: console
 
         modprobe uio_pci_generic
-        python tools/dpdk-devbind.py -b uio_pci_generic 0000:09:00:00.0
+        python usertools/dpdk-devbind.py -b uio_pci_generic 0000:09:00:00.0
 
     In this case, 0000:09:00.0 is the PCI address for the NIC controller.
 
@@ -331,7 +331,7 @@ Building and Running the Switching Backend
 
     .. code-block:: console
 
-        examples/vhost_xen/build/vhost-switch -c f -n 3 --xen-dom0 -- -p1
+        examples/vhost_xen/build/vhost-switch -l 0-3 -n 3 --xen-dom0 -- -p1
 
 .. note::
 
@@ -409,7 +409,7 @@ Building and Running the Front End
 
     .. code-block:: console
 
-        ./x86_64-native-linuxapp-gcc/app/testpmd -c f -n 4 --vdev="eth_xenvirt0,mac=00:00:00:00:00:11"
+        ./x86_64-native-linuxapp-gcc/app/testpmd -l 0-3 -n 4 --vdev="net_xenvirt0,mac=00:00:00:00:00:11"
         testpmd>set fwd mac
         testpmd>start
 
@@ -417,7 +417,7 @@ Building and Running the Front End
 
     .. code-block:: console
 
-        --vdev="eth_xenvirt0,mac=00:00:00:00:00:11" --vdev="eth_xenvirt1;mac=00:00:00:00:00:22"
+        --vdev="net_xenvirt0,mac=00:00:00:00:00:11" --vdev="net_xenvirt1;mac=00:00:00:00:00:22"
 
 
 Usage Examples: Injecting a Packet Stream Using a Packet Generator
@@ -430,7 +430,7 @@ Run TestPMD in a guest VM:
 
 .. code-block:: console
 
-    ./x86_64-native-linuxapp-gcc/app/testpmd -c f -n 4 --vdev="eth_xenvirt0,mac=00:00:00:00:00:11" -- -i --eth-peer=0,00:00:00:00:00:22
+    ./x86_64-native-linuxapp-gcc/app/testpmd -l 0-3 -n 4 --vdev="net_xenvirt0,mac=00:00:00:00:00:11" -- -i --eth-peer=0,00:00:00:00:00:22
     testpmd> set fwd mac
     testpmd> start
 
@@ -453,13 +453,13 @@ Run TestPMD in guest VM1:
 
 .. code-block:: console
 
-    ./x86_64-native-linuxapp-gcc/app/testpmd -c f -n 4 --vdev="eth_xenvirt0,mac=00:00:00:00:00:11" -- -i --eth-peer=0,00:00:00:00:00:22 -- -i
+    ./x86_64-native-linuxapp-gcc/app/testpmd -l 0-3 -n 4 --vdev="net_xenvirt0,mac=00:00:00:00:00:11" -- -i --eth-peer=0,00:00:00:00:00:22 -- -i
 
 Run TestPMD in guest VM2:
 
 .. code-block:: console
 
-    ./x86_64-native-linuxapp-gcc/app/testpmd -c f -n 4 --vdev="eth_xenvirt0,mac=00:00:00:00:00:22" -- -i --eth-peer=0,00:00:00:00:00:33
+    ./x86_64-native-linuxapp-gcc/app/testpmd -l 0-3 -n 4 --vdev="net_xenvirt0,mac=00:00:00:00:00:22" -- -i --eth-peer=0,00:00:00:00:00:33
 
 Configure a packet stream in the packet generator, and set the destination MAC address to 00:00:00:00:00:11 and VLAN to 1000.
 The packets received in Virtio in guest VM1 will be forwarded to Virtio in guest VM2 and

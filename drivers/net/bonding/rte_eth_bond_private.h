@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
+ *   Copyright(c) 2010-2017 Intel Corporation. All rights reserved.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -36,6 +36,7 @@
 
 #include <rte_ethdev.h>
 #include <rte_spinlock.h>
+#include <rte_bitmap.h>
 
 #include "rte_eth_bond.h"
 #include "rte_eth_bond_8023ad_private.h"
@@ -62,7 +63,7 @@
 
 extern const char *pmd_bond_init_valid_arguments[];
 
-extern const char pmd_bond_driver_name[];
+extern struct rte_vdev_driver pmd_bond_drv;
 
 /** Port Queue Mapping Structure */
 struct bond_rx_queue {
@@ -143,6 +144,7 @@ struct bond_dev_private {
 	uint16_t nb_rx_queues;			/**< Total number of rx queues */
 	uint16_t nb_tx_queues;			/**< Total number of tx queues*/
 
+	uint8_t active_slave;		/**< Next active_slave to poll */
 	uint8_t active_slave_count;		/**< Number of active slaves */
 	uint8_t active_slaves[RTE_MAX_ETHPORTS];	/**< Active slave list */
 
@@ -172,6 +174,9 @@ struct bond_dev_private {
 
 	uint32_t candidate_max_rx_pktlen;
 	uint32_t max_rx_pktlen;
+
+	void *vlan_filter_bmpmem;		/* enabled vlan filter bitmap */
+	struct rte_bitmap *vlan_filter_bmp;
 };
 
 extern const struct eth_dev_ops default_dev_ops;

@@ -1,5 +1,5 @@
 ..  BSD LICENSE
-    Copyright (c) 2015, Cisco Systems, Inc.
+    Copyright (c) 2017, Cisco Systems, Inc.
     All rights reserved.
 
     Redistribution and use in source and binary forms, with or without
@@ -59,11 +59,31 @@ Configuration information
 
   - **Number of Queues**
 
-    The maximum number of receive and transmit queues are configurable on a per
-    vNIC basis through the Cisco UCS Manager (CIMC or UCSM). These values
-    should be configured to be greater than or equal to the nb_rx_q and nb_tx_q
-    parameters expected to  used in the call to the rte_eth_dev_configure()
-    function.
+    The maximum number of receive queues (RQs), work queues (WQs) and
+    completion queues (CQs) are configurable on a per vNIC basis
+    through the Cisco UCS Manager (CIMC or UCSM).
+
+    These values should be configured as follows:
+
+    - The number of WQs should be greater or equal to the value of the
+      expected nb_tx_q parameter in the call to the
+      rte_eth_dev_configure()
+
+    - The number of RQs configured in the vNIC should be greater or
+      equal to *twice* the value of the expected nb_rx_q parameter in
+      the call to rte_eth_dev_configure().  With the addition of Rx
+      scatter, a pair of RQs on the vnic is needed for each receive
+      queue used by DPDK, even if Rx scatter is not being used.
+      Having a vNIC with only 1 RQ is not a valid configuration, and
+      will fail with an error message.
+
+    - The number of CQs should set so that there is one CQ for each
+      WQ, and one CQ for each pair of RQs.
+
+    For example: If the application requires 3 Rx queues, and 3 Tx
+    queues, the vNIC should be configured to have at least 3 WQs, 6
+    RQs (3 pairs), and 6 CQs (3 for use by WQs + 3 for use by the 3
+    pairs of RQs).
 
   - **Size of Queues**
 
@@ -71,12 +91,129 @@ Configuration information
     a per vNIC bases via the UCS Manager and should be greater than or equal to
     the nb_rx_desc and   nb_tx_desc parameters expected to be used in the calls
     to rte_eth_rx_queue_setup() and rte_eth_tx_queue_setup() respectively.
+    An application requesting more than the set size will be limited to that
+    size.
+
+    Unless there is a lack of resources due to creating many vNICs, it
+    is recommended that the WQ and RQ sizes be set to the maximum.  This
+    gives the application the greatest amount of flexibility in its
+    queue configuration.
+
+    - *Note*: Since the introduction of Rx scatter, for performance
+      reasons, this PMD uses two RQs on the vNIC per receive queue in
+      DPDK.  One RQ holds descriptors for the start of a packet the
+      second RQ holds the descriptors for the rest of the fragments of
+      a packet.  This means that the nb_rx_desc parameter to
+      rte_eth_rx_queue_setup() can be a greater than 4096.  The exact
+      amount will depend on the size of the mbufs being used for
+      receives, and the MTU size.
+
+      For example: If the mbuf size is 2048, and the MTU is 9000, then
+      receiving a full size packet will take 5 descriptors, 1 from the
+      start of packet queue, and 4 from the second queue.  Assuming
+      that the RQ size was set to the maximum of 4096, then the
+      application can specify up to 1024 + 4096 as the nb_rx_desc
+      parameter to rte_eth_rx_queue_setup().
 
   - **Interrupts**
 
     Only one interrupt per vNIC interface should be configured in the UCS
     manager regardless of the number receive/transmit queues. The ENIC PMD
-    uses this interrupt to   get information about errors in the fast path.
+    uses this interrupt to get information about link status and errors
+    in the fast path.
+
+.. _enic-flow-director:
+
+Flow director support
+---------------------
+
+Advanced filtering support was added to 1300 series VIC firmware starting
+with version 2.0.13 for C-series UCS servers and version 3.1.2 for UCSM
+managed blade servers. In order to enable advanced filtering the 'Advanced
+filter' radio button should be enabled via CIMC or UCSM followed by a reboot
+of the server.
+
+With advanced filters, perfect matching of all fields of IPv4, IPv6 headers
+as well as TCP, UDP and SCTP L4 headers is available through flow director.
+Masking of these fields for partial match is also supported.
+
+Without advanced filter support, the flow director is limited to IPv4
+perfect filtering of the 5-tuple with no masking of fields supported.
+
+SR-IOV mode utilization
+-----------------------
+
+UCS blade servers configured with dynamic vNIC connection policies in UCS
+manager are capable of supporting assigned devices on virtual machines (VMs)
+through a KVM hypervisor. Assigned devices, also known as 'passthrough'
+devices, are SR-IOV virtual functions (VFs) on the host which are exposed
+to VM instances.
+
+The Cisco Virtual Machine Fabric Extender (VM-FEX) gives the VM a dedicated
+interface on the Fabric Interconnect (FI). Layer 2 switching is done at
+the FI. This may eliminate the requirement for software switching on the
+host to route intra-host VM traffic.
+
+Please refer to `Creating a Dynamic vNIC Connection Policy
+<http://www.cisco.com/c/en/us/td/docs/unified_computing/ucs/sw/vm_fex/vmware/gui/config_guide/b_GUI_VMware_VM-FEX_UCSM_Configuration_Guide/b_GUI_VMware_VM-FEX_UCSM_Configuration_Guide_chapter_010.html#task_433E01651F69464783A68E66DA8A47A5>`_
+for information on configuring SR-IOV Adapter policies using UCS manager.
+
+Once the policies are in place and the host OS is rebooted, VFs should be
+visible on the host, E.g.:
+
+.. code-block:: console
+
+     # lspci | grep Cisco | grep Ethernet
+     0d:00.0 Ethernet controller: Cisco Systems Inc VIC Ethernet NIC (rev a2)
+     0d:00.1 Ethernet controller: Cisco Systems Inc VIC SR-IOV VF (rev a2)
+     0d:00.2 Ethernet controller: Cisco Systems Inc VIC SR-IOV VF (rev a2)
+     0d:00.3 Ethernet controller: Cisco Systems Inc VIC SR-IOV VF (rev a2)
+     0d:00.4 Ethernet controller: Cisco Systems Inc VIC SR-IOV VF (rev a2)
+     0d:00.5 Ethernet controller: Cisco Systems Inc VIC SR-IOV VF (rev a2)
+     0d:00.6 Ethernet controller: Cisco Systems Inc VIC SR-IOV VF (rev a2)
+     0d:00.7 Ethernet controller: Cisco Systems Inc VIC SR-IOV VF (rev a2)
+
+Enable Intel IOMMU on the host and install KVM and libvirt. A VM instance should
+be created with an assigned device. When using libvirt, this configuration can
+be done within the domain (i.e. VM) config file. For example this entry maps
+host VF 0d:00:01 into the VM.
+
+.. code-block:: console
+
+    <interface type='hostdev' managed='yes'>
+      <mac address='52:54:00:ac:ff:b6'/>
+      <source>
+        <address type='pci' domain='0x0000' bus='0x0d' slot='0x00' function='0x1'/>
+      </source>
+
+Alternatively, the configuration can be done in a separate file using the
+``network`` keyword. These methods are described in the libvirt documentation for
+`Network XML format <https://libvirt.org/formatnetwork.html>`_.
+
+When the VM instance is started, the ENIC KVM driver will bind the host VF to
+vfio, complete provisioning on the FI and bring up the link.
+
+.. note::
+
+    It is not possible to use a VF directly from the host because it is not
+    fully provisioned until the hypervisor brings up the VM that it is assigned
+    to.
+
+In the VM instance, the VF will now be visible. E.g., here the VF 00:04.0 is
+seen on the VM instance and should be available for binding to a DPDK.
+
+.. code-block:: console
+
+     # lspci | grep Ether
+     00:04.0 Ethernet controller: Cisco Systems Inc VIC SR-IOV VF (rev a2)
+
+Follow the normal DPDK install procedure, binding the VF to either ``igb_uio``
+or ``vfio`` in non-IOMMU mode.
+
+Please see :ref:`Limitations <enic_limitations>` for limitations in
+the use of SR-IOV.
+
+.. _enic_limitations:
 
 Limitations
 -----------
@@ -101,12 +238,37 @@ Limitations
      vlan_offload |= ETH_VLAN_STRIP_OFFLOAD;
      rte_eth_dev_set_vlan_offload(port, vlan_offload);
 
-How to build the suite?
------------------------
-The build instructions for the DPDK suite should be followed. By default
-the ENIC PMD library will be built into the DPDK library.
+- Limited flow director support on 1200 series and 1300 series Cisco VIC
+  adapters with old firmware. Please see :ref:`enic-flow-director`.
 
-For configuring and using UIO and VFIO frameworks, please refer the
+- Flow director features are not supported on generation 1 Cisco VIC adapters
+  (M81KR and P81E)
+
+- **SR-IOV**
+
+  - KVM hypervisor support only. VMware has not been tested.
+  - Requires VM-FEX, and so is only available on UCS managed servers connected
+    to Fabric Interconnects. It is not on standalone C-Series servers.
+  - VF devices are not usable directly from the host. They can  only be used
+    as assigned devices on VM instances.
+  - Currently, unbind of the ENIC kernel mode driver 'enic.ko' on the VM
+    instance may hang. As a workaround, enic.ko should blacklisted or removed
+    from the boot process.
+  - pci_generic cannot be used as the uio module in the VM. igb_uio or
+    vfio in non-IOMMU mode can be used.
+  - The number of RQs in UCSM dynamic vNIC configurations must be at least 2.
+  - The number of SR-IOV devices is limited to 256. Components on target system
+    might limit this number to fewer than 256.
+
+How to build the suite
+----------------------
+
+Refer to the document :ref:`compiling and testing a PMD for a NIC
+<pmd_build_and_test>` for details.
+
+By default the ENIC PMD library will be built into the DPDK library.
+
+For configuring and using UIO and VFIO frameworks, please refer to the
 documentation that comes with DPDK suite.
 
 Supported Cisco VIC adapters
@@ -126,16 +288,15 @@ ENIC PMD supports all recent generations of Cisco VIC adapters including:
 - VIC 1385
 - VIC 1387
 
-- Flow director features are not supported on generation 1 Cisco VIC adapters
-   (M81KR and P81E)
-
 Supported Operating Systems
 ---------------------------
+
 Any Linux distribution fulfilling the conditions described in Dependencies
 section of DPDK documentation.
 
 Supported features
 ------------------
+
 - Unicast, multicast and broadcast transmission and reception
 - Receive queue polling
 - Port Hardware Statistics
@@ -143,8 +304,7 @@ Supported features
 - IP checksum offload
 - Receive side VLAN stripping
 - Multiple receive and transmit queues
-- Flow Director ADD, UPDATE, DELETE, STATS operation support for IPV4 5-TUPLE
-  flows
+- Flow Director ADD, UPDATE, DELETE, STATS operation support IPv4 and IPv6
 - Promiscuous mode
 - Setting RX VLAN (supported via UCSM/CIMC only)
 - VLAN filtering (supported via UCSM/CIMC only)
@@ -152,9 +312,11 @@ Supported features
 - IPV4, IPV6 and TCP RSS hashing
 - Scattered Rx
 - MTU update
+- SR-IOV on UCS managed servers connected to Fabric Interconnects.
 
-Known bugs and Unsupported features in this release
+Known bugs and unsupported features in this release
 ---------------------------------------------------
+
 - Signature or flex byte based flow direction
 - Drop feature of flow direction
 - VLAN based flow direction
@@ -165,6 +327,7 @@ Known bugs and Unsupported features in this release
 
 Prerequisites
 -------------
+
 - Prepare the system as recommended by DPDK suite.  This includes environment
   variables, hugepages configuration, tool-chains and configuration
 - Insert vfio-pci kernel module using the command 'modprobe vfio-pci' if the
@@ -174,9 +337,8 @@ Prerequisites
 - DPDK suite should be configured based on the user's decision to use VFIO or
   UIO framework
 - If the vNIC device(s) to be used is bound to the kernel mode Ethernet driver
-  (enic), use 'ifconfig' to bring the interface down. The dpdk-devbind.py tool
-  can then be used to unbind the device's bus id from the enic kernel mode
-  driver.
+  use 'ifconfig' to bring the interface down. The dpdk-devbind.py tool can
+  then be used to unbind the device's bus id from the ENIC kernel mode driver.
 - Bind the intended vNIC to vfio-pci in case the user wants ENIC PMD to use
   VFIO framework using dpdk-devbind.py.
 - Bind the intended vNIC to igb_uio in case the user wants ENIC PMD to use
@@ -207,10 +369,12 @@ libraries and the initialization time of the application.
 
 Additional Reference
 --------------------
+
 - http://www.cisco.com/c/en/us/products/servers-unified-computing
 
 Contact Information
 -------------------
+
 Any questions or bugs should be reported to DPDK community and to the ENIC PMD
 maintainers:
 

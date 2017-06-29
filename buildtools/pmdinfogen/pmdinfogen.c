@@ -226,13 +226,14 @@ static int parse_elf(struct elf_info *info, const char *filename)
 	}
 	if (!info->symtab_start)
 		fprintf(stderr, "%s has no symtab?\n", filename);
-
-	/* Fix endianness in symbols */
-	for (sym = info->symtab_start; sym < info->symtab_stop; sym++) {
-		sym->st_shndx = TO_NATIVE(endian, 16, sym->st_shndx);
-		sym->st_name  = TO_NATIVE(endian, 32, sym->st_name);
-		sym->st_value = TO_NATIVE(endian, ADDR_SIZE, sym->st_value);
-		sym->st_size  = TO_NATIVE(endian, ADDR_SIZE, sym->st_size);
+	else {
+		/* Fix endianness in symbols */
+		for (sym = info->symtab_start; sym < info->symtab_stop; sym++) {
+			sym->st_shndx = TO_NATIVE(endian, 16, sym->st_shndx);
+			sym->st_name  = TO_NATIVE(endian, 32, sym->st_name);
+			sym->st_value = TO_NATIVE(endian, ADDR_SIZE, sym->st_value);
+			sym->st_size  = TO_NATIVE(endian, ADDR_SIZE, sym->st_size);
+		}
 	}
 
 	if (symtab_shndx_idx != ~0U) {
@@ -269,6 +270,7 @@ struct opt_tag {
 
 static const struct opt_tag opt_tags[] = {
 	{"_param_string_export", "params"},
+	{"_kmod_dep_export", "kmod"},
 };
 
 static int complete_pmd_entry(struct elf_info *info, struct pmd_driver *drv)
@@ -386,7 +388,7 @@ static void output_pmd_info_string(struct elf_info *info, char *outfile)
 			else
 				fprintf(ofd, " ");
 		}
-		fprintf(ofd, "]}\";");
+		fprintf(ofd, "]}\";\n");
 		drv = drv->next;
 	}
 

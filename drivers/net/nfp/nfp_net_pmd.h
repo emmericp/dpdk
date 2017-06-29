@@ -121,25 +121,26 @@ struct nfp_net_adapter;
 #define NFD_CFG_MINOR_VERSION_of(x) (((x) >> 0) & 0xff)
 
 #include <linux/types.h>
+#include <rte_io.h>
 
 static inline uint8_t nn_readb(volatile const void *addr)
 {
-	return *((volatile const uint8_t *)(addr));
+	return rte_read8(addr);
 }
 
 static inline void nn_writeb(uint8_t val, volatile void *addr)
 {
-	*((volatile uint8_t *)(addr)) = val;
+	rte_write8(val, addr);
 }
 
 static inline uint32_t nn_readl(volatile const void *addr)
 {
-	return *((volatile const uint32_t *)(addr));
+	return rte_read32(addr);
 }
 
 static inline void nn_writel(uint32_t val, volatile void *addr)
 {
-	*((volatile uint32_t *)(addr)) = val;
+	rte_write32(val, addr);
 }
 
 static inline uint64_t nn_readq(volatile void *addr)
@@ -216,12 +217,10 @@ struct nfp_net_txq {
 
 	uint32_t wr_p;
 	uint32_t rd_p;
-	uint32_t qcp_rd_p;
 
 	uint32_t tx_count;
 
 	uint32_t tx_free_thresh;
-	uint32_t tail;
 
 	/*
 	 * For each descriptor keep a reference to the mbuff and
@@ -240,7 +239,7 @@ struct nfp_net_txq {
 	struct nfp_net_tx_desc *txds;
 
 	/*
-	 * At this point 56 bytes have been used for all the fields in the
+	 * At this point 48 bytes have been used for all the fields in the
 	 * TX critical path. We have room for 8 bytes and still all placed
 	 * in a cache line. We are not using the threshold values below nor
 	 * the txq_flags but if we need to, we can add the most used in the
@@ -269,7 +268,7 @@ struct nfp_net_txq {
 #define PCIE_DESC_RX_I_TCP_CSUM_OK      (1 << 11)
 #define PCIE_DESC_RX_I_UDP_CSUM         (1 << 10)
 #define PCIE_DESC_RX_I_UDP_CSUM_OK      (1 <<  9)
-#define PCIE_DESC_RX_INGRESS_PORT       (1 <<  8)
+#define PCIE_DESC_RX_SPARE              (1 <<  8)
 #define PCIE_DESC_RX_EOP                (1 <<  7)
 #define PCIE_DESC_RX_IP4_CSUM           (1 <<  6)
 #define PCIE_DESC_RX_IP4_CSUM_OK        (1 <<  5)
@@ -326,7 +325,6 @@ struct nfp_net_rxq {
 	 * freelist descriptors and @rd_p is where the driver start
 	 * reading descriptors for newly arrive packets from.
 	 */
-	uint32_t wr_p;
 	uint32_t rd_p;
 
 	/*

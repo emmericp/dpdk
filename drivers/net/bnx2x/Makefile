@@ -28,10 +28,5 @@ SRCS-$(CONFIG_RTE_LIBRTE_BNX2X_PMD) += bnx2x_ethdev.c
 SRCS-$(CONFIG_RTE_LIBRTE_BNX2X_PMD) += ecore_sp.c
 SRCS-$(CONFIG_RTE_LIBRTE_BNX2X_PMD) += elink.c
 SRCS-$(CONFIG_RTE_LIBRTE_BNX2X_PMD) += bnx2x_vfpf.c
-SRCS-$(CONFIG_RTE_LIBRTE_BNX2X_DEBUG_PERIODIC) += debug.c
-
-# this lib depends upon:
-DEPDIRS-$(CONFIG_RTE_LIBRTE_BNX2X_PMD) += lib/librte_eal lib/librte_ether
-DEPDIRS-$(CONFIG_RTE_LIBRTE_BNX2X_PMD) += lib/librte_mempool lib/librte_mbuf
 
 include $(RTE_SDK)/mk/rte.lib.mk

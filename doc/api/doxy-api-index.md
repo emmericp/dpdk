@@ -4,7 +4,7 @@ API {#index}
 <!--
   BSD LICENSE
 
-  Copyright 2013 6WIND S.A.
+  Copyright 2013-2017 6WIND S.A.
 
   Redistribution and use in source and binary forms, with or without
   modification, are permitted provided that the following conditions
@@ -39,12 +39,20 @@ There are many libraries, so their headers may be grouped by topics:
   [dev]                (@ref rte_dev.h),
   [ethdev]             (@ref rte_ethdev.h),
   [ethctrl]            (@ref rte_eth_ctrl.h),
+  [rte_flow]           (@ref rte_flow.h),
+  [rte_flow_driver]    (@ref rte_flow_driver.h),
   [cryptodev]          (@ref rte_cryptodev.h),
+  [eventdev]           (@ref rte_eventdev.h),
   [devargs]            (@ref rte_devargs.h),
+  [PCI]                (@ref rte_pci.h)
+
+- **device specific**:
   [bond]               (@ref rte_eth_bond.h),
-  [vhost]              (@ref rte_virtio_net.h),
+  [vhost]              (@ref rte_vhost.h),
   [KNI]                (@ref rte_kni.h),
-  [PCI]                (@ref rte_pci.h),
+  [ixgbe]              (@ref rte_pmd_ixgbe.h),
+  [i40e]               (@ref rte_pmd_i40e.h),
+  [crypto_scheduler]   (@ref rte_cryptodev_scheduler.h)
 
 - **memory**:
   [memseg]             (@ref rte_memory.h),
@@ -66,8 +74,10 @@ There are many libraries, so their headers may be grouped by topics:
 - **CPU arch**:
   [branch prediction]  (@ref rte_branch_prediction.h),
   [cache prefetch]     (@ref rte_prefetch.h),
+  [SIMD]               (@ref rte_vect.h),
   [byte order]         (@ref rte_byteorder.h),
-  [CPU flags]          (@ref rte_cpuflags.h)
+  [CPU flags]          (@ref rte_cpuflags.h),
+  [I/O access]         (@ref rte_io.h)
 
 - **CPU multicore**:
   [interrupts]         (@ref rte_interrupts.h),
@@ -87,7 +97,8 @@ There are many libraries, so their headers may be grouped by topics:
   [frag/reass]         (@ref rte_ip_frag.h),
   [LPM IPv4 route]     (@ref rte_lpm.h),
   [LPM IPv6 route]     (@ref rte_lpm6.h),
-  [ACL]                (@ref rte_acl.h)
+  [ACL]                (@ref rte_acl.h),
+  [EFD]                (@ref rte_efd.h)
 
 - **QoS**:
   [metering]           (@ref rte_meter.h),
@@ -108,7 +119,6 @@ There are many libraries, so their headers may be grouped by topics:
   [reorder]            (@ref rte_reorder.h),
   [tailq]              (@ref rte_tailq.h),
   [bitmap]             (@ref rte_bitmap.h),
-  [ivshmem]            (@ref rte_ivshmem.h)
 
 - **packet framework**:
   * [port]             (@ref rte_port.h):
@@ -137,10 +147,10 @@ There are many libraries, so their headers may be grouped by topics:
 
 - **debug**:
   [jobstats]           (@ref rte_jobstats.h),
+  [pdump]              (@ref rte_pdump.h),
   [hexdump]            (@ref rte_hexdump.h),
   [debug]              (@ref rte_debug.h),
   [log]                (@ref rte_log.h),
-  [warnings]           (@ref rte_warnings.h),
   [errno]              (@ref rte_errno.h)
 
 - **misc**:
@@ -148,4 +158,7 @@ There are many libraries, so their headers may be grouped by topics:
   [common]             (@ref rte_common.h),
   [ABI compat]         (@ref rte_compat.h),
   [keepalive]          (@ref rte_keepalive.h),
+  [device metrics]     (@ref rte_metrics.h),
+  [bitrate statistics] (@ref rte_bitrate.h),
+  [latency statistics] (@ref rte_latencystats.h),
   [version]            (@ref rte_version.h)

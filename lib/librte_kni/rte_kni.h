@@ -42,7 +42,7 @@
  * interfaces that may be used by the RTE application to receive/transmit
  * packets from/to Linux kernel net interfaces.
  *
- * This library provide two APIs to burst receive packets from KNI interfaces,
+ * This library provides two APIs to burst receive packets from KNI interfaces,
  * and burst transmit packets to KNI interfaces.
  */
 
@@ -88,6 +88,7 @@ struct rte_kni_conf {
 	struct rte_pci_addr addr;
 	struct rte_pci_id id;
 
+	__extension__
 	uint8_t force_bind : 1; /* Flag to bind kernel thread */
 };
 

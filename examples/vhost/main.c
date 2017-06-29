@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2010-2016 Intel Corporation. All rights reserved.
+ *   Copyright(c) 2010-2017 Intel Corporation. All rights reserved.
  *   All rights reserved.
  *
  *   Redistribution and use in source and binary forms, with or without
@@ -49,7 +49,7 @@
 #include <rte_log.h>
 #include <rte_string_fns.h>
 #include <rte_malloc.h>
-#include <rte_virtio_net.h>
+#include <rte_vhost.h>
 #include <rte_ip.h>
 #include <rte_tcp.h>
 
@@ -65,7 +65,6 @@
 #define MBUF_CACHE_SIZE	128
 #define MBUF_DATA_SIZE	RTE_MBUF_DEFAULT_BUF_SIZE
 
-#define MAX_PKT_BURST 32		/* Max burst size for RX/TX */
 #define BURST_TX_DRAIN_US 100	/* TX drain every ~100us */
 
 #define BURST_RX_WAIT_US 15	/* Defines how long we wait between retries on RX */
@@ -90,9 +89,6 @@
 /* Size of buffers used for snprintfs. */
 #define MAX_PRINT_BUFF 6072
 
-/* Maximum character device basename size. */
-#define MAX_BASENAME_SZ 10
-
 /* Maximum long option length for option parsing. */
 #define MAX_LONG_OPT_SZ 64
 
@@ -108,9 +104,6 @@ static uint32_t num_devices;
 
 static struct rte_mempool *mbuf_pool;
 static int mergeable;
-
-/* Do vlan strip on host, enabled on default */
-static uint32_t vlan_strip = 1;
 
 /* Enable VM2VM communications. If this is disabled then the MAC address compare is skipped. */
 typedef enum {
@@ -133,14 +126,18 @@ static uint32_t enable_tx_csum;
 static uint32_t enable_tso;
 
 static int client_mode;
+static int dequeue_zero_copy;
+
+static int builtin_net_driver;
 
 /* Specify timeout (in useconds) between retries on RX. */
 static uint32_t burst_rx_delay_time = BURST_RX_WAIT_US;
 /* Specify the number of retries on RX. */
 static uint32_t burst_rx_retry_num = BURST_RX_RETRIES;
 
-/* Character device basename. Can be set by user. */
-static char dev_basename[MAX_BASENAME_SZ] = "vhost-net";
+/* Socket file paths. Can be set by user */
+static char *socket_files;
+static int nb_sockets;
 
 /* empty vmdq configuration structure. Filled in programatically */
 static struct rte_eth_conf vmdq_conf_default = {
@@ -157,7 +154,7 @@ static struct rte_eth_conf vmdq_conf_default = {
 		 */
 		.hw_vlan_strip  = 1, /**< VLAN strip enabled. */
 		.jumbo_frame    = 0, /**< Jumbo Frame Support disabled */
-		.hw_strip_crc   = 0, /**< CRC stripped by hardware */
+		.hw_strip_crc   = 1, /**< CRC stripped by hardware */
 	},
 
 	.txmode = {
@@ -299,6 +296,17 @@ port_init(uint8_t port)
 
 	rx_ring_size = RTE_TEST_RX_DESC_DEFAULT;
 	tx_ring_size = RTE_TEST_TX_DESC_DEFAULT;
+
+	/*
+	 * When dequeue zero copy is enabled, guest Tx used vring will be
+	 * updated only when corresponding mbuf is freed. Thus, the nb_tx_desc
+	 * (tx_ring_size here) must be small enough so that the driver will
+	 * hit the free threshold easily and free mbufs timely. Otherwise,
+	 * guest Tx vring would be starved.
+	 */
+	if (dequeue_zero_copy)
+		tx_ring_size = 64;
+
 	tx_rings = (uint16_t)rte_lcore_count();
 
 	retval = validate_num_devices(MAX_DEVICES);
@@ -320,16 +328,6 @@ port_init(uint8_t port)
 		num_pf_queues, num_devices, queues_per_pool);
 
 	if (port >= rte_eth_dev_count()) return -1;
-
-	if (enable_tx_csum == 0)
-		rte_vhost_feature_disable(1ULL << VIRTIO_NET_F_CSUM);
-
-	if (enable_tso == 0) {
-		rte_vhost_feature_disable(1ULL << VIRTIO_NET_F_HOST_TSO4);
-		rte_vhost_feature_disable(1ULL << VIRTIO_NET_F_HOST_TSO6);
-		rte_vhost_feature_disable(1ULL << VIRTIO_NET_F_GUEST_TSO4);
-		rte_vhost_feature_disable(1ULL << VIRTIO_NET_F_GUEST_TSO6);
-	}
 
 	rx_rings = (uint16_t)dev_info.max_rx_queues;
 	/* Configure ethernet device. */
@@ -392,17 +390,18 @@ port_init(uint8_t port)
 }
 
 /*
- * Set character device basename.
+ * Set socket file path.
  */
 static int
-us_vhost_parse_basename(const char *q_arg)
+us_vhost_parse_socket_path(const char *q_arg)
 {
 	/* parse number string */
-
-	if (strnlen(q_arg, MAX_BASENAME_SZ) > MAX_BASENAME_SZ)
+	if (strnlen(q_arg, PATH_MAX) == PATH_MAX)
 		return -1;
-	else
-		snprintf((char*)&dev_basename, MAX_BASENAME_SZ, "%s", q_arg);
+
+	socket_files = realloc(socket_files, PATH_MAX * (nb_sockets + 1));
+	snprintf(socket_files + nb_sockets * PATH_MAX, PATH_MAX, "%s", q_arg);
+	nb_sockets++;
 
 	return 0;
 }
@@ -462,7 +461,7 @@ us_vhost_usage(const char *prgname)
 	RTE_LOG(INFO, VHOST_CONFIG, "%s [EAL options] -- -p PORTMASK\n"
 	"		--vm2vm [0|1|2]\n"
 	"		--rx_retry [0|1] --mergeable [0|1] --stats [0-N]\n"
-	"		--dev-basename <name>\n"
+	"		--socket-file <path>\n"
 	"		--nb-devices ND\n"
 	"		-p PORTMASK: Set mask for ports to be used by application\n"
 	"		--vm2vm [0|1|2]: disable/software(default)/hardware vm2vm comms\n"
@@ -470,12 +469,12 @@ us_vhost_usage(const char *prgname)
 	"		--rx-retry-delay [0-N]: timeout(in usecond) between retries on RX. This makes effect only if retries on rx enabled\n"
 	"		--rx-retry-num [0-N]: the number of retries on rx. This makes effect only if retries on rx enabled\n"
 	"		--mergeable [0|1]: disable(default)/enable RX mergeable buffers\n"
-	"		--vlan-strip [0|1]: disable/enable(default) RX VLAN strip on host\n"
 	"		--stats [0-N]: 0: Disable stats, N: Time in seconds to print stats\n"
-	"		--dev-basename: The basename to be used for the character device.\n"
+	"		--socket-file: The path of the socket file.\n"
 	"		--tx-csum [0|1] disable/enable TX checksum offload.\n"
 	"		--tso [0|1] disable/enable TCP segment offload.\n"
-	"		--client register a vhost-user socket as client mode.\n",
+	"		--client register a vhost-user socket as client mode.\n"
+	"		--dequeue-zero-copy enables dequeue zero copy\n",
 	       prgname);
 }
 
@@ -495,12 +494,13 @@ us_vhost_parse_args(int argc, char **argv)
 		{"rx-retry-delay", required_argument, NULL, 0},
 		{"rx-retry-num", required_argument, NULL, 0},
 		{"mergeable", required_argument, NULL, 0},
-		{"vlan-strip", required_argument, NULL, 0},
 		{"stats", required_argument, NULL, 0},
-		{"dev-basename", required_argument, NULL, 0},
+		{"socket-file", required_argument, NULL, 0},
 		{"tx-csum", required_argument, NULL, 0},
 		{"tso", required_argument, NULL, 0},
 		{"client", no_argument, &client_mode, 1},
+		{"dequeue-zero-copy", no_argument, &dequeue_zero_copy, 1},
+		{"builtin-net-driver", no_argument, &builtin_net_driver, 1},
 		{NULL, 0, 0, 0},
 	};
 
@@ -523,7 +523,6 @@ us_vhost_parse_args(int argc, char **argv)
 			vmdq_conf_default.rx_adv_conf.vmdq_rx_conf.rx_mode =
 				ETH_VMDQ_ACCEPT_BROADCAST |
 				ETH_VMDQ_ACCEPT_MULTICAST;
-			rte_vhost_feature_enable(1ULL << VIRTIO_NET_F_CTRL_RX);
 
 			break;
 
@@ -618,27 +617,12 @@ us_vhost_parse_args(int argc, char **argv)
 				}
 			}
 
-			/* Enable/disable RX VLAN strip on host. */
-			if (!strncmp(long_option[option_index].name,
-				"vlan-strip", MAX_LONG_OPT_SZ)) {
-				ret = parse_num_opt(optarg, 1);
-				if (ret == -1) {
-					RTE_LOG(INFO, VHOST_CONFIG,
-						"Invalid argument for VLAN strip [0|1]\n");
-					us_vhost_usage(prgname);
-					return -1;
-				} else {
-					vlan_strip = !!ret;
-					vmdq_conf_default.rxmode.hw_vlan_strip =
-						vlan_strip;
-				}
-			}
-
 			/* Enable/disable stats. */
 			if (!strncmp(long_option[option_index].name, "stats", MAX_LONG_OPT_SZ)) {
 				ret = parse_num_opt(optarg, INT32_MAX);
 				if (ret == -1) {
-					RTE_LOG(INFO, VHOST_CONFIG, "Invalid argument for stats [0..N]\n");
+					RTE_LOG(INFO, VHOST_CONFIG,
+						"Invalid argument for stats [0..N]\n");
 					us_vhost_usage(prgname);
 					return -1;
 				} else {
@@ -646,10 +630,13 @@ us_vhost_parse_args(int argc, char **argv)
 				}
 			}
 
-			/* Set character device basename. */
-			if (!strncmp(long_option[option_index].name, "dev-basename", MAX_LONG_OPT_SZ)) {
-				if (us_vhost_parse_basename(optarg) == -1) {
-					RTE_LOG(INFO, VHOST_CONFIG, "Invalid argument for character device basename (Max %d characters)\n", MAX_BASENAME_SZ);
+			/* Set socket file path. */
+			if (!strncmp(long_option[option_index].name,
+						"socket-file", MAX_LONG_OPT_SZ)) {
+				if (us_vhost_parse_socket_path(optarg) == -1) {
+					RTE_LOG(INFO, VHOST_CONFIG,
+					"Invalid argument for socket name (Max %d characters)\n",
+					PATH_MAX);
 					us_vhost_usage(prgname);
 					return -1;
 				}
@@ -761,10 +748,7 @@ link_vmdq(struct vhost_dev *vdev, struct rte_mbuf *m)
 			"(%d) failed to add device MAC address to VMDQ\n",
 			vdev->vid);
 
-	/* Enable stripping of the vlan tag as we handle routing. */
-	if (vlan_strip)
-		rte_eth_dev_set_vlan_strip_on_queue(ports[0],
-			(uint16_t)vdev->vmdq_rx_q, 1);
+	rte_eth_dev_set_vlan_strip_on_queue(ports[0], vdev->vmdq_rx_q, 1);
 
 	/* Set device as ready for RX. */
 	vdev->ready = DEVICE_RX;
@@ -813,7 +797,12 @@ virtio_xmit(struct vhost_dev *dst_vdev, struct vhost_dev *src_vdev,
 {
 	uint16_t ret;
 
-	ret = rte_vhost_enqueue_burst(dst_vdev->vid, VIRTIO_RXQ, &m, 1);
+	if (builtin_net_driver) {
+		ret = vs_enqueue_pkts(dst_vdev, VIRTIO_RXQ, &m, 1);
+	} else {
+		ret = rte_vhost_enqueue_burst(dst_vdev->vid, VIRTIO_RXQ, &m, 1);
+	}
+
 	if (enable_stats) {
 		rte_atomic64_inc(&dst_vdev->stats.rx_total_atomic);
 		rte_atomic64_add(&dst_vdev->stats.rx_atomic, ret);
@@ -839,17 +828,17 @@ virtio_tx_local(struct vhost_dev *vdev, struct rte_mbuf *m)
 		return -1;
 
 	if (vdev->vid == dst_vdev->vid) {
-		RTE_LOG(DEBUG, VHOST_DATA,
+		RTE_LOG_DP(DEBUG, VHOST_DATA,
 			"(%d) TX: src and dst MAC is same. Dropping packet.\n",
 			vdev->vid);
 		return 0;
 	}
 
-	RTE_LOG(DEBUG, VHOST_DATA,
+	RTE_LOG_DP(DEBUG, VHOST_DATA,
 		"(%d) TX: MAC address is local\n", dst_vdev->vid);
 
 	if (unlikely(dst_vdev->remove)) {
-		RTE_LOG(DEBUG, VHOST_DATA,
+		RTE_LOG_DP(DEBUG, VHOST_DATA,
 			"(%d) device is marked for removal\n", dst_vdev->vid);
 		return 0;
 	}
@@ -874,7 +863,7 @@ find_local_dest(struct vhost_dev *vdev, struct rte_mbuf *m,
 		return 0;
 
 	if (vdev->vid == dst_vdev->vid) {
-		RTE_LOG(DEBUG, VHOST_DATA,
+		RTE_LOG_DP(DEBUG, VHOST_DATA,
 			"(%d) TX: src and dst MAC is same. Dropping packet.\n",
 			vdev->vid);
 		return -1;
@@ -888,7 +877,7 @@ find_local_dest(struct vhost_dev *vdev, struct rte_mbuf *m,
 	*offset  = VLAN_HLEN;
 	*vlan_tag = vlan_tags[vdev->vid];
 
-	RTE_LOG(DEBUG, VHOST_DATA,
+	RTE_LOG_DP(DEBUG, VHOST_DATA,
 		"(%d) TX: pkt to local VM device id: (%d), vlan tag: %u.\n",
 		vdev->vid, dst_vdev->vid, *vlan_tag);
 
@@ -980,7 +969,7 @@ virtio_tx_route(struct vhost_dev *vdev, struct rte_mbuf *m, uint16_t vlan_tag)
 		}
 	}
 
-	RTE_LOG(DEBUG, VHOST_DATA,
+	RTE_LOG_DP(DEBUG, VHOST_DATA,
 		"(%d) TX: MAC address is external\n", vdev->vid);
 
 queue2nic:
@@ -1048,7 +1037,7 @@ drain_mbuf_table(struct mbuf_table *tx_q)
 	if (unlikely(cur_tsc - prev_tsc > MBUF_TABLE_DRAIN_TSC)) {
 		prev_tsc = cur_tsc;
 
-		RTE_LOG(DEBUG, VHOST_DATA,
+		RTE_LOG_DP(DEBUG, VHOST_DATA,
 			"TX queue drained after timeout with burst size %u\n",
 			tx_q->len);
 		do_drain_mbuf_table(tx_q);
@@ -1084,8 +1073,13 @@ drain_eth_rx(struct vhost_dev *vdev)
 		}
 	}
 
-	enqueue_count = rte_vhost_enqueue_burst(vdev->vid, VIRTIO_RXQ,
+	if (builtin_net_driver) {
+		enqueue_count = vs_enqueue_pkts(vdev, VIRTIO_RXQ,
 						pkts, rx_count);
+	} else {
+		enqueue_count = rte_vhost_enqueue_burst(vdev->vid, VIRTIO_RXQ,
+						pkts, rx_count);
+	}
 	if (enable_stats) {
 		rte_atomic64_add(&vdev->stats.rx_total_atomic, rx_count);
 		rte_atomic64_add(&vdev->stats.rx_atomic, enqueue_count);
@@ -1101,8 +1095,13 @@ drain_virtio_tx(struct vhost_dev *vdev)
 	uint16_t count;
 	uint16_t i;
 
-	count = rte_vhost_dequeue_burst(vdev->vid, VIRTIO_TXQ, mbuf_pool,
+	if (builtin_net_driver) {
+		count = vs_dequeue_pkts(vdev, VIRTIO_TXQ, mbuf_pool,
 					pkts, MAX_PKT_BURST);
+	} else {
+		count = rte_vhost_dequeue_burst(vdev->vid, VIRTIO_TXQ,
+					mbuf_pool, pkts, MAX_PKT_BURST);
+	}
 
 	/* setup VMDq for the first packet */
 	if (unlikely(vdev->ready == DEVICE_MAC_LEARNING) && count) {
@@ -1205,6 +1204,9 @@ destroy_device(int vid)
 		rte_pause();
 	}
 
+	if (builtin_net_driver)
+		vs_vhost_net_remove(vdev);
+
 	TAILQ_REMOVE(&lcore_info[vdev->coreid].vdev_list, vdev,
 		     lcore_vdev_entry);
 	TAILQ_REMOVE(&vhost_dev_list, vdev, global_vdev_entry);
@@ -1253,6 +1255,9 @@ new_device(int vid)
 	}
 	vdev->vid = vid;
 
+	if (builtin_net_driver)
+		vs_vhost_net_setup(vdev);
+
 	TAILQ_INSERT_TAIL(&vhost_dev_list, vdev, global_vdev_entry);
 	vdev->vmdq_rx_q = vid * queues_per_pool + vmdq_queue_base;
 
@@ -1288,7 +1293,7 @@ new_device(int vid)
  * These callback allow devices to be added to the data core when configuration
  * has been fully complete.
  */
-static const struct virtio_net_device_ops virtio_net_device_ops =
+static const struct vhost_device_ops virtio_net_device_ops =
 {
 	.new_device =  new_device,
 	.destroy_device = destroy_device,
@@ -1340,14 +1345,27 @@ print_stats(void)
 	}
 }
 
+static void
+unregister_drivers(int socket_num)
+{
+	int i, ret;
+
+	for (i = 0; i < socket_num; i++) {
+		ret = rte_vhost_driver_unregister(socket_files + i * PATH_MAX);
+		if (ret != 0)
+			RTE_LOG(ERR, VHOST_CONFIG,
+				"Fail to unregister vhost driver for %s.\n",
+				socket_files + i * PATH_MAX);
+	}
+}
+
 /* When we receive a INT signal, unregister vhost driver */
 static void
 sigint_handler(__rte_unused int signum)
 {
 	/* Unregister vhost driver. */
-	int ret = rte_vhost_driver_unregister((char *)&dev_basename);
-	if (ret != 0)
-		rte_exit(EXIT_FAILURE, "vhost driver unregister failure.\n");
+	unregister_drivers(nb_sockets);
+
 	exit(0);
 }
 
@@ -1387,7 +1405,7 @@ create_mbuf_pool(uint16_t nr_port, uint32_t nr_switch_core, uint32_t mbuf_size,
 		mtu = 64 * 1024;
 
 	nr_mbufs_per_core  = (mtu + mbuf_size) * MAX_PKT_BURST /
-			(mbuf_size - RTE_PKTMBUF_HEADROOM) * MAX_PKT_BURST;
+			(mbuf_size - RTE_PKTMBUF_HEADROOM);
 	nr_mbufs_per_core += nr_rx_desc;
 	nr_mbufs_per_core  = RTE_MAX(nr_mbufs_per_core, nr_mbuf_cache);
 
@@ -1403,15 +1421,14 @@ create_mbuf_pool(uint16_t nr_port, uint32_t nr_switch_core, uint32_t mbuf_size,
 }
 
 /*
- * Main function, does initialisation and calls the per-lcore functions. The CUSE
- * device is also registered here to handle the IOCTLs.
+ * Main function, does initialisation and calls the per-lcore functions.
  */
 int
 main(int argc, char *argv[])
 {
 	unsigned lcore_id, core_id = 0;
 	unsigned nb_ports, valid_num_ports;
-	int ret;
+	int ret, i;
 	uint8_t portid;
 	static pthread_t tid;
 	char thread_name[RTE_MAX_THREAD_NAME_LEN];
@@ -1431,11 +1448,12 @@ main(int argc, char *argv[])
 	if (ret < 0)
 		rte_exit(EXIT_FAILURE, "Invalid argument\n");
 
-	for (lcore_id = 0; lcore_id < RTE_MAX_LCORE; lcore_id ++)
+	for (lcore_id = 0; lcore_id < RTE_MAX_LCORE; lcore_id++) {
 		TAILQ_INIT(&lcore_info[lcore_id].vdev_list);
 
 		if (rte_lcore_is_enabled(lcore_id))
-			lcore_ids[core_id ++] = lcore_id;
+			lcore_ids[core_id++] = lcore_id;
+	}
 
 	if (rte_lcore_count() > RTE_MAX_LCORE)
 		rte_exit(EXIT_FAILURE,"Not enough cores\n");
@@ -1503,21 +1521,67 @@ main(int argc, char *argv[])
 	RTE_LCORE_FOREACH_SLAVE(lcore_id)
 		rte_eal_remote_launch(switch_worker, NULL, lcore_id);
 
-	if (mergeable == 0)
-		rte_vhost_feature_disable(1ULL << VIRTIO_NET_F_MRG_RXBUF);
-
 	if (client_mode)
 		flags |= RTE_VHOST_USER_CLIENT;
 
-	/* Register vhost(cuse or user) driver to handle vhost messages. */
-	ret = rte_vhost_driver_register(dev_basename, flags);
-	if (ret != 0)
-		rte_exit(EXIT_FAILURE, "vhost driver register failure.\n");
+	if (dequeue_zero_copy)
+		flags |= RTE_VHOST_USER_DEQUEUE_ZERO_COPY;
 
-	rte_vhost_driver_callback_register(&virtio_net_device_ops);
+	/* Register vhost user driver to handle vhost messages. */
+	for (i = 0; i < nb_sockets; i++) {
+		char *file = socket_files + i * PATH_MAX;
+		ret = rte_vhost_driver_register(file, flags);
+		if (ret != 0) {
+			unregister_drivers(i);
+			rte_exit(EXIT_FAILURE,
+				"vhost driver register failure.\n");
+		}
 
-	/* Start CUSE session. */
-	rte_vhost_driver_session_start();
+		if (builtin_net_driver)
+			rte_vhost_driver_set_features(file, VIRTIO_NET_FEATURES);
+
+		if (mergeable == 0) {
+			rte_vhost_driver_disable_features(file,
+				1ULL << VIRTIO_NET_F_MRG_RXBUF);
+		}
+
+		if (enable_tx_csum == 0) {
+			rte_vhost_driver_disable_features(file,
+				1ULL << VIRTIO_NET_F_CSUM);
+		}
+
+		if (enable_tso == 0) {
+			rte_vhost_driver_disable_features(file,
+				1ULL << VIRTIO_NET_F_HOST_TSO4);
+			rte_vhost_driver_disable_features(file,
+				1ULL << VIRTIO_NET_F_HOST_TSO6);
+			rte_vhost_driver_disable_features(file,
+				1ULL << VIRTIO_NET_F_GUEST_TSO4);
+			rte_vhost_driver_disable_features(file,
+				1ULL << VIRTIO_NET_F_GUEST_TSO6);
+		}
+
+		if (promiscuous) {
+			rte_vhost_driver_enable_features(file,
+				1ULL << VIRTIO_NET_F_CTRL_RX);
+		}
+
+		ret = rte_vhost_driver_callback_register(file,
+			&virtio_net_device_ops);
+		if (ret != 0) {
+			rte_exit(EXIT_FAILURE,
+				"failed to register vhost driver callbacks.\n");
+		}
+
+		if (rte_vhost_driver_start(file) < 0) {
+			rte_exit(EXIT_FAILURE,
+				"failed to start vhost driver.\n");
+		}
+	}
+
+	RTE_LCORE_FOREACH_SLAVE(lcore_id)
+		rte_eal_wait_lcore(lcore_id);
+
 	return 0;
 
 }

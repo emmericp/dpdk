@@ -47,6 +47,7 @@
 static inline int
 create_session(struct ipsec_ctx *ipsec_ctx __rte_unused, struct ipsec_sa *sa)
 {
+	struct rte_cryptodev_info cdev_info;
 	unsigned long cdev_id_qp = 0;
 	int32_t ret;
 	struct cdev_key key = { 0 };
@@ -65,7 +66,7 @@ create_session(struct ipsec_ctx *ipsec_ctx __rte_unused, struct ipsec_sa *sa)
 		return -1;
 	}
 
-	RTE_LOG(DEBUG, IPSEC, "Create session for SA spi %u on cryptodev "
+	RTE_LOG_DP(DEBUG, IPSEC, "Create session for SA spi %u on cryptodev "
 			"%u qp %u\n", sa->spi,
 			ipsec_ctx->tbl[cdev_id_qp].id,
 			ipsec_ctx->tbl[cdev_id_qp].qp);
@@ -73,6 +74,18 @@ create_session(struct ipsec_ctx *ipsec_ctx __rte_unused, struct ipsec_sa *sa)
 	sa->crypto_session = rte_cryptodev_sym_session_create(
 			ipsec_ctx->tbl[cdev_id_qp].id, sa->xforms);
 
+	rte_cryptodev_info_get(ipsec_ctx->tbl[cdev_id_qp].id, &cdev_info);
+	if (cdev_info.sym.max_nb_sessions_per_qp > 0) {
+		ret = rte_cryptodev_queue_pair_attach_sym_session(
+				ipsec_ctx->tbl[cdev_id_qp].qp,
+				sa->crypto_session);
+		if (ret < 0) {
+			RTE_LOG(ERR, IPSEC,
+				"Session cannot be attached to qp %u ",
+				ipsec_ctx->tbl[cdev_id_qp].qp);
+			return -1;
+		}
+	}
 	sa->cdev_id_qp = cdev_id_qp;
 
 	return 0;
@@ -89,7 +102,7 @@ enqueue_cop(struct cdev_qp *cqp, struct rte_crypto_op *cop)
 		ret = rte_cryptodev_enqueue_burst(cqp->id, cqp->qp,
 				cqp->buf, cqp->len);
 		if (ret < cqp->len) {
-			RTE_LOG(DEBUG, IPSEC, "Cryptodev %u queue %u:"
+			RTE_LOG_DP(DEBUG, IPSEC, "Cryptodev %u queue %u:"
 					" enqueued %u crypto ops out of %u\n",
 					 cqp->id, cqp->qp,
 					 ret, cqp->len);
@@ -124,6 +137,7 @@ ipsec_enqueue(ipsec_xform_fn xform_func, struct ipsec_ctx *ipsec_ctx,
 		priv->sa = sa;
 
 		priv->cop.type = RTE_CRYPTO_OP_TYPE_SYMMETRIC;
+		priv->cop.status = RTE_CRYPTO_OP_STATUS_NOT_PROCESSED;
 
 		rte_prefetch0(&priv->sym_cop);
 		priv->cop.sym = &priv->sym_cop;

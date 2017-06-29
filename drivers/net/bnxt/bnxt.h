@@ -63,6 +63,7 @@ struct bnxt_vf_info {
 	uint16_t		max_rx_rings;
 	uint16_t		max_l2_ctx;
 	uint16_t		max_vnics;
+	uint16_t		vlan;
 	struct bnxt_pf_info	*pf;
 };
 
@@ -94,7 +95,7 @@ struct bnxt_pf_info {
 #define BNXT_LINK_WAIT_CNT	10
 #define BNXT_LINK_WAIT_INTERVAL	100
 struct bnxt_link_info {
-	uint8_t			phy_flags;
+	uint32_t		phy_flags;
 	uint8_t			mac_type;
 	uint8_t			phy_link_status;
 	uint8_t			loop_back;
@@ -130,6 +131,8 @@ struct bnxt {
 #define BNXT_FLAG_VF		(1 << 1)
 #define BNXT_PF(bp)		(!((bp)->flags & BNXT_FLAG_VF))
 #define BNXT_VF(bp)		((bp)->flags & BNXT_FLAG_VF)
+#define BNXT_NPAR_ENABLED(bp)	((bp)->port_partition_type)
+#define BNXT_NPAR_PF(bp)	(BNXT_PF(bp) && BNXT_NPAR_ENABLED(bp))
 
 	unsigned int		rx_nr_rings;
 	unsigned int		rx_cp_nr_rings;
@@ -156,6 +159,8 @@ struct bnxt {
 #define MAX_FF_POOLS	ETH_64_POOLS
 	STAILQ_HEAD(, bnxt_vnic_info)	ff_pool[MAX_FF_POOLS];
 
+	struct bnxt_irq         *irq_tbl;
+
 #define MAX_NUM_MAC_ADDR	32
 	uint8_t			mac_addr[ETHER_ADDR_LEN];
 
@@ -171,6 +176,10 @@ struct bnxt {
 
 	struct bnxt_pf_info		pf;
 	struct bnxt_vf_info		vf;
+	uint8_t			port_partition_type;
+	uint8_t			dev_stopped;
 };
+
+int bnxt_link_update_op(struct rte_eth_dev *eth_dev, int wait_to_complete);
 
 #endif

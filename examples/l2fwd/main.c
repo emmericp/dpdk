@@ -68,11 +68,13 @@
 #include <rte_debug.h>
 #include <rte_ether.h>
 #include <rte_ethdev.h>
-#include <rte_ring.h>
 #include <rte_mempool.h>
 #include <rte_mbuf.h>
 
 static volatile bool force_quit;
+
+/* MAC updating enabled by default */
+static int mac_updating = 1;
 
 #define RTE_LOGTYPE_L2FWD RTE_LOGTYPE_USER1
 
@@ -118,7 +120,7 @@ static const struct rte_eth_conf port_conf = {
 		.hw_ip_checksum = 0, /**< IP checksum offload disabled */
 		.hw_vlan_filter = 0, /**< VLAN filtering disabled */
 		.jumbo_frame    = 0, /**< Jumbo Frame Support disabled */
-		.hw_strip_crc   = 0, /**< CRC stripped by hardware */
+		.hw_strip_crc   = 1, /**< CRC stripped by hardware */
 	},
 	.txmode = {
 		.mq_mode = ETH_MQ_TX_NONE,
@@ -186,23 +188,32 @@ print_stats(void)
 }
 
 static void
-l2fwd_simple_forward(struct rte_mbuf *m, unsigned portid)
+l2fwd_mac_updating(struct rte_mbuf *m, unsigned dest_portid)
 {
 	struct ether_hdr *eth;
 	void *tmp;
+
+	eth = rte_pktmbuf_mtod(m, struct ether_hdr *);
+
+	/* 02:00:00:00:00:xx */
+	tmp = &eth->d_addr.addr_bytes[0];
+	*((uint64_t *)tmp) = 0x000000000002 + ((uint64_t)dest_portid << 40);
+
+	/* src addr */
+	ether_addr_copy(&l2fwd_ports_eth_addr[dest_portid], &eth->s_addr);
+}
+
+static void
+l2fwd_simple_forward(struct rte_mbuf *m, unsigned portid)
+{
 	unsigned dst_port;
 	int sent;
 	struct rte_eth_dev_tx_buffer *buffer;
 
 	dst_port = l2fwd_dst_ports[portid];
-	eth = rte_pktmbuf_mtod(m, struct ether_hdr *);
 
-	/* 02:00:00:00:00:xx */
-	tmp = &eth->d_addr.addr_bytes[0];
-	*((uint64_t *)tmp) = 0x000000000002 + ((uint64_t)dst_port << 40);
-
-	/* src addr */
-	ether_addr_copy(&l2fwd_ports_eth_addr[dst_port], &eth->s_addr);
+	if (mac_updating)
+		l2fwd_mac_updating(m, dst_port);
 
 	buffer = tx_buffer[dst_port];
 	sent = rte_eth_tx_buffer(dst_port, 0, buffer, m);
@@ -322,7 +333,11 @@ l2fwd_usage(const char *prgname)
 	printf("%s [EAL options] -- -p PORTMASK [-q NQ]\n"
 	       "  -p PORTMASK: hexadecimal bitmask of ports to configure\n"
 	       "  -q NQ: number of queue (=ports) per lcore (default is 1)\n"
-		   "  -T PERIOD: statistics will be refreshed each PERIOD seconds (0 to disable, 10 default, 86400 maximum)\n",
+		   "  -T PERIOD: statistics will be refreshed each PERIOD seconds (0 to disable, 10 default, 86400 maximum)\n"
+		   "  --[no-]mac-updating: Enable or disable MAC addresses updating (enabled by default)\n"
+		   "      When enabled:\n"
+		   "       - The source MAC address is replaced by the TX port MAC address\n"
+		   "       - The destination MAC address is replaced by 02:00:00:00:00:TX_PORT_ID\n",
 	       prgname);
 }
 
@@ -377,6 +392,29 @@ l2fwd_parse_timer_period(const char *q_arg)
 	return n;
 }
 
+static const char short_options[] =
+	"p:"  /* portmask */
+	"q:"  /* number of queues */
+	"T:"  /* timer period */
+	;
+
+#define CMD_LINE_OPT_MAC_UPDATING "mac-updating"
+#define CMD_LINE_OPT_NO_MAC_UPDATING "no-mac-updating"
+
+enum {
+	/* long options mapped to a short option */
+
+	/* first long only option value must be >= 256, so that we won't
+	 * conflict with short options */
+	CMD_LINE_OPT_MIN_NUM = 256,
+};
+
+static const struct option lgopts[] = {
+	{ CMD_LINE_OPT_MAC_UPDATING, no_argument, &mac_updating, 1},
+	{ CMD_LINE_OPT_NO_MAC_UPDATING, no_argument, &mac_updating, 0},
+	{NULL, 0, 0, 0}
+};
+
 /* Parse the argument given in the command line of the application */
 static int
 l2fwd_parse_args(int argc, char **argv)
@@ -385,13 +423,10 @@ l2fwd_parse_args(int argc, char **argv)
 	char **argvopt;
 	int option_index;
 	char *prgname = argv[0];
-	static struct option lgopts[] = {
-		{NULL, 0, 0, 0}
-	};
 
 	argvopt = argv;
 
-	while ((opt = getopt_long(argc, argvopt, "p:q:T:",
+	while ((opt = getopt_long(argc, argvopt, short_options,
 				  lgopts, &option_index)) != EOF) {
 
 		switch (opt) {
@@ -428,8 +463,7 @@ l2fwd_parse_args(int argc, char **argv)
 
 		/* long options */
 		case 0:
-			l2fwd_usage(prgname);
-			return -1;
+			break;
 
 		default:
 			l2fwd_usage(prgname);
@@ -441,7 +475,7 @@ l2fwd_parse_args(int argc, char **argv)
 		argv[optind-1] = prgname;
 
 	ret = optind-1;
-	optind = 0; /* reset getopt lib */
+	optind = 1; /* reset getopt lib */
 	return ret;
 }
 
@@ -541,6 +575,8 @@ main(int argc, char **argv)
 	ret = l2fwd_parse_args(argc, argv);
 	if (ret < 0)
 		rte_exit(EXIT_FAILURE, "Invalid L2FWD arguments\n");
+
+	printf("MAC updating %s\n", mac_updating ? "enabled" : "disabled");
 
 	/* convert to number of cycles */
 	timer_period *= rte_get_timer_hz();

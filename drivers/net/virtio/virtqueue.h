@@ -44,6 +44,7 @@
 #include "virtio_pci.h"
 #include "virtio_ring.h"
 #include "virtio_logs.h"
+#include "virtio_rxtx.h"
 
 struct rte_mbuf;
 
@@ -70,8 +71,14 @@ struct rte_mbuf;
 /**
  * Return the physical address (or virtual address in case of
  * virtio-user) of mbuf data buffer.
+ *
+ * The address is firstly casted to the word size (sizeof(uintptr_t))
+ * before casting it to uint64_t. This is to make it work with different
+ * combination of word size (64 bit and 32 bit) and virtio device
+ * (virtio-pci and virtio-user).
  */
-#define VIRTIO_MBUF_ADDR(mb, vq) (*(uint64_t *)((uintptr_t)(mb) + (vq)->offset))
+#define VIRTIO_MBUF_ADDR(mb, vq) \
+	((uint64_t)(*(uintptr_t *)((uintptr_t)(mb) + (vq)->offset)))
 #else
 #define VIRTIO_MBUF_ADDR(mb, vq) ((mb)->buf_physaddr)
 #endif
@@ -191,6 +198,12 @@ struct virtqueue {
 	void *vq_ring_virt_mem;  /**< linear address of vring*/
 	unsigned int vq_ring_size;
 
+	union {
+		struct virtnet_rx rxq;
+		struct virtnet_tx txq;
+		struct virtnet_ctl cq;
+	};
+
 	phys_addr_t vq_ring_mem; /**< physical address of vring,
 				  * or virtual address for virtio_user. */
 
@@ -204,7 +217,6 @@ struct virtqueue {
 	uint16_t  vq_queue_index;   /**< PCI queue index */
 	uint16_t offset; /**< relative offset to obtain addr in mbuf */
 	uint16_t  *notify_addr;
-	int configured;
 	struct rte_mbuf **sw_ring;  /**< RX software ring. */
 	struct vq_desc_extra vq_descx[0];
 };
@@ -223,6 +235,7 @@ struct virtqueue {
  */
 struct virtio_net_hdr {
 #define VIRTIO_NET_HDR_F_NEEDS_CSUM 1    /**< Use csum_start,csum_offset*/
+#define VIRTIO_NET_HDR_F_DATA_VALID 2    /**< Checksum is valid */
 	uint8_t flags;
 #define VIRTIO_NET_HDR_GSO_NONE     0    /**< Not a GSO frame */
 #define VIRTIO_NET_HDR_GSO_TCPV4    1    /**< GSO frame, IPv4 TCP (TSO) */
@@ -267,7 +280,21 @@ vring_desc_init(struct vring_desc *dp, uint16_t n)
 /**
  * Tell the backend not to interrupt us.
  */
-void virtqueue_disable_intr(struct virtqueue *vq);
+static inline void
+virtqueue_disable_intr(struct virtqueue *vq)
+{
+	vq->vq_ring.avail->flags |= VRING_AVAIL_F_NO_INTERRUPT;
+}
+
+/**
+ * Tell the backend to interrupt us.
+ */
+static inline void
+virtqueue_enable_intr(struct virtqueue *vq)
+{
+	vq->vq_ring.avail->flags &= (~VRING_AVAIL_F_NO_INTERRUPT);
+}
+
 /**
  *  Dump virtqueue internal structures, for debug purpose only.
  */
@@ -323,7 +350,7 @@ virtqueue_notify(struct virtqueue *vq)
 	 * For virtio on IA, the notificaiton is through io port operation
 	 * which is a serialization instruction itself.
 	 */
-	vq->hw->vtpci_ops->notify_queue(vq->hw, vq);
+	VTPCI_OPS(vq->hw)->notify_queue(vq->hw, vq);
 }
 
 #ifdef RTE_LIBRTE_VIRTIO_DEBUG_DUMP

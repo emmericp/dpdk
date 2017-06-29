@@ -140,8 +140,15 @@ nicvf_base_init(struct nicvf *nic)
 	if (nic->subsystem_device_id == 0)
 		return NICVF_ERR_BASE_INIT;
 
-	if (nicvf_hw_version(nic) == NICVF_PASS2)
-		nic->hwcap |= NICVF_CAP_TUNNEL_PARSING;
+	if (nicvf_hw_version(nic) == PCI_SUB_DEVICE_ID_CN88XX_PASS2_NICVF)
+		nic->hwcap |= NICVF_CAP_TUNNEL_PARSING | NICVF_CAP_CQE_RX2;
+
+	if (nicvf_hw_version(nic) == PCI_SUB_DEVICE_ID_CN81XX_NICVF)
+		nic->hwcap |= NICVF_CAP_TUNNEL_PARSING | NICVF_CAP_CQE_RX2;
+
+	if (nicvf_hw_version(nic) == PCI_SUB_DEVICE_ID_CN83XX_NICVF)
+		nic->hwcap |= NICVF_CAP_TUNNEL_PARSING | NICVF_CAP_CQE_RX2 |
+				NICVF_CAP_DISABLE_APAD;
 
 	return NICVF_OK;
 }
@@ -494,9 +501,9 @@ nicvf_qsize_rbdr_roundup(uint32_t val)
 }
 
 int
-nicvf_qset_rbdr_precharge(struct nicvf *nic, uint16_t ridx,
-			  rbdr_pool_get_handler handler,
-			  void *opaque, uint32_t max_buffs)
+nicvf_qset_rbdr_precharge(void *dev, struct nicvf *nic,
+			  uint16_t ridx, rbdr_pool_get_handler handler,
+			  uint32_t max_buffs)
 {
 	struct rbdr_entry_t *desc, *desc0;
 	struct nicvf_rbdr *rbdr = nic->rbdr;
@@ -511,7 +518,7 @@ nicvf_qset_rbdr_precharge(struct nicvf *nic, uint16_t ridx,
 		if (count >= max_buffs)
 			break;
 		desc0 = desc + count;
-		phy = handler(opaque);
+		phy = handler(dev, nic);
 		if (phy) {
 			desc0->full_addr = phy;
 			count++;
@@ -717,6 +724,24 @@ nicvf_vlan_hw_strip(struct nicvf *nic, bool enable)
 		val |= (STRIP_FIRST_VLAN << 25);
 	else
 		val &= ~((STRIP_SECOND_VLAN | STRIP_FIRST_VLAN) << 25);
+
+	nicvf_reg_write(nic, NIC_VNIC_RQ_GEN_CFG, val);
+}
+
+void
+nicvf_apad_config(struct nicvf *nic, bool enable)
+{
+	uint64_t val;
+
+	/* APAD always enabled in this device */
+	if (!(nic->hwcap & NICVF_CAP_DISABLE_APAD))
+		return;
+
+	val = nicvf_reg_read(nic, NIC_VNIC_RQ_GEN_CFG);
+	if (enable)
+		val &= ~(1ULL << NICVF_QS_RQ_DIS_APAD_SHIFT);
+	else
+		val |= (1ULL << NICVF_QS_RQ_DIS_APAD_SHIFT);
 
 	nicvf_reg_write(nic, NIC_VNIC_RQ_GEN_CFG, val);
 }

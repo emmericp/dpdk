@@ -158,7 +158,7 @@ Configurations before running DPDK
 
       cd dpdk_folder
 
-      tools/cpu_layout.py
+      usertools/cpu_layout.py
 
    Or run ``lscpu`` to check the the cores on each socket.
 
@@ -192,10 +192,10 @@ Configurations before running DPDK
 
 
       # Bind ports 82:00.0 and 85:00.0 to dpdk driver
-      ./dpdk_folder/tools/dpdk-devbind.py -b igb_uio 82:00.0 85:00.0
+      ./dpdk_folder/usertools/dpdk-devbind.py -b igb_uio 82:00.0 85:00.0
 
       # Check the port driver status
-      ./dpdk_folder/tools/dpdk-devbind.py --status
+      ./dpdk_folder/usertools/dpdk-devbind.py --status
 
    See ``dpdk-devbind.py --help`` for more details.
 
@@ -246,7 +246,7 @@ See :numref:`figure_intel_perf_test_setup` for the performance test setup.
 
 7. The command line of running l3fwd would be something like the followings::
 
-      ./l3fwd -c 0x3c0000 -n 4 -w 82:00.0 -w 85:00.0 \
+      ./l3fwd -l 18-21 -n 4 -w 82:00.0 -w 85:00.0 \
               -- -p 0x3 --config '(0,0,18),(0,1,19),(1,0,20),(1,1,21)'
 
    This means that the application uses core 18 for port 0, queue pair 0 forwarding, core 19 for port 0, queue pair 1 forwarding,

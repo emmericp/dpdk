@@ -30,7 +30,7 @@
 # OF THE POSSIBILITY OF SUCH DAMAGE.
 
 Name: dpdk
-Version: 16.07
+Version: 17.05
 Release: 1
 Packager: packaging@6wind.com
 URL: http://dpdk.org
@@ -40,12 +40,21 @@ Summary: Data Plane Development Kit core
 Group: System Environment/Libraries
 License: BSD and LGPLv2 and GPLv2
 
-ExclusiveArch: i686, x86_64
+ExclusiveArch: i686 x86_64 aarch64
+%ifarch aarch64
+%global machine armv8a
+%global target arm64-%{machine}-linuxapp-gcc
+%global config arm64-%{machine}-linuxapp-gcc
+%else
 %global machine default
 %global target %{_arch}-%{machine}-linuxapp-gcc
 %global config %{_arch}-native-linuxapp-gcc
+%endif
 
-BuildRequires: kernel-devel, kernel-headers, libpcap-devel, xen-devel
+BuildRequires: kernel-devel, kernel-headers, libpcap-devel
+%ifarch i686 x86_64
+BuildRequires: xen-devel
+%endif
 BuildRequires: doxygen, python-sphinx, inkscape
 BuildRequires: texlive-collection-latexextra
 
@@ -81,7 +90,9 @@ sed -ri 's,(RTE_BUILD_SHARED_LIB=).*,\1y,' %{target}/.config
 sed -ri 's,(RTE_NEXT_ABI=).*,\1n,'         %{target}/.config
 sed -ri 's,(LIBRTE_VHOST=).*,\1y,'         %{target}/.config
 sed -ri 's,(LIBRTE_PMD_PCAP=).*,\1y,'      %{target}/.config
+%ifarch i686 x86_64
 sed -ri 's,(LIBRTE_PMD_XENVIRT=).*,\1y,'   %{target}/.config
+%endif
 make O=%{target} %{?_smp_mflags}
 make O=%{target} doc
 
@@ -94,7 +105,7 @@ make install O=%{target} DESTDIR=%{buildroot} \
 
 %files
 %dir %{_datadir}/dpdk
-%{_datadir}/dpdk/tools
+%{_datadir}/dpdk/usertools
 /lib/modules/%(uname -r)/extra/*
 %{_sbindir}/*
 %{_bindir}/*
@@ -103,7 +114,7 @@ make install O=%{target} DESTDIR=%{buildroot} \
 %files devel
 %{_includedir}/dpdk
 %{_datadir}/dpdk/mk
-%{_datadir}/dpdk/scripts
+%{_datadir}/dpdk/buildtools
 %{_datadir}/dpdk/%{target}
 %{_datadir}/dpdk/examples
 

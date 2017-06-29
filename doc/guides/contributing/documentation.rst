@@ -332,7 +332,7 @@ Whitespace
 Section Headers
 ~~~~~~~~~~~~~~~
 
-* Section headers should use the use the following underline formats::
+* Section headers should use the following underline formats::
 
    Level 1 Heading
    ===============
@@ -380,11 +380,10 @@ Lists
 
      #. Item one.
 
-     #. Item two is a long line that is wrapped and then indented
-        to match the start of the e first line.
-
      #. Item two is a long line that is wrapped and then indented to match
         the start of the previous line.
+
+     #. Item three.
 
 * Definition lists can be written with or without a bullet::
 
@@ -458,8 +457,8 @@ Code and Literal block sections
   For long literal lines that exceed that limit try to wrap the text at sensible locations.
   For example a long command line could be documented like this and still work if copied directly from the docs::
 
-     build/app/testpmd -c7 -n3 --vdev=eth_pcap0,iface=eth0     \
-                               --vdev=eth_pcap1,iface=eth1     \
+     build/app/testpmd -l 0-2 -n3 --vdev=net_pcap0,iface=eth0     \
+                               --vdev=net_pcap1,iface=eth1     \
                                -- -i --nb-cores=2 --nb-ports=2 \
                                   --total-num-mbufs=2048
 
@@ -477,7 +476,7 @@ Images
 
 * `Inkscape <http://inkscape.org>`_ is the recommended graphics editor for creating the images.
   Use some of the older images in ``doc/guides/prog_guide/img/`` as a template, for example ``mbuf1.svg``
-  or ``ring-enqueue.svg``.
+  or ``ring-enqueue1.svg``.
 
 * The SVG images should include a copyright notice, as an XML comment.
 
@@ -631,7 +630,7 @@ The following are some guidelines for use of Doxygen in the DPDK API documentati
       * @param devargs
       *  A pointer to a strings array describing the new device
       *  to be attached. The strings should be a pci address like
-      *  `0000:01:00.0` or **virtual** device name like `eth_pcap0`.
+      *  `0000:01:00.0` or **virtual** device name like `net_pcap0`.
       * @param port_id
       *  A pointer to a port identifier actually attached.
       *
@@ -643,7 +642,7 @@ The following are some guidelines for use of Doxygen in the DPDK API documentati
 * Doxygen supports Markdown style syntax such as bold, italics, fixed width text and lists.
   For example the second line in the ``devargs`` parameter in the previous example will be rendered as:
 
-     The strings should be a pci address like ``0000:01:00.0`` or **virtual** device name like ``eth_pcap0``.
+     The strings should be a pci address like ``0000:01:00.0`` or **virtual** device name like ``net_pcap0``.
 
 * Use ``-`` instead of ``*`` for lists within the Doxygen comment since the latter can get confused with the comment delimiter.
 

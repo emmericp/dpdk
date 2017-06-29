@@ -359,6 +359,9 @@ int t4_wr_mbox_meat_timeout(struct adapter *adap, int mbox,
 	struct mbox_entry entry;
 	u32 pcie_fw = 0;
 
+	if (!temp)
+		return -ENOMEM;
+
 	if ((size & 15) || size > MBOX_LEN) {
 		free(temp);
 		return -EINVAL;
@@ -1532,7 +1535,7 @@ int t4_seeprom_write(struct adapter *adapter, u32 addr, u32 data)
 {
 	unsigned int base = adapter->params.pci.vpd_cap_addr;
 	int ret;
-	u32 stats_reg;
+	u32 stats_reg = 0;
 	int max_poll;
 
 	/* VPD Accesses must alway be 4-byte aligned!

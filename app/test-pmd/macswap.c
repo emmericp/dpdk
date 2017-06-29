@@ -56,7 +56,6 @@
 #include <rte_lcore.h>
 #include <rte_atomic.h>
 #include <rte_branch_prediction.h>
-#include <rte_ring.h>
 #include <rte_memory.h>
 #include <rte_mempool.h>
 #include <rte_mbuf.h>
@@ -66,6 +65,7 @@
 #include <rte_ethdev.h>
 #include <rte_ip.h>
 #include <rte_string_fns.h>
+#include <rte_flow.h>
 
 #include "testpmd.h"
 
@@ -113,6 +113,8 @@ pkt_burst_mac_swap(struct fwd_stream *fs)
 		ol_flags = PKT_TX_VLAN_PKT;
 	if (txp->tx_ol_flags & TESTPMD_TX_OFFLOAD_INSERT_QINQ)
 		ol_flags |= PKT_TX_QINQ_PKT;
+	if (txp->tx_ol_flags & TESTPMD_TX_OFFLOAD_MACSEC)
+		ol_flags |= PKT_TX_MACSEC;
 	for (i = 0; i < nb_rx; i++) {
 		if (likely(i < nb_rx - 1))
 			rte_prefetch0(rte_pktmbuf_mtod(pkts_burst[i + 1],

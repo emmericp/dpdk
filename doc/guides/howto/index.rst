@@ -28,8 +28,8 @@
     (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
     OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
-How To User Guides
-==================
+HowTo Guides
+============
 
 .. toctree::
     :maxdepth: 2
@@ -38,3 +38,7 @@ How To User Guides
     lm_bond_virtio_sriov
     lm_virtio_vhost_user
     flow_bifurcation
+    pvp_reference_benchmark
+    vfd
+    virtio_user_for_container_networking
+    virtio_user_as_exceptional_path

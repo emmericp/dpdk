@@ -40,11 +40,9 @@ include $(RTE_SDK)/mk/rte.vars.mk
 DIRS-$(CONFIG_RTE_LIBRTE_PMD_BOND) += bond
 DIRS-y += cmdline
 DIRS-$(CONFIG_RTE_LIBRTE_DISTRIBUTOR) += distributor
-ifneq ($(ICP_ROOT),)
-DIRS-y += dpdk_qat
-endif
 DIRS-y += ethtool
 DIRS-y += exception_path
+DIRS-$(CONFIG_RTE_LIBRTE_EFD) += server_node_efd
 DIRS-y += helloworld
 DIRS-$(CONFIG_RTE_LIBRTE_PIPELINE) += ip_pipeline
 ifeq ($(CONFIG_RTE_LIBRTE_LPM),y)
@@ -61,7 +59,6 @@ ifneq ($(PQOS_INSTALL_PATH),)
 DIRS-y += l2fwd-cat
 endif
 DIRS-$(CONFIG_RTE_LIBRTE_CRYPTODEV) += l2fwd-crypto
-DIRS-$(CONFIG_RTE_LIBRTE_IVSHMEM) += l2fwd-ivshmem
 DIRS-$(CONFIG_RTE_LIBRTE_JOBSTATS) += l2fwd-jobstats
 DIRS-y += l2fwd-keepalive
 DIRS-y += l2fwd-keepalive/ka-agent
@@ -78,6 +75,9 @@ DIRS-$(CONFIG_RTE_LIBRTE_LPM) += load_balancer
 DIRS-y += multi_process
 DIRS-y += netmap_compat/bridge
 DIRS-$(CONFIG_RTE_LIBRTE_REORDER) += packet_ordering
+ifeq ($(CONFIG_RTE_ARCH_X86_64),y)
+DIRS-y += performance-thread
+endif
 DIRS-$(CONFIG_RTE_LIBRTE_IEEE1588) += ptpclient
 DIRS-$(CONFIG_RTE_LIBRTE_METER) += qos_meter
 DIRS-$(CONFIG_RTE_LIBRTE_SCHED) += qos_sched

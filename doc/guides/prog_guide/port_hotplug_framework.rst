@@ -80,7 +80,7 @@ Port Hotplug API overview
         returns the attached port number. Before calling the API, the device
         should be recognized by an userspace driver I/O framework. The API
         receives a pci address like "0000:01:00.0" or a virtual device name
-        like "eth_pcap0,iface=eth0". In the case of virtual device name, the
+        like "net_pcap0,iface=eth0". In the case of virtual device name, the
         format is the same as the general "--vdev" option of DPDK.
 
 *       Detaching a port
@@ -102,9 +102,9 @@ Limitations
 *       The framework can only be enabled with Linux. BSD is not supported.
 
 *       To detach a port, the port should be backed by a device that igb_uio
-        manages. VFIO is not supported.
+        or VFIO manages.
 
 *       Not all PMDs support detaching feature.
         To know whether a PMD can support detaching, search for the
-        "RTE_PCI_DRV_DETACHABLE" flag in PMD implementation. If the flag is
+        "RTE_ETH_DEV_DETACHABLE" flag in rte_eth_dev::data::dev_flags. If the flag is
         defined in the PMD, detaching is supported.

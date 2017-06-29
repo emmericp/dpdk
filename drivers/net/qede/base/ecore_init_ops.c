@@ -63,8 +63,8 @@ static enum _ecore_status_t ecore_init_rt(struct ecore_hwfn *p_hwfn,
 {
 	u32 *p_init_val = &p_hwfn->rt_data.init_val[rt_offset];
 	bool *p_valid = &p_hwfn->rt_data.b_valid[rt_offset];
-	enum _ecore_status_t rc = ECORE_SUCCESS;
 	u16 i, segment;
+	enum _ecore_status_t rc = ECORE_SUCCESS;
 
 	/* Since not all RT entries are initialized, go over the RT and
 	 * for each segment of initialized values use DMA.
@@ -190,19 +190,19 @@ static enum _ecore_status_t ecore_init_cmd_array(struct ecore_hwfn *p_hwfn,
 						 bool b_must_dmae,
 						 bool b_can_dmae)
 {
+	u32 dmae_array_offset = OSAL_LE32_TO_CPU(cmd->args.array_offset);
+	u32 data = OSAL_LE32_TO_CPU(cmd->data);
+	u32 addr = GET_FIELD(data, INIT_WRITE_OP_ADDRESS) << 2;
 #ifdef CONFIG_ECORE_ZIPPED_FW
 	u32 offset, output_len, input_len, max_size;
 #endif
-	u32 dmae_array_offset = OSAL_LE32_TO_CPU(cmd->args.array_offset);
 	struct ecore_dev *p_dev = p_hwfn->p_dev;
-	enum _ecore_status_t rc = ECORE_SUCCESS;
 	union init_array_hdr *hdr;
 	const u32 *array_data;
-	u32 size, addr, data;
+	enum _ecore_status_t rc = ECORE_SUCCESS;
+	u32 size;
 
 	array_data = p_dev->fw_data->arr_data;
-	data = OSAL_LE32_TO_CPU(cmd->data);
-	addr = GET_FIELD(data, INIT_WRITE_OP_ADDRESS) << 2;
 
 	hdr = (union init_array_hdr *)
 		(uintptr_t)(array_data + dmae_array_offset);
@@ -251,9 +251,9 @@ static enum _ecore_status_t ecore_init_cmd_array(struct ecore_hwfn *p_hwfn,
 							   b_can_dmae);
 				if (rc)
 					break;
-			}
-			break;
 		}
+		break;
+	}
 	case INIT_ARR_STANDARD:
 		size = GET_FIELD(data, INIT_ARRAY_STANDARD_HDR_SIZE);
 		rc = ecore_init_array_dmae(p_hwfn, p_ptt, addr,
@@ -272,13 +272,10 @@ static enum _ecore_status_t ecore_init_cmd_wr(struct ecore_hwfn *p_hwfn,
 					      struct init_write_op *p_cmd,
 					      bool b_can_dmae)
 {
+	u32 data = OSAL_LE32_TO_CPU(p_cmd->data);
+	bool b_must_dmae = GET_FIELD(data, INIT_WRITE_OP_WIDE_BUS);
+	u32 addr = GET_FIELD(data, INIT_WRITE_OP_ADDRESS) << 2;
 	enum _ecore_status_t rc = ECORE_SUCCESS;
-	bool b_must_dmae;
-	u32 addr, data;
-
-	data = OSAL_LE32_TO_CPU(p_cmd->data);
-	b_must_dmae = GET_FIELD(data, INIT_WRITE_OP_WIDE_BUS);
-	addr = GET_FIELD(data, INIT_WRITE_OP_ADDRESS) << 2;
 
 	/* Sanitize */
 	if (b_must_dmae && !b_can_dmae) {
@@ -452,10 +449,10 @@ enum _ecore_status_t ecore_init_run(struct ecore_hwfn *p_hwfn,
 				    int phase, int phase_id, int modes)
 {
 	struct ecore_dev *p_dev = p_hwfn->p_dev;
-	enum _ecore_status_t rc = ECORE_SUCCESS;
 	u32 cmd_num, num_init_ops;
 	union init_op *init_ops;
 	bool b_dmae = false;
+	enum _ecore_status_t rc = ECORE_SUCCESS;
 
 	num_init_ops = p_dev->fw_data->init_ops_size;
 	init_ops = p_dev->fw_data->init_ops;
@@ -525,7 +522,7 @@ void ecore_gtt_init(struct ecore_hwfn *p_hwfn)
 		 * not too bright, but it should work on the simple FPGA/EMUL
 		 * scenarios.
 		 */
-		bool initialized = false; /* @DPDK */
+		static bool initialized;
 		int poll_cnt = 500;
 		u32 val;
 
@@ -575,7 +572,7 @@ enum _ecore_status_t ecore_init_fw_data(struct ecore_dev *p_dev,
 
 	buf_hdr = (struct bin_buffer_hdr *)(uintptr_t)data;
 
-	offset = buf_hdr[BIN_BUF_FW_VER_INFO].offset;
+	offset = buf_hdr[BIN_BUF_INIT_FW_VER_INFO].offset;
 	fw->fw_ver_info = (struct fw_ver_info *)((uintptr_t)(data + offset));
 
 	offset = buf_hdr[BIN_BUF_INIT_CMD].offset;

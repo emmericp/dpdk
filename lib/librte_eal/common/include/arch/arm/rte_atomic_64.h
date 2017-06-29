@@ -43,43 +43,26 @@ extern "C" {
 
 #include "generic/rte_atomic.h"
 
-#define dmb(opt)  do { asm volatile("dmb " #opt : : : "memory"); } while (0)
+#define dsb(opt)  { asm volatile("dsb " #opt : : : "memory"); }
+#define dmb(opt)  { asm volatile("dmb " #opt : : : "memory"); }
 
-/**
- * General memory barrier.
- *
- * Guarantees that the LOAD and STORE operations generated before the
- * barrier occur before the LOAD and STORE operations generated after.
- * This function is architecture dependent.
- */
-static inline void rte_mb(void)
-{
-	dmb(ish);
-}
+#define rte_mb() dsb(sy)
 
-/**
- * Write memory barrier.
- *
- * Guarantees that the STORE operations generated before the barrier
- * occur before the STORE operations generated after.
- * This function is architecture dependent.
- */
-static inline void rte_wmb(void)
-{
-	dmb(ishst);
-}
+#define rte_wmb() dsb(st)
 
-/**
- * Read memory barrier.
- *
- * Guarantees that the LOAD operations generated before the barrier
- * occur before the LOAD operations generated after.
- * This function is architecture dependent.
- */
-static inline void rte_rmb(void)
-{
-	dmb(ishld);
-}
+#define rte_rmb() dsb(ld)
+
+#define rte_smp_mb() dmb(ish)
+
+#define rte_smp_wmb() dmb(ishst)
+
+#define rte_smp_rmb() dmb(ishld)
+
+#define rte_io_mb() rte_mb()
+
+#define rte_io_wmb() rte_wmb()
+
+#define rte_io_rmb() rte_rmb()
 
 #ifdef __cplusplus
 }

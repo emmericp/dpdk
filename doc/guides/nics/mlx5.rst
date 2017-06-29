@@ -30,10 +30,10 @@
 MLX5 poll mode driver
 =====================
 
-The MLX5 poll mode driver library (**librte_pmd_mlx5**) provides support for
-**Mellanox ConnectX-4** and **Mellanox ConnectX-4 Lx** families of
-10/25/40/50/100 Gb/s adapters as well as their virtual functions (VF) in
-SR-IOV context.
+The MLX5 poll mode driver library (**librte_pmd_mlx5**) provides support
+for **Mellanox ConnectX-4**, **Mellanox ConnectX-4 Lx** and **Mellanox
+ConnectX-5** families of 10/25/40/50/100 Gb/s adapters as well as their
+virtual functions (VF) in SR-IOV context.
 
 Information and documentation about these adapters can be found on the
 `Mellanox website <http://www.mellanox.com>`__. Help is also provided by the
@@ -84,16 +84,21 @@ Features
 - Promiscuous mode.
 - Multicast promiscuous mode.
 - Hardware checksum offloads.
-- Flow director (RTE_FDIR_MODE_PERFECT and RTE_FDIR_MODE_PERFECT_MAC_VLAN).
+- Flow director (RTE_FDIR_MODE_PERFECT, RTE_FDIR_MODE_PERFECT_MAC_VLAN and
+  RTE_ETH_FDIR_REJECT).
+- Flow API.
 - Secondary process TX is supported.
 - KVM and VMware ESX SR-IOV modes are supported.
+- RSS hash result is supported.
+- Hardware TSO.
+- Hardware checksum TX offload for VXLAN and GRE.
 
 Limitations
 -----------
 
 - Inner RSS for VXLAN frames is not supported yet.
 - Port statistics through software counters only.
-- Hardware checksum offloads for VXLAN inner header are not supported yet.
+- Hardware checksum RX offloads for VXLAN inner header are not supported yet.
 - Secondary process RX is not supported.
 
 Configuration
@@ -178,13 +183,47 @@ Run-time configuration
 
 - ``txq_mpw_en`` parameter [int]
 
-  A nonzero value enables multi-packet send. This feature allows the TX
-  burst function to pack up to five packets in two descriptors in order to
-  save PCI bandwidth and improve performance at the cost of a slightly
-  higher CPU usage.
+  A nonzero value enables multi-packet send (MPS) for ConnectX-4 Lx and
+  enhanced multi-packet send (Enhanced MPS) for ConnectX-5. MPS allows the
+  TX burst function to pack up multiple packets in a single descriptor
+  session in order to save PCI bandwidth and improve performance at the
+  cost of a slightly higher CPU usage. When ``txq_inline`` is set along
+  with ``txq_mpw_en``, TX burst function tries to copy entire packet data
+  on to TX descriptor instead of including pointer of packet only if there
+  is enough room remained in the descriptor. ``txq_inline`` sets
+  per-descriptor space for either pointers or inlined packets. In addition,
+  Enhanced MPS supports hybrid mode - mixing inlined packets and pointers
+  in the same descriptor.
 
-  It is currently only supported on the ConnectX-4 Lx family of adapters.
-  Enabled by default.
+  This option cannot be used in conjunction with ``tso`` below. When ``tso``
+  is set, ``txq_mpw_en`` is disabled.
+
+  It is currently only supported on the ConnectX-4 Lx and ConnectX-5
+  families of adapters. Enabled by default.
+
+- ``txq_mpw_hdr_dseg_en`` parameter [int]
+
+  A nonzero value enables including two pointers in the first block of TX
+  descriptor. This can be used to lessen CPU load for memory copy.
+
+  Effective only when Enhanced MPS is supported. Disabled by default.
+
+- ``txq_max_inline_len`` parameter [int]
+
+  Maximum size of packet to be inlined. This limits the size of packet to
+  be inlined. If the size of a packet is larger than configured value, the
+  packet isn't inlined even though there's enough space remained in the
+  descriptor. Instead, the packet is included with pointer.
+
+  Effective only when Enhanced MPS is supported. The default value is 256.
+
+- ``tso`` parameter [int]
+
+  A nonzero value enables hardware TSO.
+  When hardware TSO is enabled, packets marked with TCP segmentation
+  offload will be divided into segments by the hardware.
+
+  Disabled by default.
 
 Prerequisites
 -------------
@@ -205,8 +244,8 @@ DPDK and must be installed separately:
 
 - **libmlx5**
 
-  Low-level user space driver library for Mellanox ConnectX-4 devices,
-  it is automatically loaded by libibverbs.
+  Low-level user space driver library for Mellanox ConnectX-4/ConnectX-5
+  devices, it is automatically loaded by libibverbs.
 
   This library basically implements send/receive calls to the hardware
   queues.
@@ -220,14 +259,15 @@ DPDK and must be installed separately:
   Unlike most other PMDs, these modules must remain loaded and bound to
   their devices:
 
-  - mlx5_core: hardware driver managing Mellanox ConnectX-4 devices and
-    related Ethernet kernel network devices.
+  - mlx5_core: hardware driver managing Mellanox ConnectX-4/ConnectX-5
+    devices and related Ethernet kernel network devices.
   - mlx5_ib: InifiniBand device driver.
   - ib_uverbs: user space driver for Verbs (entry point for libibverbs).
 
 - **Firmware update**
 
-  Mellanox OFED releases include firmware updates for ConnectX-4 adapters.
+  Mellanox OFED releases include firmware updates for ConnectX-4/ConnectX-5
+  adapters.
 
   Because each release provides new features, these updates must be applied to
   match the kernel modules and libraries they come with.
@@ -239,12 +279,13 @@ DPDK and must be installed separately:
 
 Currently supported by DPDK:
 
-- Mellanox OFED **3.3-1.0.0.0** and **3.3-2.0.0.0**.
+- Mellanox OFED version: **4.0-2.0.0.0**
+- firmware version:
 
-- Minimum firmware version:
-
-  - ConnectX-4: **12.16.1006**
-  - ConnectX-4 Lx: **14.16.1006**
+  - ConnectX-4: **12.18.2000**
+  - ConnectX-4 Lx: **14.18.2000**
+  - ConnectX-5: **16.19.1200**
+  - ConnectX-5 Ex: **16.19.1200**
 
 Getting Mellanox OFED
 ~~~~~~~~~~~~~~~~~~~~~
@@ -266,6 +307,29 @@ required from that distribution.
    this DPDK release was developed and tested against is strongly
    recommended. Please check the `prerequisites`_.
 
+Supported NICs
+--------------
+
+* Mellanox(R) ConnectX(R)-4 10G MCX4111A-XCAT (1x10G)
+* Mellanox(R) ConnectX(R)-4 10G MCX4121A-XCAT (2x10G)
+* Mellanox(R) ConnectX(R)-4 25G MCX4111A-ACAT (1x25G)
+* Mellanox(R) ConnectX(R)-4 25G MCX4121A-ACAT (2x25G)
+* Mellanox(R) ConnectX(R)-4 40G MCX4131A-BCAT (1x40G)
+* Mellanox(R) ConnectX(R)-4 40G MCX413A-BCAT (1x40G)
+* Mellanox(R) ConnectX(R)-4 40G MCX415A-BCAT (1x40G)
+* Mellanox(R) ConnectX(R)-4 50G MCX4131A-GCAT (1x50G)
+* Mellanox(R) ConnectX(R)-4 50G MCX413A-GCAT (1x50G)
+* Mellanox(R) ConnectX(R)-4 50G MCX414A-BCAT (2x50G)
+* Mellanox(R) ConnectX(R)-4 50G MCX415A-GCAT (2x50G)
+* Mellanox(R) ConnectX(R)-4 50G MCX416A-BCAT (2x50G)
+* Mellanox(R) ConnectX(R)-4 50G MCX416A-GCAT (2x50G)
+* Mellanox(R) ConnectX(R)-4 50G MCX415A-CCAT (1x100G)
+* Mellanox(R) ConnectX(R)-4 100G MCX416A-CCAT (2x100G)
+* Mellanox(R) ConnectX(R)-4 Lx 10G MCX4121A-XCAT (2x10G)
+* Mellanox(R) ConnectX(R)-4 Lx 25G MCX4121A-ACAT (2x25G)
+* Mellanox(R) ConnectX(R)-5 100G MCX556A-ECAT (2x100G)
+* Mellanox(R) ConnectX(R)-5 Ex EN 100G MCX516A-CDAT (2x100G)
+
 Notes for testpmd
 -----------------
 
@@ -286,8 +350,8 @@ behavior as librte_pmd_mlx4:
 Usage example
 -------------
 
-This section demonstrates how to launch **testpmd** with Mellanox ConnectX-4
-devices managed by librte_pmd_mlx5.
+This section demonstrates how to launch **testpmd** with Mellanox
+ConnectX-4/ConnectX-5 devices managed by librte_pmd_mlx5.
 
 #. Load the kernel modules:
 
@@ -354,7 +418,7 @@ devices managed by librte_pmd_mlx5.
 
    .. code-block:: console
 
-      testpmd -c 0xff00 -n 4 -w 05:00.0 -w 05:00.1 -w 06:00.0 -w 06:00.1 -- --rxq=2 --txq=2 -i
+      testpmd -l 8-15 -n 4 -w 05:00.0 -w 05:00.1 -w 06:00.0 -w 06:00.1 -- --rxq=2 --txq=2 -i
 
    Example output:
 

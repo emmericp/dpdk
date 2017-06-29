@@ -50,7 +50,11 @@
 #   - can define CPU_ASFLAGS variable (overriden by cmdline value) that
 #     overrides the one defined in arch.
 #
+ifneq ($(wildcard $(RTE_SDK)/mk/machine/$(RTE_MACHINE)/rte.vars.mk),)
 include $(RTE_SDK)/mk/machine/$(RTE_MACHINE)/rte.vars.mk
+else
+MACHINE_CFLAGS := -march=$(RTE_MACHINE)
+endif
 
 #
 # arch:
@@ -121,9 +125,6 @@ LDFLAGS += -L$(RTE_OUTPUT)/lib
 ifeq ($(BUILDING_RTE_SDK),1)
 # building sdk
 CFLAGS += -include $(RTE_OUTPUT)/include/rte_config.h
-ifeq ($(CONFIG_RTE_INSECURE_FUNCTION_WARNING),y)
-CFLAGS += -include rte_warnings.h
-endif
 else
 # if we are building an external application, include SDK's lib and
 # includes too
@@ -132,9 +133,6 @@ ifneq ($(wildcard $(RTE_OUTPUT)/include/rte_config.h),)
 CFLAGS += -include $(RTE_OUTPUT)/include/rte_config.h
 endif
 CFLAGS += -include $(RTE_SDK_BIN)/include/rte_config.h
-ifeq ($(CONFIG_RTE_INSECURE_FUNCTION_WARNING),y)
-CFLAGS += -include rte_warnings.h
-endif
 LDFLAGS += -L$(RTE_SDK_BIN)/lib
 endif
 

@@ -39,6 +39,17 @@
 #include "qat_crypto.h"
 #include "qat_logs.h"
 
+static const struct rte_cryptodev_capabilities qat_cpm16_capabilities[] = {
+	QAT_BASE_CPM16_SYM_CAPABILITIES,
+	RTE_CRYPTODEV_END_OF_CAPABILITIES_LIST()
+};
+
+static const struct rte_cryptodev_capabilities qat_cpm17_capabilities[] = {
+	QAT_BASE_CPM16_SYM_CAPABILITIES,
+	QAT_EXTRA_CPM17_SYM_CAPABILITIES,
+	RTE_CRYPTODEV_END_OF_CAPABILITIES_LIST()
+};
+
 static struct rte_cryptodev_ops crypto_qat_ops = {
 
 		/* Device related operations */
@@ -67,9 +78,18 @@ static struct rte_cryptodev_ops crypto_qat_ops = {
  * The set of PCI devices this driver supports
  */
 
-static struct rte_pci_id pci_id_qat_map[] = {
+static const struct rte_pci_id pci_id_qat_map[] = {
 		{
 			RTE_PCI_DEVICE(0x8086, 0x0443),
+		},
+		{
+			RTE_PCI_DEVICE(0x8086, 0x37c9),
+		},
+		{
+			RTE_PCI_DEVICE(0x8086, 0x19e3),
+		},
+		{
+			RTE_PCI_DEVICE(0x8086, 0x6f55),
 		},
 		{.device_id = 0},
 };
@@ -82,9 +102,9 @@ crypto_qat_dev_init(__attribute__((unused)) struct rte_cryptodev_driver *crypto_
 
 	PMD_INIT_FUNC_TRACE();
 	PMD_DRV_LOG(DEBUG, "Found crypto device at %02x:%02x.%x",
-		cryptodev->pci_dev->addr.bus,
-		cryptodev->pci_dev->addr.devid,
-		cryptodev->pci_dev->addr.function);
+		RTE_DEV_TO_PCI(cryptodev->device)->addr.bus,
+		RTE_DEV_TO_PCI(cryptodev->device)->addr.devid,
+		RTE_DEV_TO_PCI(cryptodev->device)->addr.function);
 
 	cryptodev->dev_type = RTE_CRYPTODEV_QAT_SYM_PMD;
 	cryptodev->dev_ops = &crypto_qat_ops;
@@ -94,10 +114,25 @@ crypto_qat_dev_init(__attribute__((unused)) struct rte_cryptodev_driver *crypto_
 
 	cryptodev->feature_flags = RTE_CRYPTODEV_FF_SYMMETRIC_CRYPTO |
 			RTE_CRYPTODEV_FF_HW_ACCELERATED |
-			RTE_CRYPTODEV_FF_SYM_OPERATION_CHAINING;
+			RTE_CRYPTODEV_FF_SYM_OPERATION_CHAINING |
+			RTE_CRYPTODEV_FF_MBUF_SCATTER_GATHER;
 
 	internals = cryptodev->data->dev_private;
 	internals->max_nb_sessions = RTE_QAT_PMD_MAX_NB_SESSIONS;
+	switch (RTE_DEV_TO_PCI(cryptodev->device)->id.device_id) {
+	case 0x0443:
+		internals->qat_dev_capabilities = qat_cpm16_capabilities;
+		break;
+	case 0x37c9:
+	case 0x19e3:
+	case 0x6f55:
+		internals->qat_dev_capabilities = qat_cpm17_capabilities;
+		break;
+	default:
+		PMD_DRV_LOG(ERR,
+			"Invalid dev_id, can't determine capabilities");
+		break;
+	}
 
 	/*
 	 * For secondary processes, we don't initialise any further as primary
@@ -113,26 +148,16 @@ crypto_qat_dev_init(__attribute__((unused)) struct rte_cryptodev_driver *crypto_
 }
 
 static struct rte_cryptodev_driver rte_qat_pmd = {
-	{
+	.pci_drv = {
 		.id_table = pci_id_qat_map,
 		.drv_flags = RTE_PCI_DRV_NEED_MAPPING,
+		.probe = rte_cryptodev_pci_probe,
+		.remove = rte_cryptodev_pci_remove,
 	},
 	.cryptodev_init = crypto_qat_dev_init,
 	.dev_private_size = sizeof(struct qat_pmd_private),
 };
 
-static int
-rte_qat_pmd_init(const char *name __rte_unused, const char *params __rte_unused)
-{
-	PMD_INIT_FUNC_TRACE();
-	return rte_cryptodev_pmd_driver_register(&rte_qat_pmd, PMD_PDEV);
-}
-
-static struct rte_driver pmd_qat_drv = {
-	.type = PMD_PDEV,
-	.init = rte_qat_pmd_init,
-};
-
-PMD_REGISTER_DRIVER(pmd_qat_drv, CRYPTODEV_NAME_QAT_SYM_PMD);
-DRIVER_REGISTER_PCI_TABLE(CRYPTODEV_NAME_QAT_SYM_PMD, pci_id_qat_map);
+RTE_PMD_REGISTER_PCI(CRYPTODEV_NAME_QAT_SYM_PMD, rte_qat_pmd.pci_drv);
+RTE_PMD_REGISTER_PCI_TABLE(CRYPTODEV_NAME_QAT_SYM_PMD, pci_id_qat_map);
 

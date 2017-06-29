@@ -7,7 +7,6 @@ DPDK_2.2 {
 	rte_eth_allmulticast_disable;
 	rte_eth_allmulticast_enable;
 	rte_eth_allmulticast_get;
-	rte_eth_copy_pci_info;
 	rte_eth_dev_allocate;
 	rte_eth_dev_allocated;
 	rte_eth_dev_attach;
@@ -19,7 +18,6 @@ DPDK_2.2 {
 	rte_eth_dev_bypass_ver_show;
 	rte_eth_dev_bypass_wd_reset;
 	rte_eth_dev_bypass_wd_timeout_show;
-	rte_eth_dev_callback_process;
 	rte_eth_dev_callback_register;
 	rte_eth_dev_callback_unregister;
 	rte_eth_dev_close;
@@ -61,10 +59,6 @@ DPDK_2.2 {
 	rte_eth_dev_set_mtu;
 	rte_eth_dev_set_rx_queue_stats_mapping;
 	rte_eth_dev_set_tx_queue_stats_mapping;
-	rte_eth_dev_set_vf_rx;
-	rte_eth_dev_set_vf_rxmode;
-	rte_eth_dev_set_vf_tx;
-	rte_eth_dev_set_vf_vlan_filter;
 	rte_eth_dev_set_vlan_offload;
 	rte_eth_dev_set_vlan_pvid;
 	rte_eth_dev_set_vlan_strip_on_queue;
@@ -78,7 +72,6 @@ DPDK_2.2 {
 	rte_eth_dev_vlan_filter;
 	rte_eth_dev_wd_timeout_store;
 	rte_eth_dma_zone_reserve;
-	rte_eth_driver_register;
 	rte_eth_led_off;
 	rte_eth_led_on;
 	rte_eth_link;
@@ -95,7 +88,6 @@ DPDK_2.2 {
 	rte_eth_rx_queue_info_get;
 	rte_eth_rx_queue_setup;
 	rte_eth_set_queue_rate_limit;
-	rte_eth_set_vf_rate_limit;
 	rte_eth_stats;
 	rte_eth_stats_get;
 	rte_eth_stats_reset;
@@ -138,4 +130,29 @@ DPDK_16.07 {
 	rte_eth_dev_get_name_by_port;
 	rte_eth_dev_get_port_by_name;
 	rte_eth_xstats_get_names;
+
 } DPDK_16.04;
+
+DPDK_17.02 {
+	global:
+
+	_rte_eth_dev_reset;
+	rte_eth_dev_fw_version_get;
+	rte_flow_create;
+	rte_flow_destroy;
+	rte_flow_flush;
+	rte_flow_query;
+	rte_flow_validate;
+
+} DPDK_16.07;
+
+DPDK_17.05 {
+	global:
+
+	rte_eth_dev_attach_secondary;
+	rte_eth_find_next;
+	rte_eth_xstats_get_by_id;
+	rte_eth_xstats_get_id_by_name;
+	rte_eth_xstats_get_names_by_id;
+
+} DPDK_17.02;

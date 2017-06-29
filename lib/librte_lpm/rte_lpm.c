@@ -321,6 +321,7 @@ rte_lpm_create_v1604(const char *name, int socket_id,
 
 	if (lpm->tbl8 == NULL) {
 		RTE_LOG(ERR, LPM, "LPM tbl8 memory allocation failed\n");
+		rte_free(lpm->rules_tbl);
 		rte_free(lpm);
 		lpm = NULL;
 		rte_free(te);
@@ -402,6 +403,7 @@ rte_lpm_free_v1604(struct rte_lpm *lpm)
 
 	rte_rwlock_write_unlock(RTE_EAL_TAILQ_RWLOCK);
 
+	rte_free(lpm->tbl8);
 	rte_free(lpm->rules_tbl);
 	rte_free(lpm);
 	rte_free(te);
@@ -940,14 +942,9 @@ add_depth_big_v20(struct rte_lpm_v20 *lpm, uint32_t ip_masked, uint8_t depth,
 
 		/* Insert new rule into the tbl8 entry. */
 		for (i = tbl8_index; i < tbl8_index + tbl8_range; i++) {
-			if (!lpm->tbl8[i].valid ||
-					lpm->tbl8[i].depth <= depth) {
-				lpm->tbl8[i].valid = VALID;
-				lpm->tbl8[i].depth = depth;
-				lpm->tbl8[i].next_hop = next_hop;
-
-				continue;
-			}
+			lpm->tbl8[i].valid = VALID;
+			lpm->tbl8[i].depth = depth;
+			lpm->tbl8[i].next_hop = next_hop;
 		}
 
 		/*
@@ -1071,14 +1068,9 @@ add_depth_big_v1604(struct rte_lpm *lpm, uint32_t ip_masked, uint8_t depth,
 
 		/* Insert new rule into the tbl8 entry. */
 		for (i = tbl8_index; i < tbl8_index + tbl8_range; i++) {
-			if (!lpm->tbl8[i].valid ||
-					lpm->tbl8[i].depth <= depth) {
-				lpm->tbl8[i].valid = VALID;
-				lpm->tbl8[i].depth = depth;
-				lpm->tbl8[i].next_hop = next_hop;
-
-				continue;
-			}
+			lpm->tbl8[i].valid = VALID;
+			lpm->tbl8[i].depth = depth;
+			lpm->tbl8[i].next_hop = next_hop;
 		}
 
 		/*
@@ -1533,7 +1525,7 @@ tbl8_recycle_check_v20(struct rte_lpm_tbl_entry_v20 *tbl8,
 		 * and if so check the rest of the entries to verify that they
 		 * are all of this depth.
 		 */
-		if (tbl8[tbl8_group_start].depth < MAX_DEPTH_TBL24) {
+		if (tbl8[tbl8_group_start].depth <= MAX_DEPTH_TBL24) {
 			for (i = (tbl8_group_start + 1); i < tbl8_group_end;
 					i++) {
 
@@ -1580,7 +1572,7 @@ tbl8_recycle_check_v1604(struct rte_lpm_tbl_entry *tbl8,
 		 * and if so check the rest of the entries to verify that they
 		 * are all of this depth.
 		 */
-		if (tbl8[tbl8_group_start].depth < MAX_DEPTH_TBL24) {
+		if (tbl8[tbl8_group_start].depth <= MAX_DEPTH_TBL24) {
 			for (i = (tbl8_group_start + 1); i < tbl8_group_end;
 					i++) {
 

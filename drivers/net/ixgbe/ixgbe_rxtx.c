@@ -1,7 +1,7 @@
 /*-
  *   BSD LICENSE
  *
- *   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
+ *   Copyright(c) 2010-2016 Intel Corporation. All rights reserved.
  *   Copyright 2014 6WIND S.A.
  *   All rights reserved.
  *
@@ -58,7 +58,6 @@
 #include <rte_lcore.h>
 #include <rte_atomic.h>
 #include <rte_branch_prediction.h>
-#include <rte_ring.h>
 #include <rte_mempool.h>
 #include <rte_malloc.h>
 #include <rte_mbuf.h>
@@ -71,6 +70,7 @@
 #include <rte_string_fns.h>
 #include <rte_errno.h>
 #include <rte_ip.h>
+#include <rte_net.h>
 
 #include "ixgbe_logs.h"
 #include "base/ixgbe_api.h"
@@ -80,13 +80,23 @@
 #include "base/ixgbe_common.h"
 #include "ixgbe_rxtx.h"
 
+#ifdef RTE_LIBRTE_IEEE1588
+#define IXGBE_TX_IEEE1588_TMST PKT_TX_IEEE1588_TMST
+#else
+#define IXGBE_TX_IEEE1588_TMST 0
+#endif
 /* Bit Mask to indicate what bits required for building TX context */
 #define IXGBE_TX_OFFLOAD_MASK (			 \
 		PKT_TX_VLAN_PKT |		 \
 		PKT_TX_IP_CKSUM |		 \
 		PKT_TX_L4_MASK |		 \
 		PKT_TX_TCP_SEG |		 \
-		PKT_TX_OUTER_IP_CKSUM)
+		PKT_TX_MACSEC |			 \
+		PKT_TX_OUTER_IP_CKSUM |		 \
+		IXGBE_TX_IEEE1588_TMST)
+
+#define IXGBE_TX_OFFLOAD_NOTSUP_MASK \
+		(PKT_TX_OFFLOAD_MASK ^ IXGBE_TX_OFFLOAD_MASK)
 
 #if 1
 #define RTE_PMD_USE_PREFETCH
@@ -99,6 +109,11 @@
 #define rte_ixgbe_prefetch(p)   rte_prefetch0(p)
 #else
 #define rte_ixgbe_prefetch(p)   do {} while (0)
+#endif
+
+#ifdef RTE_IXGBE_INC_VECTOR
+uint16_t ixgbe_xmit_fixed_burst_vec(void *tx_queue, struct rte_mbuf **tx_pkts,
+				    uint16_t nb_pkts);
 #endif
 
 /*********************************************************************
@@ -132,7 +147,7 @@ ixgbe_tx_free_bufs(struct ixgbe_tx_queue *txq)
 
 	for (i = 0; i < txq->tx_rs_thresh; ++i, ++txep) {
 		/* free buffers one at a time */
-		m = __rte_pktmbuf_prefree_seg(txep->mbuf);
+		m = rte_pktmbuf_prefree_seg(txep->mbuf);
 		txep->mbuf = NULL;
 
 		if (unlikely(m == NULL))
@@ -322,7 +337,7 @@ tx_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 
 	/* update tail pointer */
 	rte_wmb();
-	IXGBE_PCI_REG_WRITE(txq->tdt_reg_addr, txq->tx_tail);
+	IXGBE_PCI_REG_WRITE_RELAXED(txq->tdt_reg_addr, txq->tx_tail);
 
 	return nb_pkts;
 }
@@ -352,6 +367,30 @@ ixgbe_xmit_pkts_simple(void *tx_queue, struct rte_mbuf **tx_pkts,
 
 	return nb_tx;
 }
+
+#ifdef RTE_IXGBE_INC_VECTOR
+static uint16_t
+ixgbe_xmit_pkts_vec(void *tx_queue, struct rte_mbuf **tx_pkts,
+		    uint16_t nb_pkts)
+{
+	uint16_t nb_tx = 0;
+	struct ixgbe_tx_queue *txq = (struct ixgbe_tx_queue *)tx_queue;
+
+	while (nb_pkts) {
+		uint16_t ret, num;
+
+		num = (uint16_t)RTE_MIN(nb_pkts, txq->tx_rs_thresh);
+		ret = ixgbe_xmit_fixed_burst_vec(tx_queue, &tx_pkts[nb_tx],
+						 num);
+		nb_tx += ret;
+		nb_pkts -= ret;
+		if (ret < num)
+			break;
+	}
+
+	return nb_tx;
+}
+#endif
 
 static inline void
 ixgbe_set_xmit_ctx(struct ixgbe_tx_queue *txq,
@@ -520,6 +559,8 @@ tx_desc_ol_flags_to_cmdtype(uint64_t ol_flags)
 		cmdtype |= IXGBE_ADVTXD_DCMD_TSE;
 	if (ol_flags & PKT_TX_OUTER_IP_CKSUM)
 		cmdtype |= (1 << IXGBE_ADVTXD_OUTERIPCS_SHIFT);
+	if (ol_flags & PKT_TX_MACSEC)
+		cmdtype |= IXGBE_ADVTXD_MAC_LINKSEC;
 	return cmdtype;
 }
 
@@ -776,8 +817,9 @@ ixgbe_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 		 * are only set in the last Data Descriptor:
 		 *   - IXGBE_TXD_CMD_RS
 		 */
-		cmd_type_len = IXGBE_ADVTXD_DTYP_DATA |
-			IXGBE_ADVTXD_DCMD_IFCS | IXGBE_ADVTXD_DCMD_DEXT;
+		cmd_type_len = IXGBE_ADVTXD_DTYP_DATA | IXGBE_ADVTXD_DCMD_DEXT;
+		if (!(ol_flags & PKT_TX_NO_CRC_CSUM))
+			cmd_type_len |= IXGBE_ADVTXD_DCMD_IFCS;
 
 #ifdef RTE_LIBRTE_IEEE1588
 		if (ol_flags & PKT_TX_IEEE1588_TMST)
@@ -898,10 +940,61 @@ end_of_tx:
 	PMD_TX_LOG(DEBUG, "port_id=%u queue_id=%u tx_tail=%u nb_tx=%u",
 		   (unsigned) txq->port_id, (unsigned) txq->queue_id,
 		   (unsigned) tx_id, (unsigned) nb_tx);
-	IXGBE_PCI_REG_WRITE(txq->tdt_reg_addr, tx_id);
+	IXGBE_PCI_REG_WRITE_RELAXED(txq->tdt_reg_addr, tx_id);
 	txq->tx_tail = tx_id;
 
 	return nb_tx;
+}
+
+/*********************************************************************
+ *
+ *  TX prep functions
+ *
+ **********************************************************************/
+uint16_t
+ixgbe_prep_pkts(void *tx_queue, struct rte_mbuf **tx_pkts, uint16_t nb_pkts)
+{
+	int i, ret;
+	uint64_t ol_flags;
+	struct rte_mbuf *m;
+	struct ixgbe_tx_queue *txq = (struct ixgbe_tx_queue *)tx_queue;
+
+	for (i = 0; i < nb_pkts; i++) {
+		m = tx_pkts[i];
+		ol_flags = m->ol_flags;
+
+		/**
+		 * Check if packet meets requirements for number of segments
+		 *
+		 * NOTE: for ixgbe it's always (40 - WTHRESH) for both TSO and
+		 *       non-TSO
+		 */
+
+		if (m->nb_segs > IXGBE_TX_MAX_SEG - txq->wthresh) {
+			rte_errno = -EINVAL;
+			return i;
+		}
+
+		if (ol_flags & IXGBE_TX_OFFLOAD_NOTSUP_MASK) {
+			rte_errno = -ENOTSUP;
+			return i;
+		}
+
+#ifdef RTE_LIBRTE_ETHDEV_DEBUG
+		ret = rte_validate_tx_offload(m);
+		if (ret != 0) {
+			rte_errno = ret;
+			return i;
+		}
+#endif
+		ret = rte_net_intel_cksum_prepare(m);
+		if (ret != 0) {
+			rte_errno = ret;
+			return i;
+		}
+	}
+
+	return i;
 }
 
 /*********************************************************************
@@ -1345,7 +1438,9 @@ rx_desc_error_to_pkt_flags(uint32_t rx_status)
 	 * Bit 30: L4I, L4I integrity error
 	 */
 	static uint64_t error_to_pkt_flags_map[4] = {
-		0,  PKT_RX_L4_CKSUM_BAD, PKT_RX_IP_CKSUM_BAD,
+		PKT_RX_IP_CKSUM_GOOD | PKT_RX_L4_CKSUM_GOOD,
+		PKT_RX_IP_CKSUM_GOOD | PKT_RX_L4_CKSUM_BAD,
+		PKT_RX_IP_CKSUM_BAD | PKT_RX_L4_CKSUM_GOOD,
 		PKT_RX_IP_CKSUM_BAD | PKT_RX_L4_CKSUM_BAD
 	};
 	pkt_flags = error_to_pkt_flags_map[(rx_status >>
@@ -1401,17 +1496,19 @@ ixgbe_rx_scan_hw_ring(struct ixgbe_rx_queue *rxq)
 	for (i = 0; i < RTE_PMD_IXGBE_RX_MAX_BURST;
 	     i += LOOK_AHEAD, rxdp += LOOK_AHEAD, rxep += LOOK_AHEAD) {
 		/* Read desc statuses backwards to avoid race condition */
-		for (j = LOOK_AHEAD-1; j >= 0; --j)
+		for (j = 0; j < LOOK_AHEAD; j++)
 			s[j] = rte_le_to_cpu_32(rxdp[j].wb.upper.status_error);
 
-		for (j = LOOK_AHEAD - 1; j >= 0; --j)
-			pkt_info[j] = rte_le_to_cpu_32(rxdp[j].wb.lower.
-						       lo_dword.data);
+		rte_smp_rmb();
 
 		/* Compute how many status bits were set */
-		nb_dd = 0;
-		for (j = 0; j < LOOK_AHEAD; ++j)
-			nb_dd += s[j] & IXGBE_RXDADV_STAT_DD;
+		for (nb_dd = 0; nb_dd < LOOK_AHEAD &&
+				(s[nb_dd] & IXGBE_RXDADV_STAT_DD); nb_dd++)
+			;
+
+		for (j = 0; j < nb_dd; j++)
+			pkt_info[j] = rte_le_to_cpu_32(rxdp[j].wb.lower.
+						       lo_dword.data);
 
 		nb_rx += nb_dd;
 
@@ -1489,8 +1586,6 @@ ixgbe_rx_alloc_bufs(struct ixgbe_rx_queue *rxq, bool reset_mbuf)
 		/* populate the static rte mbuf fields */
 		mb = rxep[i].mbuf;
 		if (reset_mbuf) {
-			mb->next = NULL;
-			mb->nb_segs = 1;
 			mb->port = rxq->port_id;
 		}
 
@@ -1580,7 +1675,8 @@ rx_recv_pkts(void *rx_queue, struct rte_mbuf **rx_pkts,
 
 		/* update tail pointer */
 		rte_wmb();
-		IXGBE_PCI_REG_WRITE(rxq->rdt_reg_addr, cur_free_trigger);
+		IXGBE_PCI_REG_WRITE_RELAXED(rxq->rdt_reg_addr,
+					    cur_free_trigger);
 	}
 
 	if (rxq->rx_tail >= rxq->nb_rx_desc)
@@ -1984,8 +2080,8 @@ next_desc:
 
 			if (!ixgbe_rx_alloc_bufs(rxq, false)) {
 				rte_wmb();
-				IXGBE_PCI_REG_WRITE(rxq->rdt_reg_addr,
-						    next_rdt);
+				IXGBE_PCI_REG_WRITE_RELAXED(rxq->rdt_reg_addr,
+							    next_rdt);
 				nb_hold -= rxq->rx_free_thresh;
 			} else {
 				PMD_RX_LOG(DEBUG, "RX bulk alloc failed "
@@ -2097,12 +2193,6 @@ next_desc:
 			goto next_desc;
 		}
 
-		/*
-		 * This is the last buffer of the received packet - return
-		 * the current cluster to the user.
-		 */
-		rxm->next = NULL;
-
 		/* Initialize the first mbuf of the returned packet */
 		ixgbe_fill_cluster_head_buf(first_seg, &rxd, rxq, staterr);
 
@@ -2156,7 +2246,7 @@ next_desc:
 			   rxq->port_id, rxq->queue_id, rx_id, nb_hold, nb_rx);
 
 		rte_wmb();
-		IXGBE_PCI_REG_WRITE(rxq->rdt_reg_addr, prev_id);
+		IXGBE_PCI_REG_WRITE_RELAXED(rxq->rdt_reg_addr, prev_id);
 		nb_hold = 0;
 	}
 
@@ -2281,6 +2371,7 @@ ixgbe_set_tx_function(struct rte_eth_dev *dev, struct ixgbe_tx_queue *txq)
 	if (((txq->txq_flags & IXGBE_SIMPLE_FLAGS) == IXGBE_SIMPLE_FLAGS)
 			&& (txq->tx_rs_thresh >= RTE_PMD_IXGBE_TX_MAX_BURST)) {
 		PMD_INIT_LOG(DEBUG, "Using simple tx code path");
+		dev->tx_pkt_prepare = NULL;
 #ifdef RTE_IXGBE_INC_VECTOR
 		if (txq->tx_rs_thresh <= RTE_IXGBE_TX_MAX_FREE_BUF_SZ &&
 				(rte_eal_process_type() != RTE_PROC_PRIMARY ||
@@ -2301,6 +2392,7 @@ ixgbe_set_tx_function(struct rte_eth_dev *dev, struct ixgbe_tx_queue *txq)
 				(unsigned long)txq->tx_rs_thresh,
 				(unsigned long)RTE_PMD_IXGBE_TX_MAX_BURST);
 		dev->tx_pkt_burst = ixgbe_xmit_pkts;
+		dev->tx_pkt_prepare = ixgbe_prep_pkts;
 	}
 }
 
@@ -2584,7 +2676,6 @@ check_rx_burst_bulk_alloc_preconditions(struct ixgbe_rx_queue *rxq)
 	 *   rxq->rx_free_thresh >= RTE_PMD_IXGBE_RX_MAX_BURST
 	 *   rxq->rx_free_thresh < rxq->nb_rx_desc
 	 *   (rxq->nb_rx_desc % rxq->rx_free_thresh) == 0
-	 *   rxq->nb_rx_desc<(IXGBE_MAX_RING_DESC-RTE_PMD_IXGBE_RX_MAX_BURST)
 	 * Scattered packets are not supported.  This should be checked
 	 * outside of this function.
 	 */
@@ -2606,15 +2697,6 @@ check_rx_burst_bulk_alloc_preconditions(struct ixgbe_rx_queue *rxq)
 			     "rxq->rx_free_thresh=%d",
 			     rxq->nb_rx_desc, rxq->rx_free_thresh);
 		ret = -EINVAL;
-	} else if (!(rxq->nb_rx_desc <
-	       (IXGBE_MAX_RING_DESC - RTE_PMD_IXGBE_RX_MAX_BURST))) {
-		PMD_INIT_LOG(DEBUG, "Rx Burst Bulk Alloc Preconditions: "
-			     "rxq->nb_rx_desc=%d, "
-			     "IXGBE_MAX_RING_DESC=%d, "
-			     "RTE_PMD_IXGBE_RX_MAX_BURST=%d",
-			     rxq->nb_rx_desc, IXGBE_MAX_RING_DESC,
-			     RTE_PMD_IXGBE_RX_MAX_BURST);
-		ret = -EINVAL;
 	}
 
 	return ret;
@@ -2631,12 +2713,7 @@ ixgbe_reset_rx_queue(struct ixgbe_adapter *adapter, struct ixgbe_rx_queue *rxq)
 	/*
 	 * By default, the Rx queue setup function allocates enough memory for
 	 * IXGBE_MAX_RING_DESC.  The Rx Burst bulk allocation function requires
-	 * extra memory at the end of the descriptor ring to be zero'd out. A
-	 * pre-condition for using the Rx burst bulk alloc function is that the
-	 * number of descriptors is less than or equal to
-	 * (IXGBE_MAX_RING_DESC - RTE_PMD_IXGBE_RX_MAX_BURST). Check all the
-	 * constraints here to see if we need to zero out memory after the end
-	 * of the H/W descriptor ring.
+	 * extra memory at the end of the descriptor ring to be zero'd out.
 	 */
 	if (adapter->rx_bulk_alloc_allowed)
 		/* zero out extra memory */
@@ -2856,11 +2933,6 @@ ixgbe_dev_rx_queue_count(struct rte_eth_dev *dev, uint16_t rx_queue_id)
 	struct ixgbe_rx_queue *rxq;
 	uint32_t desc = 0;
 
-	if (rx_queue_id >= dev->data->nb_rx_queues) {
-		PMD_RX_LOG(ERR, "Invalid RX queue id=%d", rx_queue_id);
-		return 0;
-	}
-
 	rxq = dev->data->rx_queues[rx_queue_id];
 	rxdp = &(rxq->rx_ring[rxq->rx_tail]);
 
@@ -2893,6 +2965,63 @@ ixgbe_dev_rx_descriptor_done(void *rx_queue, uint16_t offset)
 	rxdp = &rxq->rx_ring[desc];
 	return !!(rxdp->wb.upper.status_error &
 			rte_cpu_to_le_32(IXGBE_RXDADV_STAT_DD));
+}
+
+int
+ixgbe_dev_rx_descriptor_status(void *rx_queue, uint16_t offset)
+{
+	struct ixgbe_rx_queue *rxq = rx_queue;
+	volatile uint32_t *status;
+	uint32_t nb_hold, desc;
+
+	if (unlikely(offset >= rxq->nb_rx_desc))
+		return -EINVAL;
+
+#ifdef RTE_IXGBE_INC_VECTOR
+	if (rxq->rx_using_sse)
+		nb_hold = rxq->rxrearm_nb;
+	else
+#endif
+		nb_hold = rxq->nb_rx_hold;
+	if (offset >= rxq->nb_rx_desc - nb_hold)
+		return RTE_ETH_RX_DESC_UNAVAIL;
+
+	desc = rxq->rx_tail + offset;
+	if (desc >= rxq->nb_rx_desc)
+		desc -= rxq->nb_rx_desc;
+
+	status = &rxq->rx_ring[desc].wb.upper.status_error;
+	if (*status & rte_cpu_to_le_32(IXGBE_RXDADV_STAT_DD))
+		return RTE_ETH_RX_DESC_DONE;
+
+	return RTE_ETH_RX_DESC_AVAIL;
+}
+
+int
+ixgbe_dev_tx_descriptor_status(void *tx_queue, uint16_t offset)
+{
+	struct ixgbe_tx_queue *txq = tx_queue;
+	volatile uint32_t *status;
+	uint32_t desc;
+
+	if (unlikely(offset >= txq->nb_tx_desc))
+		return -EINVAL;
+
+	desc = txq->tx_tail + offset;
+	/* go to next desc that has the RS bit */
+	desc = ((desc + txq->tx_rs_thresh - 1) / txq->tx_rs_thresh) *
+		txq->tx_rs_thresh;
+	if (desc >= txq->nb_tx_desc) {
+		desc -= txq->nb_tx_desc;
+		if (desc >= txq->nb_tx_desc)
+			desc -= txq->nb_tx_desc;
+	}
+
+	status = &txq->tx_ring[desc].wb.status;
+	if (*status & rte_cpu_to_le_32(IXGBE_ADVTXD_STAT_DD))
+		return RTE_ETH_TX_DESC_DONE;
+
+	return RTE_ETH_TX_DESC_FULL;
 }
 
 void __attribute__((cold))
@@ -3312,15 +3441,15 @@ ixgbe_vmdq_dcb_configure(struct rte_eth_dev *dev)
 
 /**
  * ixgbe_dcb_config_tx_hw_config - Configure general DCB TX parameters
- * @hw: pointer to hardware structure
+ * @dev: pointer to eth_dev structure
  * @dcb_config: pointer to ixgbe_dcb_config structure
  */
 static void
-ixgbe_dcb_tx_hw_config(struct ixgbe_hw *hw,
+ixgbe_dcb_tx_hw_config(struct rte_eth_dev *dev,
 		       struct ixgbe_dcb_config *dcb_config)
 {
 	uint32_t reg;
-	uint32_t q;
+	struct ixgbe_hw *hw = IXGBE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 
 	PMD_INIT_FUNC_TRACE();
 	if (hw->mac.type != ixgbe_mac_82598EB) {
@@ -3338,11 +3467,6 @@ ixgbe_dcb_tx_hw_config(struct ixgbe_hw *hw,
 		if (dcb_config->vt_mode)
 			reg |= IXGBE_MTQC_VT_ENA;
 		IXGBE_WRITE_REG(hw, IXGBE_MTQC, reg);
-
-		/* Disable drop for all queues */
-		for (q = 0; q < 128; q++)
-			IXGBE_WRITE_REG(hw, IXGBE_QDE,
-				(IXGBE_QDE_WRITE | (q << IXGBE_QDE_IDX_SHIFT)));
 
 		/* Enable the Tx desc arbiter */
 		reg = IXGBE_READ_REG(hw, IXGBE_RTTDCS);
@@ -3377,7 +3501,7 @@ ixgbe_vmdq_dcb_hw_tx_config(struct rte_eth_dev *dev,
 			vmdq_tx_conf->nb_queue_pools == ETH_16_POOLS ? 0xFFFF : 0xFFFFFFFF);
 
 	/*Configure general DCB TX parameters*/
-	ixgbe_dcb_tx_hw_config(hw, dcb_config);
+	ixgbe_dcb_tx_hw_config(dev, dcb_config);
 }
 
 static void
@@ -3477,16 +3601,18 @@ ixgbe_dcb_tx_config(struct rte_eth_dev *dev,
 
 /**
  * ixgbe_dcb_rx_hw_config - Configure general DCB RX HW parameters
- * @hw: pointer to hardware structure
+ * @dev: pointer to eth_dev structure
  * @dcb_config: pointer to ixgbe_dcb_config structure
  */
 static void
-ixgbe_dcb_rx_hw_config(struct ixgbe_hw *hw,
-	       struct ixgbe_dcb_config *dcb_config)
+ixgbe_dcb_rx_hw_config(struct rte_eth_dev *dev,
+		       struct ixgbe_dcb_config *dcb_config)
 {
 	uint32_t reg;
 	uint32_t vlanctrl;
 	uint8_t i;
+	uint32_t q;
+	struct ixgbe_hw *hw = IXGBE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
 
 	PMD_INIT_FUNC_TRACE();
 	/*
@@ -3524,6 +3650,21 @@ ixgbe_dcb_rx_hw_config(struct ixgbe_hw *hw,
 		}
 
 		IXGBE_WRITE_REG(hw, IXGBE_MRQC, reg);
+
+		if (RTE_ETH_DEV_SRIOV(dev).active == 0) {
+			/* Disable drop for all queues in VMDQ mode*/
+			for (q = 0; q < IXGBE_MAX_RX_QUEUE_NUM; q++)
+				IXGBE_WRITE_REG(hw, IXGBE_QDE,
+						(IXGBE_QDE_WRITE |
+						 (q << IXGBE_QDE_IDX_SHIFT)));
+		} else {
+			/* Enable drop for all queues in SRIOV mode */
+			for (q = 0; q < IXGBE_MAX_RX_QUEUE_NUM; q++)
+				IXGBE_WRITE_REG(hw, IXGBE_QDE,
+						(IXGBE_QDE_WRITE |
+						 (q << IXGBE_QDE_IDX_SHIFT) |
+						 IXGBE_QDE_ENABLE));
+		}
 	}
 
 	/* VLNCTRL: enable vlan filtering and allow all vlan tags through */
@@ -3614,6 +3755,8 @@ ixgbe_dcb_hw_configure(struct rte_eth_dev *dev,
 	uint32_t max_frame = dev->data->mtu + ETHER_HDR_LEN + ETHER_CRC_LEN;
 	struct ixgbe_hw *hw =
 			IXGBE_DEV_PRIVATE_TO_HW(dev->data->dev_private);
+	struct ixgbe_bw_conf *bw_conf =
+		IXGBE_DEV_PRIVATE_TO_BW_CONF(dev->data->dev_private);
 
 	switch (dev->data->dev_conf.rxmode.mq_mode) {
 	case ETH_MQ_RX_VMDQ_DCB:
@@ -3636,7 +3779,7 @@ ixgbe_dcb_hw_configure(struct rte_eth_dev *dev,
 		/* Get dcb TX configuration parameters from rte_eth_conf */
 		ixgbe_dcb_rx_config(dev, dcb_config);
 		/*Configure general DCB RX parameters*/
-		ixgbe_dcb_rx_hw_config(hw, dcb_config);
+		ixgbe_dcb_rx_hw_config(dev, dcb_config);
 		break;
 	default:
 		PMD_INIT_LOG(ERR, "Incorrect DCB RX mode configuration");
@@ -3660,7 +3803,7 @@ ixgbe_dcb_hw_configure(struct rte_eth_dev *dev,
 		/*get DCB TX configuration parameters from rte_eth_conf*/
 		ixgbe_dcb_tx_config(dev, dcb_config);
 		/*Configure general DCB TX parameters*/
-		ixgbe_dcb_tx_hw_config(hw, dcb_config);
+		ixgbe_dcb_tx_hw_config(dev, dcb_config);
 		break;
 	default:
 		PMD_INIT_LOG(ERR, "Incorrect DCB TX mode configuration");
@@ -3685,8 +3828,9 @@ ixgbe_dcb_hw_configure(struct rte_eth_dev *dev,
 		/* Re-configure 4 TCs BW */
 		for (i = 0; i < nb_tcs; i++) {
 			tc = &dcb_config->tc_config[i];
-			tc->path[IXGBE_DCB_TX_CONFIG].bwg_percent =
-						(uint8_t)(100 / nb_tcs);
+			if (bw_conf->tc_num != nb_tcs)
+				tc->path[IXGBE_DCB_TX_CONFIG].bwg_percent =
+					(uint8_t)(100 / nb_tcs);
 			tc->path[IXGBE_DCB_RX_CONFIG].bwg_percent =
 						(uint8_t)(100 / nb_tcs);
 		}
@@ -3694,6 +3838,16 @@ ixgbe_dcb_hw_configure(struct rte_eth_dev *dev,
 			tc = &dcb_config->tc_config[i];
 			tc->path[IXGBE_DCB_TX_CONFIG].bwg_percent = 0;
 			tc->path[IXGBE_DCB_RX_CONFIG].bwg_percent = 0;
+		}
+	} else {
+		/* Re-configure 8 TCs BW */
+		for (i = 0; i < nb_tcs; i++) {
+			tc = &dcb_config->tc_config[i];
+			if (bw_conf->tc_num != nb_tcs)
+				tc->path[IXGBE_DCB_TX_CONFIG].bwg_percent =
+					(uint8_t)(100 / nb_tcs + (i & 1));
+			tc->path[IXGBE_DCB_RX_CONFIG].bwg_percent =
+				(uint8_t)(100 / nb_tcs + (i & 1));
 		}
 	}
 
@@ -3809,7 +3963,7 @@ void ixgbe_configure_dcb(struct rte_eth_dev *dev)
 	    (dev_conf->rxmode.mq_mode != ETH_MQ_RX_DCB_RSS))
 		return;
 
-	if (dev->data->nb_rx_queues != ETH_DCB_NUM_QUEUES)
+	if (dev->data->nb_rx_queues > ETH_DCB_NUM_QUEUES)
 		return;
 
 	/** Configure DCB hardware **/
@@ -4072,21 +4226,24 @@ ixgbe_dev_mq_rx_configure(struct rte_eth_dev *dev)
 			break;
 		}
 	} else {
-		/*
-		 * SRIOV active scheme
-		 * Support RSS together with VMDq & SRIOV
+		/* SRIOV active scheme
+		 * Support RSS together with SRIOV.
 		 */
 		switch (dev->data->dev_conf.rxmode.mq_mode) {
 		case ETH_MQ_RX_RSS:
 		case ETH_MQ_RX_VMDQ_RSS:
 			ixgbe_config_vf_rss(dev);
 			break;
-
-		/* FIXME if support DCB/RSS together with VMDq & SRIOV */
 		case ETH_MQ_RX_VMDQ_DCB:
+		case ETH_MQ_RX_DCB:
+		/* In SRIOV, the configuration is the same as VMDq case */
+			ixgbe_vmdq_dcb_configure(dev);
+			break;
+		/* DCB/RSS together with SRIOV is not supported */
 		case ETH_MQ_RX_VMDQ_DCB_RSS:
+		case ETH_MQ_RX_DCB_RSS:
 			PMD_INIT_LOG(ERR,
-				"Could not support DCB with VMDq & SRIOV");
+				"Could not support DCB/RSS with VMDq & SRIOV");
 			return -1;
 		default:
 			ixgbe_config_vf_default(dev);
@@ -4366,6 +4523,7 @@ ixgbe_set_rsc(struct rte_eth_dev *dev)
 	bool rsc_capable = false;
 	uint16_t i;
 	uint32_t rdrxctl;
+	uint32_t rfctl;
 
 	/* Sanity check */
 	dev->dev_ops->dev_infos_get(dev, &dev_info);
@@ -4393,22 +4551,18 @@ ixgbe_set_rsc(struct rte_eth_dev *dev)
 	}
 
 	/* RFCTL configuration  */
-	if (rsc_capable) {
-		uint32_t rfctl = IXGBE_READ_REG(hw, IXGBE_RFCTL);
-
-		if (rx_conf->enable_lro)
-			/*
-			 * Since NFS packets coalescing is not supported - clear
-			 * RFCTL.NFSW_DIS and RFCTL.NFSR_DIS when RSC is
-			 * enabled.
-			 */
-			rfctl &= ~(IXGBE_RFCTL_RSC_DIS | IXGBE_RFCTL_NFSW_DIS |
-				   IXGBE_RFCTL_NFSR_DIS);
-		else
-			rfctl |= IXGBE_RFCTL_RSC_DIS;
-
-		IXGBE_WRITE_REG(hw, IXGBE_RFCTL, rfctl);
-	}
+	rfctl = IXGBE_READ_REG(hw, IXGBE_RFCTL);
+	if ((rsc_capable) && (rx_conf->enable_lro))
+		/*
+		 * Since NFS packets coalescing is not supported - clear
+		 * RFCTL.NFSW_DIS and RFCTL.NFSR_DIS when RSC is
+		 * enabled.
+		 */
+		rfctl &= ~(IXGBE_RFCTL_RSC_DIS | IXGBE_RFCTL_NFSW_DIS |
+			   IXGBE_RFCTL_NFSR_DIS);
+	else
+		rfctl |= IXGBE_RFCTL_RSC_DIS;
+	IXGBE_WRITE_REG(hw, IXGBE_RFCTL, rfctl);
 
 	/* If LRO hasn't been requested - we are done here. */
 	if (!rx_conf->enable_lro)

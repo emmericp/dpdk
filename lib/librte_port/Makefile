@@ -56,6 +56,7 @@ SRCS-$(CONFIG_RTE_LIBRTE_PORT) += rte_port_frag.c
 SRCS-$(CONFIG_RTE_LIBRTE_PORT) += rte_port_ras.c
 endif
 SRCS-$(CONFIG_RTE_LIBRTE_PORT) += rte_port_sched.c
+SRCS-$(CONFIG_RTE_LIBRTE_PORT) += rte_port_fd.c
 ifeq ($(CONFIG_RTE_LIBRTE_KNI),y)
 SRCS-$(CONFIG_RTE_LIBRTE_PORT) += rte_port_kni.c
 endif
@@ -70,20 +71,10 @@ SYMLINK-$(CONFIG_RTE_LIBRTE_PORT)-include += rte_port_frag.h
 SYMLINK-$(CONFIG_RTE_LIBRTE_PORT)-include += rte_port_ras.h
 endif
 SYMLINK-$(CONFIG_RTE_LIBRTE_PORT)-include += rte_port_sched.h
+SYMLINK-$(CONFIG_RTE_LIBRTE_PORT)-include += rte_port_fd.h
 ifeq ($(CONFIG_RTE_LIBRTE_KNI),y)
 SYMLINK-$(CONFIG_RTE_LIBRTE_PORT)-include += rte_port_kni.h
 endif
 SYMLINK-$(CONFIG_RTE_LIBRTE_PORT)-include += rte_port_source_sink.h
-
-# this lib depends upon:
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PORT) := lib/librte_eal
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PORT) += lib/librte_mbuf
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PORT) += lib/librte_mempool
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PORT) += lib/librte_ether
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PORT) += lib/librte_ip_frag
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PORT) += lib/librte_sched
-ifeq ($(CONFIG_RTE_LIBRTE_KNI),y)
-DEPDIRS-$(CONFIG_RTE_LIBRTE_PORT) += lib/librte_kni
-endif
 
 include $(RTE_SDK)/mk/rte.lib.mk

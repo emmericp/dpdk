@@ -56,7 +56,6 @@
 #include <rte_lcore.h>
 #include <rte_atomic.h>
 #include <rte_branch_prediction.h>
-#include <rte_ring.h>
 #include <rte_memory.h>
 #include <rte_mempool.h>
 #include <rte_mbuf.h>
@@ -69,6 +68,7 @@
 #include <rte_tcp.h>
 #include <rte_udp.h>
 #include <rte_string_fns.h>
+#include <rte_flow.h>
 
 #include "testpmd.h"
 
@@ -215,6 +215,8 @@ pkt_burst_transmit(struct fwd_stream *fs)
 		ol_flags = PKT_TX_VLAN_PKT;
 	if (txp->tx_ol_flags & TESTPMD_TX_OFFLOAD_INSERT_QINQ)
 		ol_flags |= PKT_TX_QINQ_PKT;
+	if (txp->tx_ol_flags & TESTPMD_TX_OFFLOAD_MACSEC)
+		ol_flags |= PKT_TX_MACSEC;
 	for (nb_pkt = 0; nb_pkt < nb_pkt_per_burst; nb_pkt++) {
 		pkt = rte_mbuf_raw_alloc(mbp);
 		if (pkt == NULL) {
@@ -223,6 +225,14 @@ pkt_burst_transmit(struct fwd_stream *fs)
 				return;
 			break;
 		}
+
+		/*
+		 * Using raw alloc is good to improve performance,
+		 * but some consumers may use the headroom and so
+		 * decrement data_off. We need to make sure it is
+		 * reset to default value.
+		 */
+		rte_pktmbuf_reset_headroom(pkt);
 		pkt->data_len = tx_pkt_seg_lengths[0];
 		pkt_seg = pkt;
 		if (tx_pkt_split == TX_PKT_SPLIT_RND)

@@ -55,7 +55,6 @@
 #include <rte_per_lcore.h>
 #include <rte_lcore.h>
 #include <rte_branch_prediction.h>
-#include <rte_ring.h>
 #include <rte_errno.h>
 #include <rte_string_fns.h>
 #include <rte_spinlock.h>
@@ -429,7 +428,7 @@ rte_mempool_populate_phys_tab(struct rte_mempool *mp, char *vaddr,
 
 		/* populate with the largest group of contiguous pages */
 		for (n = 1; (i + n) < pg_num &&
-			     paddr[i] + pg_sz == paddr[i+n]; n++)
+			     paddr[i + n - 1] + pg_sz == paddr[i + n]; n++)
 			;
 
 		ret = rte_mempool_populate_phys(mp, vaddr + i * pg_sz,
@@ -579,8 +578,10 @@ rte_mempool_populate_default(struct rte_mempool *mp)
 				mz->len, pg_sz,
 				rte_mempool_memchunk_mz_free,
 				(void *)(uintptr_t)mz);
-		if (ret < 0)
+		if (ret < 0) {
+			rte_memzone_free(mz);
 			goto fail;
+		}
 	}
 
 	return mp->size;
@@ -817,7 +818,6 @@ rte_mempool_create_empty(const char *name, unsigned n, unsigned elt_size,
 		goto exit_unlock;
 	}
 	mp->mz = mz;
-	mp->socket_id = socket_id;
 	mp->size = n;
 	mp->flags = flags;
 	mp->socket_id = socket_id;
@@ -868,6 +868,7 @@ rte_mempool_create(const char *name, unsigned n, unsigned elt_size,
 	rte_mempool_obj_cb_t *obj_init, void *obj_init_arg,
 	int socket_id, unsigned flags)
 {
+	int ret;
 	struct rte_mempool *mp;
 
 	mp = rte_mempool_create_empty(name, n, elt_size, cache_size,
@@ -879,14 +880,17 @@ rte_mempool_create(const char *name, unsigned n, unsigned elt_size,
 	 * Since we have 4 combinations of the SP/SC/MP/MC examine the flags to
 	 * set the correct index into the table of ops structs.
 	 */
-	if (flags & (MEMPOOL_F_SP_PUT | MEMPOOL_F_SC_GET))
-		rte_mempool_set_ops_byname(mp, "ring_sp_sc", NULL);
+	if ((flags & MEMPOOL_F_SP_PUT) && (flags & MEMPOOL_F_SC_GET))
+		ret = rte_mempool_set_ops_byname(mp, "ring_sp_sc", NULL);
 	else if (flags & MEMPOOL_F_SP_PUT)
-		rte_mempool_set_ops_byname(mp, "ring_sp_mc", NULL);
+		ret = rte_mempool_set_ops_byname(mp, "ring_sp_mc", NULL);
 	else if (flags & MEMPOOL_F_SC_GET)
-		rte_mempool_set_ops_byname(mp, "ring_mp_sc", NULL);
+		ret = rte_mempool_set_ops_byname(mp, "ring_mp_sc", NULL);
 	else
-		rte_mempool_set_ops_byname(mp, "ring_mp_mc", NULL);
+		ret = rte_mempool_set_ops_byname(mp, "ring_mp_mc", NULL);
+
+	if (ret)
+		goto fail;
 
 	/* call the mempool priv initializer */
 	if (mp_init)
@@ -909,9 +913,8 @@ rte_mempool_create(const char *name, unsigned n, unsigned elt_size,
 /*
  * Create the mempool over already allocated chunk of memory.
  * That external memory buffer can consists of physically disjoint pages.
- * Setting vaddr to NULL, makes mempool to fallback to original behaviour
- * and allocate space for mempool and it's elements as one big chunk of
- * physically continuos memory.
+ * Setting vaddr to NULL, makes mempool to fallback to rte_mempool_create()
+ * behavior.
  */
 struct rte_mempool *
 rte_mempool_xmem_create(const char *name, unsigned n, unsigned elt_size,
@@ -998,12 +1001,6 @@ rte_mempool_in_use_count(const struct rte_mempool *mp)
 	return mp->size - rte_mempool_avail_count(mp);
 }
 
-unsigned int
-rte_mempool_count(const struct rte_mempool *mp)
-{
-	return rte_mempool_avail_count(mp);
-}
-
 /* dump the cache status */
 static unsigned
 rte_mempool_dump_cache(FILE *f, const struct rte_mempool *mp)
@@ -1047,7 +1044,7 @@ void rte_mempool_check_cookies(const struct rte_mempool *mp,
 	/* Force to drop the "const" attribute. This is done only when
 	 * DEBUG is enabled */
 	tmp = (void *) obj_table_const;
-	obj_table = (void **) tmp;
+	obj_table = tmp;
 
 	while (n--) {
 		obj = obj_table[n];

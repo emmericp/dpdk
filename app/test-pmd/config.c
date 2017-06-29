@@ -84,7 +84,6 @@
 #include <rte_lcore.h>
 #include <rte_atomic.h>
 #include <rte_branch_prediction.h>
-#include <rte_ring.h>
 #include <rte_mempool.h>
 #include <rte_mbuf.h>
 #include <rte_interrupts.h>
@@ -93,6 +92,11 @@
 #include <rte_ethdev.h>
 #include <rte_string_fns.h>
 #include <rte_cycles.h>
+#include <rte_flow.h>
+#include <rte_errno.h>
+#ifdef RTE_LIBRTE_IXGBE_PMD
+#include <rte_pmd_ixgbe.h>
+#endif
 
 #include "testpmd.h"
 
@@ -170,7 +174,7 @@ nic_stats_display(portid_t port_id)
 
 	if (port_id_is_invalid(port_id, ENABLED_WARN)) {
 		printf("Valid port range is [0");
-		FOREACH_PORT(pid, ports)
+		RTE_ETH_FOREACH_DEV(pid)
 			printf(", %d", pid);
 		printf("]\n");
 		return;
@@ -248,7 +252,7 @@ nic_stats_clear(portid_t port_id)
 
 	if (port_id_is_invalid(port_id, ENABLED_WARN)) {
 		printf("Valid port range is [0");
-		FOREACH_PORT(pid, ports)
+		RTE_ETH_FOREACH_DEV(pid)
 			printf(", %d", pid);
 		printf("]\n");
 		return;
@@ -330,7 +334,7 @@ nic_stats_mapping_display(portid_t port_id)
 
 	if (port_id_is_invalid(port_id, ENABLED_WARN)) {
 		printf("Valid port range is [0");
-		FOREACH_PORT(pid, ports)
+		RTE_ETH_FOREACH_DEV(pid)
 			printf(", %d", pid);
 		printf("]\n");
 		return;
@@ -445,20 +449,24 @@ port_infos_display(portid_t port_id)
 	struct rte_mempool * mp;
 	static const char *info_border = "*********************";
 	portid_t pid;
+	uint16_t mtu;
 
 	if (port_id_is_invalid(port_id, ENABLED_WARN)) {
 		printf("Valid port range is [0");
-		FOREACH_PORT(pid, ports)
+		RTE_ETH_FOREACH_DEV(pid)
 			printf(", %d", pid);
 		printf("]\n");
 		return;
 	}
 	port = &ports[port_id];
 	rte_eth_link_get_nowait(port_id, &link);
+	memset(&dev_info, 0, sizeof(dev_info));
+	rte_eth_dev_info_get(port_id, &dev_info);
 	printf("\n%s Infos for port %-2d %s\n",
 	       info_border, port_id, info_border);
 	rte_eth_macaddr_get(port_id, &mac_addr);
 	print_ethaddr("MAC address: ", &mac_addr);
+	printf("\nDriver name: %s", dev_info.driver_name);
 	printf("\nConnect to socket: %u", port->socket_id);
 
 	if (port_numa[port_id] != NUMA_NO_CONFIG) {
@@ -473,6 +481,10 @@ port_infos_display(portid_t port_id)
 	printf("Link speed: %u Mbps\n", (unsigned) link.link_speed);
 	printf("Link duplex: %s\n", (link.link_duplex == ETH_LINK_FULL_DUPLEX) ?
 	       ("full-duplex") : ("half-duplex"));
+
+	if (!rte_eth_dev_get_mtu(port_id, &mtu))
+		printf("MTU: %u\n", mtu);
+
 	printf("Promiscuous mode: %s\n",
 	       rte_eth_promiscuous_get(port_id) ? "enabled" : "disabled");
 	printf("Allmulticast mode: %s\n",
@@ -501,8 +513,6 @@ port_infos_display(portid_t port_id)
 			printf("  qinq(extend) off \n");
 	}
 
-	memset(&dev_info, 0, sizeof(dev_info));
-	rte_eth_dev_info_get(port_id, &dev_info);
 	if (dev_info.hash_key_size > 0)
 		printf("Hash key size in bytes: %u\n", dev_info.hash_key_size);
 	if (dev_info.reta_size > 0)
@@ -538,13 +548,189 @@ port_infos_display(portid_t port_id)
 	printf("TXDs number alignment: %hu\n", dev_info.tx_desc_lim.nb_align);
 }
 
+void
+port_offload_cap_display(portid_t port_id)
+{
+	struct rte_eth_dev *dev;
+	struct rte_eth_dev_info dev_info;
+	static const char *info_border = "************";
+
+	if (port_id_is_invalid(port_id, ENABLED_WARN))
+		return;
+
+	dev = &rte_eth_devices[port_id];
+	rte_eth_dev_info_get(port_id, &dev_info);
+
+	printf("\n%s Port %d supported offload features: %s\n",
+		info_border, port_id, info_border);
+
+	if (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_VLAN_STRIP) {
+		printf("VLAN stripped:                 ");
+		if (dev->data->dev_conf.rxmode.hw_vlan_strip)
+			printf("on\n");
+		else
+			printf("off\n");
+	}
+
+	if (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_QINQ_STRIP) {
+		printf("Double VLANs stripped:         ");
+		if (dev->data->dev_conf.rxmode.hw_vlan_extend)
+			printf("on\n");
+		else
+			printf("off\n");
+	}
+
+	if (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_IPV4_CKSUM) {
+		printf("RX IPv4 checksum:              ");
+		if (dev->data->dev_conf.rxmode.hw_ip_checksum)
+			printf("on\n");
+		else
+			printf("off\n");
+	}
+
+	if (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_UDP_CKSUM) {
+		printf("RX UDP checksum:               ");
+		if (dev->data->dev_conf.rxmode.hw_ip_checksum)
+			printf("on\n");
+		else
+			printf("off\n");
+	}
+
+	if (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_TCP_CKSUM) {
+		printf("RX TCP checksum:               ");
+		if (dev->data->dev_conf.rxmode.hw_ip_checksum)
+			printf("on\n");
+		else
+			printf("off\n");
+	}
+
+	if (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_OUTER_IPV4_CKSUM)
+		printf("RX Outer IPv4 checksum:        on");
+
+	if (dev_info.rx_offload_capa & DEV_RX_OFFLOAD_TCP_LRO) {
+		printf("Large receive offload:         ");
+		if (dev->data->dev_conf.rxmode.enable_lro)
+			printf("on\n");
+		else
+			printf("off\n");
+	}
+
+	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_VLAN_INSERT) {
+		printf("VLAN insert:                   ");
+		if (ports[port_id].tx_ol_flags &
+		    TESTPMD_TX_OFFLOAD_INSERT_VLAN)
+			printf("on\n");
+		else
+			printf("off\n");
+	}
+
+	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_QINQ_INSERT) {
+		printf("Double VLANs insert:           ");
+		if (ports[port_id].tx_ol_flags &
+		    TESTPMD_TX_OFFLOAD_INSERT_QINQ)
+			printf("on\n");
+		else
+			printf("off\n");
+	}
+
+	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_IPV4_CKSUM) {
+		printf("TX IPv4 checksum:              ");
+		if (ports[port_id].tx_ol_flags & TESTPMD_TX_OFFLOAD_IP_CKSUM)
+			printf("on\n");
+		else
+			printf("off\n");
+	}
+
+	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_UDP_CKSUM) {
+		printf("TX UDP checksum:               ");
+		if (ports[port_id].tx_ol_flags & TESTPMD_TX_OFFLOAD_UDP_CKSUM)
+			printf("on\n");
+		else
+			printf("off\n");
+	}
+
+	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_TCP_CKSUM) {
+		printf("TX TCP checksum:               ");
+		if (ports[port_id].tx_ol_flags & TESTPMD_TX_OFFLOAD_TCP_CKSUM)
+			printf("on\n");
+		else
+			printf("off\n");
+	}
+
+	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_SCTP_CKSUM) {
+		printf("TX SCTP checksum:              ");
+		if (ports[port_id].tx_ol_flags & TESTPMD_TX_OFFLOAD_SCTP_CKSUM)
+			printf("on\n");
+		else
+			printf("off\n");
+	}
+
+	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_OUTER_IPV4_CKSUM) {
+		printf("TX Outer IPv4 checksum:        ");
+		if (ports[port_id].tx_ol_flags &
+		    TESTPMD_TX_OFFLOAD_OUTER_IP_CKSUM)
+			printf("on\n");
+		else
+			printf("off\n");
+	}
+
+	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_TCP_TSO) {
+		printf("TX TCP segmentation:           ");
+		if (ports[port_id].tso_segsz != 0)
+			printf("on\n");
+		else
+			printf("off\n");
+	}
+
+	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_UDP_TSO) {
+		printf("TX UDP segmentation:           ");
+		if (ports[port_id].tso_segsz != 0)
+			printf("on\n");
+		else
+			printf("off\n");
+	}
+
+	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_VXLAN_TNL_TSO) {
+		printf("TSO for VXLAN tunnel packet:   ");
+		if (ports[port_id].tunnel_tso_segsz)
+			printf("on\n");
+		else
+			printf("off\n");
+	}
+
+	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_GRE_TNL_TSO) {
+		printf("TSO for GRE tunnel packet:     ");
+		if (ports[port_id].tunnel_tso_segsz)
+			printf("on\n");
+		else
+			printf("off\n");
+	}
+
+	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_IPIP_TNL_TSO) {
+		printf("TSO for IPIP tunnel packet:    ");
+		if (ports[port_id].tunnel_tso_segsz)
+			printf("on\n");
+		else
+			printf("off\n");
+	}
+
+	if (dev_info.tx_offload_capa & DEV_TX_OFFLOAD_GENEVE_TNL_TSO) {
+		printf("TSO for GENEVE tunnel packet:  ");
+		if (ports[port_id].tunnel_tso_segsz)
+			printf("on\n");
+		else
+			printf("off\n");
+	}
+
+}
+
 int
 port_id_is_invalid(portid_t port_id, enum print_warning warning)
 {
 	if (port_id == (portid_t)RTE_PORT_ALL)
 		return 0;
 
-	if (port_id < RTE_MAX_ETHPORTS && ports[port_id].enabled)
+	if (rte_eth_dev_is_valid_port(port_id))
 		return 0;
 
 	if (warning == ENABLED_WARN)
@@ -751,6 +937,504 @@ port_mtu_set(portid_t port_id, uint16_t mtu)
 	printf("Set MTU failed. diag=%d\n", diag);
 }
 
+/* Generic flow management functions. */
+
+/** Generate flow_item[] entry. */
+#define MK_FLOW_ITEM(t, s) \
+	[RTE_FLOW_ITEM_TYPE_ ## t] = { \
+		.name = # t, \
+		.size = s, \
+	}
+
+/** Information about known flow pattern items. */
+static const struct {
+	const char *name;
+	size_t size;
+} flow_item[] = {
+	MK_FLOW_ITEM(END, 0),
+	MK_FLOW_ITEM(VOID, 0),
+	MK_FLOW_ITEM(INVERT, 0),
+	MK_FLOW_ITEM(ANY, sizeof(struct rte_flow_item_any)),
+	MK_FLOW_ITEM(PF, 0),
+	MK_FLOW_ITEM(VF, sizeof(struct rte_flow_item_vf)),
+	MK_FLOW_ITEM(PORT, sizeof(struct rte_flow_item_port)),
+	MK_FLOW_ITEM(RAW, sizeof(struct rte_flow_item_raw)), /* +pattern[] */
+	MK_FLOW_ITEM(ETH, sizeof(struct rte_flow_item_eth)),
+	MK_FLOW_ITEM(VLAN, sizeof(struct rte_flow_item_vlan)),
+	MK_FLOW_ITEM(IPV4, sizeof(struct rte_flow_item_ipv4)),
+	MK_FLOW_ITEM(IPV6, sizeof(struct rte_flow_item_ipv6)),
+	MK_FLOW_ITEM(ICMP, sizeof(struct rte_flow_item_icmp)),
+	MK_FLOW_ITEM(UDP, sizeof(struct rte_flow_item_udp)),
+	MK_FLOW_ITEM(TCP, sizeof(struct rte_flow_item_tcp)),
+	MK_FLOW_ITEM(SCTP, sizeof(struct rte_flow_item_sctp)),
+	MK_FLOW_ITEM(VXLAN, sizeof(struct rte_flow_item_vxlan)),
+	MK_FLOW_ITEM(MPLS, sizeof(struct rte_flow_item_mpls)),
+	MK_FLOW_ITEM(GRE, sizeof(struct rte_flow_item_gre)),
+};
+
+/** Compute storage space needed by item specification. */
+static void
+flow_item_spec_size(const struct rte_flow_item *item,
+		    size_t *size, size_t *pad)
+{
+	if (!item->spec)
+		goto empty;
+	switch (item->type) {
+		union {
+			const struct rte_flow_item_raw *raw;
+		} spec;
+
+	case RTE_FLOW_ITEM_TYPE_RAW:
+		spec.raw = item->spec;
+		*size = offsetof(struct rte_flow_item_raw, pattern) +
+			spec.raw->length * sizeof(*spec.raw->pattern);
+		break;
+	default:
+empty:
+		*size = 0;
+		break;
+	}
+	*pad = RTE_ALIGN_CEIL(*size, sizeof(double)) - *size;
+}
+
+/** Generate flow_action[] entry. */
+#define MK_FLOW_ACTION(t, s) \
+	[RTE_FLOW_ACTION_TYPE_ ## t] = { \
+		.name = # t, \
+		.size = s, \
+	}
+
+/** Information about known flow actions. */
+static const struct {
+	const char *name;
+	size_t size;
+} flow_action[] = {
+	MK_FLOW_ACTION(END, 0),
+	MK_FLOW_ACTION(VOID, 0),
+	MK_FLOW_ACTION(PASSTHRU, 0),
+	MK_FLOW_ACTION(MARK, sizeof(struct rte_flow_action_mark)),
+	MK_FLOW_ACTION(FLAG, 0),
+	MK_FLOW_ACTION(QUEUE, sizeof(struct rte_flow_action_queue)),
+	MK_FLOW_ACTION(DROP, 0),
+	MK_FLOW_ACTION(COUNT, 0),
+	MK_FLOW_ACTION(DUP, sizeof(struct rte_flow_action_dup)),
+	MK_FLOW_ACTION(RSS, sizeof(struct rte_flow_action_rss)), /* +queue[] */
+	MK_FLOW_ACTION(PF, 0),
+	MK_FLOW_ACTION(VF, sizeof(struct rte_flow_action_vf)),
+};
+
+/** Compute storage space needed by action configuration. */
+static void
+flow_action_conf_size(const struct rte_flow_action *action,
+		      size_t *size, size_t *pad)
+{
+	if (!action->conf)
+		goto empty;
+	switch (action->type) {
+		union {
+			const struct rte_flow_action_rss *rss;
+		} conf;
+
+	case RTE_FLOW_ACTION_TYPE_RSS:
+		conf.rss = action->conf;
+		*size = offsetof(struct rte_flow_action_rss, queue) +
+			conf.rss->num * sizeof(*conf.rss->queue);
+		break;
+	default:
+empty:
+		*size = 0;
+		break;
+	}
+	*pad = RTE_ALIGN_CEIL(*size, sizeof(double)) - *size;
+}
+
+/** Generate a port_flow entry from attributes/pattern/actions. */
+static struct port_flow *
+port_flow_new(const struct rte_flow_attr *attr,
+	      const struct rte_flow_item *pattern,
+	      const struct rte_flow_action *actions)
+{
+	const struct rte_flow_item *item;
+	const struct rte_flow_action *action;
+	struct port_flow *pf = NULL;
+	size_t tmp;
+	size_t pad;
+	size_t off1 = 0;
+	size_t off2 = 0;
+	int err = ENOTSUP;
+
+store:
+	item = pattern;
+	if (pf)
+		pf->pattern = (void *)&pf->data[off1];
+	do {
+		struct rte_flow_item *dst = NULL;
+
+		if ((unsigned int)item->type >= RTE_DIM(flow_item) ||
+		    !flow_item[item->type].name)
+			goto notsup;
+		if (pf)
+			dst = memcpy(pf->data + off1, item, sizeof(*item));
+		off1 += sizeof(*item);
+		flow_item_spec_size(item, &tmp, &pad);
+		if (item->spec) {
+			if (pf)
+				dst->spec = memcpy(pf->data + off2,
+						   item->spec, tmp);
+			off2 += tmp + pad;
+		}
+		if (item->last) {
+			if (pf)
+				dst->last = memcpy(pf->data + off2,
+						   item->last, tmp);
+			off2 += tmp + pad;
+		}
+		if (item->mask) {
+			if (pf)
+				dst->mask = memcpy(pf->data + off2,
+						   item->mask, tmp);
+			off2 += tmp + pad;
+		}
+		off2 = RTE_ALIGN_CEIL(off2, sizeof(double));
+	} while ((item++)->type != RTE_FLOW_ITEM_TYPE_END);
+	off1 = RTE_ALIGN_CEIL(off1, sizeof(double));
+	action = actions;
+	if (pf)
+		pf->actions = (void *)&pf->data[off1];
+	do {
+		struct rte_flow_action *dst = NULL;
+
+		if ((unsigned int)action->type >= RTE_DIM(flow_action) ||
+		    !flow_action[action->type].name)
+			goto notsup;
+		if (pf)
+			dst = memcpy(pf->data + off1, action, sizeof(*action));
+		off1 += sizeof(*action);
+		flow_action_conf_size(action, &tmp, &pad);
+		if (action->conf) {
+			if (pf)
+				dst->conf = memcpy(pf->data + off2,
+						   action->conf, tmp);
+			off2 += tmp + pad;
+		}
+		off2 = RTE_ALIGN_CEIL(off2, sizeof(double));
+	} while ((action++)->type != RTE_FLOW_ACTION_TYPE_END);
+	if (pf != NULL)
+		return pf;
+	off1 = RTE_ALIGN_CEIL(off1, sizeof(double));
+	tmp = RTE_ALIGN_CEIL(offsetof(struct port_flow, data), sizeof(double));
+	pf = calloc(1, tmp + off1 + off2);
+	if (pf == NULL)
+		err = errno;
+	else {
+		*pf = (const struct port_flow){
+			.size = tmp + off1 + off2,
+			.attr = *attr,
+		};
+		tmp -= offsetof(struct port_flow, data);
+		off2 = tmp + off1;
+		off1 = tmp;
+		goto store;
+	}
+notsup:
+	rte_errno = err;
+	return NULL;
+}
+
+/** Print a message out of a flow error. */
+static int
+port_flow_complain(struct rte_flow_error *error)
+{
+	static const char *const errstrlist[] = {
+		[RTE_FLOW_ERROR_TYPE_NONE] = "no error",
+		[RTE_FLOW_ERROR_TYPE_UNSPECIFIED] = "cause unspecified",
+		[RTE_FLOW_ERROR_TYPE_HANDLE] = "flow rule (handle)",
+		[RTE_FLOW_ERROR_TYPE_ATTR_GROUP] = "group field",
+		[RTE_FLOW_ERROR_TYPE_ATTR_PRIORITY] = "priority field",
+		[RTE_FLOW_ERROR_TYPE_ATTR_INGRESS] = "ingress field",
+		[RTE_FLOW_ERROR_TYPE_ATTR_EGRESS] = "egress field",
+		[RTE_FLOW_ERROR_TYPE_ATTR] = "attributes structure",
+		[RTE_FLOW_ERROR_TYPE_ITEM_NUM] = "pattern length",
+		[RTE_FLOW_ERROR_TYPE_ITEM] = "specific pattern item",
+		[RTE_FLOW_ERROR_TYPE_ACTION_NUM] = "number of actions",
+		[RTE_FLOW_ERROR_TYPE_ACTION] = "specific action",
+	};
+	const char *errstr;
+	char buf[32];
+	int err = rte_errno;
+
+	if ((unsigned int)error->type >= RTE_DIM(errstrlist) ||
+	    !errstrlist[error->type])
+		errstr = "unknown type";
+	else
+		errstr = errstrlist[error->type];
+	printf("Caught error type %d (%s): %s%s\n",
+	       error->type, errstr,
+	       error->cause ? (snprintf(buf, sizeof(buf), "cause: %p, ",
+					error->cause), buf) : "",
+	       error->message ? error->message : "(no stated reason)");
+	return -err;
+}
+
+/** Validate flow rule. */
+int
+port_flow_validate(portid_t port_id,
+		   const struct rte_flow_attr *attr,
+		   const struct rte_flow_item *pattern,
+		   const struct rte_flow_action *actions)
+{
+	struct rte_flow_error error;
+
+	/* Poisoning to make sure PMDs update it in case of error. */
+	memset(&error, 0x11, sizeof(error));
+	if (rte_flow_validate(port_id, attr, pattern, actions, &error))
+		return port_flow_complain(&error);
+	printf("Flow rule validated\n");
+	return 0;
+}
+
+/** Create flow rule. */
+int
+port_flow_create(portid_t port_id,
+		 const struct rte_flow_attr *attr,
+		 const struct rte_flow_item *pattern,
+		 const struct rte_flow_action *actions)
+{
+	struct rte_flow *flow;
+	struct rte_port *port;
+	struct port_flow *pf;
+	uint32_t id;
+	struct rte_flow_error error;
+
+	/* Poisoning to make sure PMDs update it in case of error. */
+	memset(&error, 0x22, sizeof(error));
+	flow = rte_flow_create(port_id, attr, pattern, actions, &error);
+	if (!flow)
+		return port_flow_complain(&error);
+	port = &ports[port_id];
+	if (port->flow_list) {
+		if (port->flow_list->id == UINT32_MAX) {
+			printf("Highest rule ID is already assigned, delete"
+			       " it first");
+			rte_flow_destroy(port_id, flow, NULL);
+			return -ENOMEM;
+		}
+		id = port->flow_list->id + 1;
+	} else
+		id = 0;
+	pf = port_flow_new(attr, pattern, actions);
+	if (!pf) {
+		int err = rte_errno;
+
+		printf("Cannot allocate flow: %s\n", rte_strerror(err));
+		rte_flow_destroy(port_id, flow, NULL);
+		return -err;
+	}
+	pf->next = port->flow_list;
+	pf->id = id;
+	pf->flow = flow;
+	port->flow_list = pf;
+	printf("Flow rule #%u created\n", pf->id);
+	return 0;
+}
+
+/** Destroy a number of flow rules. */
+int
+port_flow_destroy(portid_t port_id, uint32_t n, const uint32_t *rule)
+{
+	struct rte_port *port;
+	struct port_flow **tmp;
+	uint32_t c = 0;
+	int ret = 0;
+
+	if (port_id_is_invalid(port_id, ENABLED_WARN) ||
+	    port_id == (portid_t)RTE_PORT_ALL)
+		return -EINVAL;
+	port = &ports[port_id];
+	tmp = &port->flow_list;
+	while (*tmp) {
+		uint32_t i;
+
+		for (i = 0; i != n; ++i) {
+			struct rte_flow_error error;
+			struct port_flow *pf = *tmp;
+
+			if (rule[i] != pf->id)
+				continue;
+			/*
+			 * Poisoning to make sure PMDs update it in case
+			 * of error.
+			 */
+			memset(&error, 0x33, sizeof(error));
+			if (rte_flow_destroy(port_id, pf->flow, &error)) {
+				ret = port_flow_complain(&error);
+				continue;
+			}
+			printf("Flow rule #%u destroyed\n", pf->id);
+			*tmp = pf->next;
+			free(pf);
+			break;
+		}
+		if (i == n)
+			tmp = &(*tmp)->next;
+		++c;
+	}
+	return ret;
+}
+
+/** Remove all flow rules. */
+int
+port_flow_flush(portid_t port_id)
+{
+	struct rte_flow_error error;
+	struct rte_port *port;
+	int ret = 0;
+
+	/* Poisoning to make sure PMDs update it in case of error. */
+	memset(&error, 0x44, sizeof(error));
+	if (rte_flow_flush(port_id, &error)) {
+		ret = port_flow_complain(&error);
+		if (port_id_is_invalid(port_id, DISABLED_WARN) ||
+		    port_id == (portid_t)RTE_PORT_ALL)
+			return ret;
+	}
+	port = &ports[port_id];
+	while (port->flow_list) {
+		struct port_flow *pf = port->flow_list->next;
+
+		free(port->flow_list);
+		port->flow_list = pf;
+	}
+	return ret;
+}
+
+/** Query a flow rule. */
+int
+port_flow_query(portid_t port_id, uint32_t rule,
+		enum rte_flow_action_type action)
+{
+	struct rte_flow_error error;
+	struct rte_port *port;
+	struct port_flow *pf;
+	const char *name;
+	union {
+		struct rte_flow_query_count count;
+	} query;
+
+	if (port_id_is_invalid(port_id, ENABLED_WARN) ||
+	    port_id == (portid_t)RTE_PORT_ALL)
+		return -EINVAL;
+	port = &ports[port_id];
+	for (pf = port->flow_list; pf; pf = pf->next)
+		if (pf->id == rule)
+			break;
+	if (!pf) {
+		printf("Flow rule #%u not found\n", rule);
+		return -ENOENT;
+	}
+	if ((unsigned int)action >= RTE_DIM(flow_action) ||
+	    !flow_action[action].name)
+		name = "unknown";
+	else
+		name = flow_action[action].name;
+	switch (action) {
+	case RTE_FLOW_ACTION_TYPE_COUNT:
+		break;
+	default:
+		printf("Cannot query action type %d (%s)\n", action, name);
+		return -ENOTSUP;
+	}
+	/* Poisoning to make sure PMDs update it in case of error. */
+	memset(&error, 0x55, sizeof(error));
+	memset(&query, 0, sizeof(query));
+	if (rte_flow_query(port_id, pf->flow, action, &query, &error))
+		return port_flow_complain(&error);
+	switch (action) {
+	case RTE_FLOW_ACTION_TYPE_COUNT:
+		printf("%s:\n"
+		       " hits_set: %u\n"
+		       " bytes_set: %u\n"
+		       " hits: %" PRIu64 "\n"
+		       " bytes: %" PRIu64 "\n",
+		       name,
+		       query.count.hits_set,
+		       query.count.bytes_set,
+		       query.count.hits,
+		       query.count.bytes);
+		break;
+	default:
+		printf("Cannot display result for action type %d (%s)\n",
+		       action, name);
+		break;
+	}
+	return 0;
+}
+
+/** List flow rules. */
+void
+port_flow_list(portid_t port_id, uint32_t n, const uint32_t group[n])
+{
+	struct rte_port *port;
+	struct port_flow *pf;
+	struct port_flow *list = NULL;
+	uint32_t i;
+
+	if (port_id_is_invalid(port_id, ENABLED_WARN) ||
+	    port_id == (portid_t)RTE_PORT_ALL)
+		return;
+	port = &ports[port_id];
+	if (!port->flow_list)
+		return;
+	/* Sort flows by group, priority and ID. */
+	for (pf = port->flow_list; pf != NULL; pf = pf->next) {
+		struct port_flow **tmp;
+
+		if (n) {
+			/* Filter out unwanted groups. */
+			for (i = 0; i != n; ++i)
+				if (pf->attr.group == group[i])
+					break;
+			if (i == n)
+				continue;
+		}
+		tmp = &list;
+		while (*tmp &&
+		       (pf->attr.group > (*tmp)->attr.group ||
+			(pf->attr.group == (*tmp)->attr.group &&
+			 pf->attr.priority > (*tmp)->attr.priority) ||
+			(pf->attr.group == (*tmp)->attr.group &&
+			 pf->attr.priority == (*tmp)->attr.priority &&
+			 pf->id > (*tmp)->id)))
+			tmp = &(*tmp)->tmp;
+		pf->tmp = *tmp;
+		*tmp = pf;
+	}
+	printf("ID\tGroup\tPrio\tAttr\tRule\n");
+	for (pf = list; pf != NULL; pf = pf->tmp) {
+		const struct rte_flow_item *item = pf->pattern;
+		const struct rte_flow_action *action = pf->actions;
+
+		printf("%" PRIu32 "\t%" PRIu32 "\t%" PRIu32 "\t%c%c\t",
+		       pf->id,
+		       pf->attr.group,
+		       pf->attr.priority,
+		       pf->attr.ingress ? 'i' : '-',
+		       pf->attr.egress ? 'e' : '-');
+		while (item->type != RTE_FLOW_ITEM_TYPE_END) {
+			if (item->type != RTE_FLOW_ITEM_TYPE_VOID)
+				printf("%s ", flow_item[item->type].name);
+			++item;
+		}
+		printf("=>");
+		while (action->type != RTE_FLOW_ACTION_TYPE_END) {
+			if (action->type != RTE_FLOW_ACTION_TYPE_VOID)
+				printf(" %s", flow_action[action->type].name);
+			++action;
+		}
+		printf("\n");
+	}
+}
+
 /*
  * RX/TX ring descriptors display functions.
  */
@@ -954,7 +1638,7 @@ rxtx_config_display(void)
 	       rx_mode.hw_strip_crc ? "enabled" : "disabled",
 	       nb_pkt_per_burst);
 
-	if (cur_fwd_eng == &tx_only_engine)
+	if (cur_fwd_eng == &tx_only_engine || cur_fwd_eng == &flow_gen_engine)
 		printf("  packet len=%u - nb packet segments=%d\n",
 				(unsigned)tx_pkt_length, (int) tx_pkt_nb_segs);
 
@@ -1012,13 +1696,25 @@ void
 port_rss_hash_conf_show(portid_t port_id, char rss_info[], int show_rss_key)
 {
 	struct rte_eth_rss_conf rss_conf;
-	uint8_t rss_key[10 * 4] = "";
+	uint8_t rss_key[RSS_HASH_KEY_LENGTH];
 	uint64_t rss_hf;
 	uint8_t i;
 	int diag;
+	struct rte_eth_dev_info dev_info;
+	uint8_t hash_key_size;
 
 	if (port_id_is_invalid(port_id, ENABLED_WARN))
 		return;
+
+	memset(&dev_info, 0, sizeof(dev_info));
+	rte_eth_dev_info_get(port_id, &dev_info);
+	if (dev_info.hash_key_size > 0 &&
+			dev_info.hash_key_size <= sizeof(rss_key))
+		hash_key_size = dev_info.hash_key_size;
+	else {
+		printf("dev_info did not provide a valid hash key size\n");
+		return;
+	}
 
 	rss_conf.rss_hf = 0;
 	for (i = 0; i < RTE_DIM(rss_type_table); i++) {
@@ -1028,7 +1724,7 @@ port_rss_hash_conf_show(portid_t port_id, char rss_info[], int show_rss_key)
 
 	/* Get RSS hash key if asked to display it */
 	rss_conf.rss_key = (show_rss_key) ? rss_key : NULL;
-	rss_conf.rss_key_len = sizeof(rss_key);
+	rss_conf.rss_key_len = hash_key_size;
 	diag = rte_eth_dev_rss_hash_conf_get(port_id, &rss_conf);
 	if (diag != 0) {
 		switch (diag) {
@@ -1058,7 +1754,7 @@ port_rss_hash_conf_show(portid_t port_id, char rss_info[], int show_rss_key)
 	if (!show_rss_key)
 		return;
 	printf("RSS key:\n");
-	for (i = 0; i < sizeof(rss_key); i++)
+	for (i = 0; i < hash_key_size; i++)
 		printf("%02X", rss_key[i]);
 	printf("\n");
 }
@@ -1590,7 +2286,7 @@ set_fwd_ports_mask(uint64_t portmask)
 		return;
 	}
 	nb_pt = 0;
-	for (i = 0; i < (unsigned)RTE_MIN(64, RTE_MAX_ETHPORTS); i++) {
+	RTE_ETH_FOREACH_DEV(i) {
 		if (! ((uint64_t)(1ULL << i) & portmask))
 			continue;
 		portlist[nb_pt++] = i;
@@ -2046,26 +2742,33 @@ set_qmap(portid_t port_id, uint8_t is_rx, uint16_t queue_id, uint8_t map_value)
 static inline void
 print_fdir_mask(struct rte_eth_fdir_masks *mask)
 {
-	printf("\n    vlan_tci: 0x%04x, ", mask->vlan_tci_mask);
+	printf("\n    vlan_tci: 0x%04x", rte_be_to_cpu_16(mask->vlan_tci_mask));
 
-	if (fdir_conf.mode == RTE_FDIR_MODE_PERFECT_MAC_VLAN)
-		printf("mac_addr: 0x%02x", mask->mac_addr_byte_mask);
-	else if (fdir_conf.mode == RTE_FDIR_MODE_PERFECT_TUNNEL)
-		printf("mac_addr: 0x%02x, tunnel_type: 0x%01x, tunnel_id: 0x%08x",
+	if (fdir_conf.mode == RTE_FDIR_MODE_PERFECT_TUNNEL)
+		printf(", mac_addr: 0x%02x, tunnel_type: 0x%01x,"
+			" tunnel_id: 0x%08x",
 			mask->mac_addr_byte_mask, mask->tunnel_type_mask,
-			mask->tunnel_id_mask);
-	else {
-		printf("src_ipv4: 0x%08x, dst_ipv4: 0x%08x,"
-			" src_port: 0x%04x, dst_port: 0x%04x",
-			mask->ipv4_mask.src_ip, mask->ipv4_mask.dst_ip,
-			mask->src_port_mask, mask->dst_port_mask);
+			rte_be_to_cpu_32(mask->tunnel_id_mask));
+	else if (fdir_conf.mode != RTE_FDIR_MODE_PERFECT_MAC_VLAN) {
+		printf(", src_ipv4: 0x%08x, dst_ipv4: 0x%08x",
+			rte_be_to_cpu_32(mask->ipv4_mask.src_ip),
+			rte_be_to_cpu_32(mask->ipv4_mask.dst_ip));
 
-		printf("\n    src_ipv6: 0x%08x,0x%08x,0x%08x,0x%08x,"
-			" dst_ipv6: 0x%08x,0x%08x,0x%08x,0x%08x",
-			mask->ipv6_mask.src_ip[0], mask->ipv6_mask.src_ip[1],
-			mask->ipv6_mask.src_ip[2], mask->ipv6_mask.src_ip[3],
-			mask->ipv6_mask.dst_ip[0], mask->ipv6_mask.dst_ip[1],
-			mask->ipv6_mask.dst_ip[2], mask->ipv6_mask.dst_ip[3]);
+		printf("\n    src_port: 0x%04x, dst_port: 0x%04x",
+			rte_be_to_cpu_16(mask->src_port_mask),
+			rte_be_to_cpu_16(mask->dst_port_mask));
+
+		printf("\n    src_ipv6: 0x%08x,0x%08x,0x%08x,0x%08x",
+			rte_be_to_cpu_32(mask->ipv6_mask.src_ip[0]),
+			rte_be_to_cpu_32(mask->ipv6_mask.src_ip[1]),
+			rte_be_to_cpu_32(mask->ipv6_mask.src_ip[2]),
+			rte_be_to_cpu_32(mask->ipv6_mask.src_ip[3]));
+
+		printf("\n    dst_ipv6: 0x%08x,0x%08x,0x%08x,0x%08x",
+			rte_be_to_cpu_32(mask->ipv6_mask.dst_ip[0]),
+			rte_be_to_cpu_32(mask->ipv6_mask.dst_ip[1]),
+			rte_be_to_cpu_32(mask->ipv6_mask.dst_ip[2]),
+			rte_be_to_cpu_32(mask->ipv6_mask.dst_ip[3]));
 	}
 
 	printf("\n");
@@ -2305,43 +3008,28 @@ fdir_set_flex_payload(portid_t port_id, struct rte_eth_flex_payload_cfg *cfg)
 
 }
 
+#ifdef RTE_LIBRTE_IXGBE_PMD
 void
 set_vf_traffic(portid_t port_id, uint8_t is_rx, uint16_t vf, uint8_t on)
 {
 	int diag;
 
-	if (port_id_is_invalid(port_id, ENABLED_WARN))
-		return;
 	if (is_rx)
-		diag = rte_eth_dev_set_vf_rx(port_id,vf,on);
+		diag = rte_pmd_ixgbe_set_vf_rx(port_id, vf, on);
 	else
-		diag = rte_eth_dev_set_vf_tx(port_id,vf,on);
+		diag = rte_pmd_ixgbe_set_vf_tx(port_id, vf, on);
+
 	if (diag == 0)
 		return;
 	if(is_rx)
-		printf("rte_eth_dev_set_vf_rx for port_id=%d failed "
+		printf("rte_pmd_ixgbe_set_vf_rx for port_id=%d failed "
 	       		"diag=%d\n", port_id, diag);
 	else
-		printf("rte_eth_dev_set_vf_tx for port_id=%d failed "
+		printf("rte_pmd_ixgbe_set_vf_tx for port_id=%d failed "
 	       		"diag=%d\n", port_id, diag);
 
 }
-
-void
-set_vf_rx_vlan(portid_t port_id, uint16_t vlan_id, uint64_t vf_mask, uint8_t on)
-{
-	int diag;
-
-	if (port_id_is_invalid(port_id, ENABLED_WARN))
-		return;
-	if (vlan_id_is_invalid(vlan_id))
-		return;
-	diag = rte_eth_dev_set_vf_vlan_filter(port_id, vlan_id, vf_mask, on);
-	if (diag == 0)
-		return;
-	printf("rte_eth_dev_set_vf_vlan_filter for port_id=%d failed "
-	       "diag=%d\n", port_id, diag);
-}
+#endif
 
 int
 set_queue_rate_limit(portid_t port_id, uint16_t queue_idx, uint16_t rate)
@@ -2365,30 +3053,20 @@ set_queue_rate_limit(portid_t port_id, uint16_t queue_idx, uint16_t rate)
 	return diag;
 }
 
+#ifdef RTE_LIBRTE_IXGBE_PMD
 int
 set_vf_rate_limit(portid_t port_id, uint16_t vf, uint16_t rate, uint64_t q_msk)
 {
 	int diag;
-	struct rte_eth_link link;
 
-	if (q_msk == 0)
-		return 0;
-
-	if (port_id_is_invalid(port_id, ENABLED_WARN))
-		return 1;
-	rte_eth_link_get_nowait(port_id, &link);
-	if (rate > link.link_speed) {
-		printf("Invalid rate value:%u bigger than link speed: %u\n",
-			rate, link.link_speed);
-		return 1;
-	}
-	diag = rte_eth_set_vf_rate_limit(port_id, vf, rate, q_msk);
+	diag = rte_pmd_ixgbe_set_vf_rate_limit(port_id, vf, rate, q_msk);
 	if (diag == 0)
 		return diag;
-	printf("rte_eth_set_vf_rate_limit for port_id=%d failed diag=%d\n",
+	printf("rte_pmd_ixgbe_set_vf_rate_limit for port_id=%d failed diag=%d\n",
 		port_id, diag);
 	return diag;
 }
+#endif
 
 /*
  * Functions to manage the set of filtered Multicast MAC addresses.
@@ -2573,4 +3251,71 @@ port_dcb_info_display(uint8_t port_id)
 	for (i = 0; i < dcb_info.nb_tcs; i++)
 		printf("\t%4d", dcb_info.tc_queue.tc_txq[0][i].nb_queue);
 	printf("\n");
+}
+
+uint8_t *
+open_ddp_package_file(const char *file_path, uint32_t *size)
+{
+	FILE *fh = fopen(file_path, "rb");
+	uint32_t pkg_size;
+	uint8_t *buf = NULL;
+	int ret = 0;
+
+	if (size)
+		*size = 0;
+
+	if (fh == NULL) {
+		printf("%s: Failed to open %s\n", __func__, file_path);
+		return buf;
+	}
+
+	ret = fseek(fh, 0, SEEK_END);
+	if (ret < 0) {
+		fclose(fh);
+		printf("%s: File operations failed\n", __func__);
+		return buf;
+	}
+
+	pkg_size = ftell(fh);
+
+	buf = (uint8_t *)malloc(pkg_size);
+	if (!buf) {
+		fclose(fh);
+		printf("%s: Failed to malloc memory\n",	__func__);
+		return buf;
+	}
+
+	ret = fseek(fh, 0, SEEK_SET);
+	if (ret < 0) {
+		fclose(fh);
+		printf("%s: File seek operation failed\n", __func__);
+		close_ddp_package_file(buf);
+		return NULL;
+	}
+
+	ret = fread(buf, 1, pkg_size, fh);
+	if (ret < 0) {
+		fclose(fh);
+		printf("%s: File read operation failed\n", __func__);
+		close_ddp_package_file(buf);
+		return NULL;
+	}
+
+	if (size)
+		*size = pkg_size;
+
+	fclose(fh);
+
+	return buf;
+}
+
+int
+close_ddp_package_file(uint8_t *buf)
+{
+	if (buf) {
+		free((void *)buf);
+		return 0;
+	}
+
+	return -1;
 }

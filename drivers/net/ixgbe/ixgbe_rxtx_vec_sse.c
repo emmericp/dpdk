@@ -82,22 +82,9 @@ ixgbe_rxq_rearm(struct ixgbe_rx_queue *rxq)
 	/* Initialize the mbufs in vector, process 2 mbufs in one loop */
 	for (i = 0; i < RTE_IXGBE_RXQ_REARM_THRESH; i += 2, rxep += 2) {
 		__m128i vaddr0, vaddr1;
-		uintptr_t p0, p1;
 
 		mb0 = rxep[0].mbuf;
 		mb1 = rxep[1].mbuf;
-
-		/*
-		 * Flush mbuf with pkt template.
-		 * Data to be rearmed is 6 bytes long.
-		 * Though, RX will overwrite ol_flags that are coming next
-		 * anyway. So overwrite whole 8 bytes with one load:
-		 * 6 bytes of rearm_data plus first 2 bytes of ol_flags.
-		 */
-		p0 = (uintptr_t)&mb0->rearm_data;
-		*(uint64_t *)p0 = rxq->mbuf_initializer;
-		p1 = (uintptr_t)&mb1->rearm_data;
-		*(uint64_t *)p1 = rxq->mbuf_initializer;
 
 		/* load buf_addr(lo 64bit) and buf_physaddr(hi 64bit) */
 		vaddr0 = _mm_loadu_si128((__m128i *)&(mb0->buf_addr));
@@ -133,28 +120,22 @@ ixgbe_rxq_rearm(struct ixgbe_rx_queue *rxq)
 	IXGBE_PCI_REG_WRITE(rxq->rdt_reg_addr, rx_id);
 }
 
-/* Handling the offload flags (olflags) field takes computation
- * time when receiving packets. Therefore we provide a flag to disable
- * the processing of the olflags field when they are not needed. This
- * gives improved performance, at the cost of losing the offload info
- * in the received packet
- */
-#ifdef RTE_IXGBE_RX_OLFLAGS_ENABLE
-
 static inline void
-desc_to_olflags_v(__m128i descs[4], uint8_t vlan_flags,
+desc_to_olflags_v(__m128i descs[4], __m128i mbuf_init, uint8_t vlan_flags,
 	struct rte_mbuf **rx_pkts)
 {
-	__m128i ptype0, ptype1, vtag0, vtag1;
-	union {
-		uint16_t e[4];
-		uint64_t dword;
-	} vol;
+	__m128i ptype0, ptype1, vtag0, vtag1, csum;
+	__m128i rearm0, rearm1, rearm2, rearm3;
 
 	/* mask everything except rss type */
 	const __m128i rsstype_msk = _mm_set_epi16(
 			0x0000, 0x0000, 0x0000, 0x0000,
 			0x000F, 0x000F, 0x000F, 0x000F);
+
+	/* mask the lower byte of ol_flags */
+	const __m128i ol_flags_msk = _mm_set_epi16(
+			0x0000, 0x0000, 0x0000, 0x0000,
+			0x00FF, 0x00FF, 0x00FF, 0x00FF);
 
 	/* map rss type to rss hash flag */
 	const __m128i rss_flags = _mm_set_epi8(PKT_RX_FDIR, 0, 0, 0,
@@ -162,18 +143,34 @@ desc_to_olflags_v(__m128i descs[4], uint8_t vlan_flags,
 			PKT_RX_RSS_HASH, 0, PKT_RX_RSS_HASH, 0,
 			PKT_RX_RSS_HASH, PKT_RX_RSS_HASH, PKT_RX_RSS_HASH, 0);
 
-	/* mask everything except vlan present bit */
-	const __m128i vlan_msk = _mm_set_epi16(
-			0x0000, 0x0000,
-			0x0000, 0x0000,
-			IXGBE_RXD_STAT_VP, IXGBE_RXD_STAT_VP,
-			IXGBE_RXD_STAT_VP, IXGBE_RXD_STAT_VP);
-	/* map vlan present (0x8) to ol_flags */
-	const __m128i vlan_map = _mm_set_epi8(
+	/* mask everything except vlan present and l4/ip csum error */
+	const __m128i vlan_csum_msk = _mm_set_epi16(
+		(IXGBE_RXDADV_ERR_TCPE | IXGBE_RXDADV_ERR_IPE) >> 16,
+		(IXGBE_RXDADV_ERR_TCPE | IXGBE_RXDADV_ERR_IPE) >> 16,
+		(IXGBE_RXDADV_ERR_TCPE | IXGBE_RXDADV_ERR_IPE) >> 16,
+		(IXGBE_RXDADV_ERR_TCPE | IXGBE_RXDADV_ERR_IPE) >> 16,
+		IXGBE_RXD_STAT_VP, IXGBE_RXD_STAT_VP,
+		IXGBE_RXD_STAT_VP, IXGBE_RXD_STAT_VP);
+	/* map vlan present (0x8), IPE (0x2), L4E (0x1) to ol_flags */
+	const __m128i vlan_csum_map_lo = _mm_set_epi8(
 		0, 0, 0, 0,
-		0, 0, 0, vlan_flags,
+		vlan_flags | PKT_RX_IP_CKSUM_BAD | PKT_RX_L4_CKSUM_BAD,
+		vlan_flags | PKT_RX_IP_CKSUM_BAD,
+		vlan_flags | PKT_RX_IP_CKSUM_GOOD | PKT_RX_L4_CKSUM_BAD,
+		vlan_flags | PKT_RX_IP_CKSUM_GOOD,
 		0, 0, 0, 0,
-		0, 0, 0, 0);
+		PKT_RX_IP_CKSUM_BAD | PKT_RX_L4_CKSUM_BAD,
+		PKT_RX_IP_CKSUM_BAD,
+		PKT_RX_IP_CKSUM_GOOD | PKT_RX_L4_CKSUM_BAD,
+		PKT_RX_IP_CKSUM_GOOD);
+
+	const __m128i vlan_csum_map_hi = _mm_set_epi8(
+		0, 0, 0, 0,
+		0, PKT_RX_L4_CKSUM_GOOD >> sizeof(uint8_t), 0,
+		PKT_RX_L4_CKSUM_GOOD >> sizeof(uint8_t),
+		0, 0, 0, 0,
+		0, PKT_RX_L4_CKSUM_GOOD >> sizeof(uint8_t), 0,
+		PKT_RX_L4_CKSUM_GOOD >> sizeof(uint8_t));
 
 	ptype0 = _mm_unpacklo_epi16(descs[0], descs[1]);
 	ptype1 = _mm_unpacklo_epi16(descs[2], descs[3]);
@@ -185,22 +182,63 @@ desc_to_olflags_v(__m128i descs[4], uint8_t vlan_flags,
 	ptype0 = _mm_shuffle_epi8(rss_flags, ptype0);
 
 	vtag1 = _mm_unpacklo_epi32(vtag0, vtag1);
-	vtag1 = _mm_and_si128(vtag1, vlan_msk);
-	vtag1 = _mm_shuffle_epi8(vlan_map, vtag1);
+	vtag1 = _mm_and_si128(vtag1, vlan_csum_msk);
+
+	/* csum bits are in the most significant, to use shuffle we need to
+	 * shift them. Change mask to 0xc000 to 0x0003.
+	 */
+	csum = _mm_srli_epi16(vtag1, 14);
+
+	/* now or the most significant 64 bits containing the checksum
+	 * flags with the vlan present flags.
+	 */
+	csum = _mm_srli_si128(csum, 8);
+	vtag1 = _mm_or_si128(csum, vtag1);
+
+	/* convert VP, IPE, L4E to ol_flags */
+	vtag0 = _mm_shuffle_epi8(vlan_csum_map_hi, vtag1);
+	vtag0 = _mm_slli_epi16(vtag0, sizeof(uint8_t));
+
+	vtag1 = _mm_shuffle_epi8(vlan_csum_map_lo, vtag1);
+	vtag1 = _mm_and_si128(vtag1, ol_flags_msk);
+	vtag1 = _mm_or_si128(vtag0, vtag1);
 
 	vtag1 = _mm_or_si128(ptype0, vtag1);
-	vol.dword = _mm_cvtsi128_si64(vtag1);
 
-	rx_pkts[0]->ol_flags = vol.e[0];
-	rx_pkts[1]->ol_flags = vol.e[1];
-	rx_pkts[2]->ol_flags = vol.e[2];
-	rx_pkts[3]->ol_flags = vol.e[3];
-}
+	/*
+	 * At this point, we have the 4 sets of flags in the low 64-bits
+	 * of vtag1 (4x16).
+	 * We want to extract these, and merge them with the mbuf init data
+	 * so we can do a single 16-byte write to the mbuf to set the flags
+	 * and all the other initialization fields. Extracting the
+	 * appropriate flags means that we have to do a shift and blend for
+	 * each mbuf before we do the write.
+	 */
+#ifdef RTE_MACHINE_CPUFLAG_SSE4_2
+
+	rearm0 = _mm_blend_epi16(mbuf_init, _mm_slli_si128(vtag1, 8), 0x10);
+	rearm1 = _mm_blend_epi16(mbuf_init, _mm_slli_si128(vtag1, 6), 0x10);
+	rearm2 = _mm_blend_epi16(mbuf_init, _mm_slli_si128(vtag1, 4), 0x10);
+	rearm3 = _mm_blend_epi16(mbuf_init, _mm_slli_si128(vtag1, 2), 0x10);
+
 #else
-#define desc_to_olflags_v(desc, vlan_flags, rx_pkts) do { \
-		RTE_SET_USED(vlan_flags); \
-	} while (0)
-#endif
+	rearm0 = _mm_slli_si128(vtag1, 14);
+	rearm1 = _mm_slli_si128(vtag1, 12);
+	rearm2 = _mm_slli_si128(vtag1, 10);
+	rearm3 = _mm_slli_si128(vtag1, 8);
+
+	rearm0 = _mm_or_si128(mbuf_init, _mm_srli_epi64(rearm0, 48));
+	rearm1 = _mm_or_si128(mbuf_init, _mm_srli_epi64(rearm1, 48));
+	rearm2 = _mm_or_si128(mbuf_init, _mm_srli_epi64(rearm2, 48));
+	rearm3 = _mm_or_si128(mbuf_init, _mm_srli_epi64(rearm3, 48));
+
+#endif /* RTE_MACHINE_CPUFLAG_SSE4_2 */
+
+	_mm_store_si128((__m128i *)&rx_pkts[0]->rearm_data, rearm0);
+	_mm_store_si128((__m128i *)&rx_pkts[1]->rearm_data, rearm1);
+	_mm_store_si128((__m128i *)&rx_pkts[2]->rearm_data, rearm2);
+	_mm_store_si128((__m128i *)&rx_pkts[3]->rearm_data, rearm3);
+}
 
 /*
  * vPMD raw receive routine, only accept(nb_pkts >= RTE_IXGBE_DESCS_PER_LOOP)
@@ -210,7 +248,6 @@ desc_to_olflags_v(__m128i descs[4], uint8_t vlan_flags,
  * - nb_pkts > RTE_IXGBE_MAX_RX_BURST, only scan RTE_IXGBE_MAX_RX_BURST
  *   numbers of DD bit
  * - floor align nb_pkts to a RTE_IXGBE_DESC_PER_LOOP power-of-two
- * - don't support ol_flags for rss and csum err
  */
 static inline uint16_t
 _recv_raw_pkts_vec(struct ixgbe_rx_queue *rxq, struct rte_mbuf **rx_pkts,
@@ -230,6 +267,7 @@ _recv_raw_pkts_vec(struct ixgbe_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 				0, 0            /* ignore pkt_type field */
 			);
 	__m128i dd_check, eop_check;
+	__m128i mbuf_init;
 	uint8_t vlan_flags;
 
 	/* nb_pkts shall be less equal than RTE_IXGBE_MAX_RX_BURST */
@@ -243,7 +281,7 @@ _recv_raw_pkts_vec(struct ixgbe_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 	 */
 	rxdp = rxq->rx_ring + rxq->rx_tail;
 
-	_mm_prefetch((const void *)rxdp, _MM_HINT_T0);
+	rte_prefetch0(rxdp);
 
 	/* See if we need to rearm the RX queue - gives the prefetch a bit
 	 * of time to act
@@ -275,6 +313,8 @@ _recv_raw_pkts_vec(struct ixgbe_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 		0xFF, 0xFF
 		);
 
+	mbuf_init = _mm_set_epi64x(0, rxq->mbuf_initializer);
+
 	/* Cache is empty -> need to scan the buffer rings, but first move
 	 * the next 'n' mbufs into the cache
 	 */
@@ -297,28 +337,39 @@ _recv_raw_pkts_vec(struct ixgbe_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 		__m128i descs[RTE_IXGBE_DESCS_PER_LOOP];
 		__m128i pkt_mb1, pkt_mb2, pkt_mb3, pkt_mb4;
 		__m128i zero, staterr, sterr_tmp1, sterr_tmp2;
-		__m128i mbp1, mbp2; /* two mbuf pointer in one XMM reg. */
+		/* 2 64 bit or 4 32 bit mbuf pointers in one XMM reg. */
+		__m128i mbp1;
+#if defined(RTE_ARCH_X86_64)
+		__m128i mbp2;
+#endif
 
-		/* B.1 load 1 mbuf point */
+		/* B.1 load 2 (64 bit) or 4 (32 bit) mbuf points */
 		mbp1 = _mm_loadu_si128((__m128i *)&sw_ring[pos]);
 
 		/* Read desc statuses backwards to avoid race condition */
 		/* A.1 load 4 pkts desc */
 		descs[3] = _mm_loadu_si128((__m128i *)(rxdp + 3));
+		rte_compiler_barrier();
 
-		/* B.2 copy 2 mbuf point into rx_pkts  */
+		/* B.2 copy 2 64 bit or 4 32 bit mbuf point into rx_pkts */
 		_mm_storeu_si128((__m128i *)&rx_pkts[pos], mbp1);
 
-		/* B.1 load 1 mbuf point */
+#if defined(RTE_ARCH_X86_64)
+		/* B.1 load 2 64 bit mbuf points */
 		mbp2 = _mm_loadu_si128((__m128i *)&sw_ring[pos+2]);
+#endif
 
 		descs[2] = _mm_loadu_si128((__m128i *)(rxdp + 2));
+		rte_compiler_barrier();
 		/* B.1 load 2 mbuf point */
 		descs[1] = _mm_loadu_si128((__m128i *)(rxdp + 1));
+		rte_compiler_barrier();
 		descs[0] = _mm_loadu_si128((__m128i *)(rxdp));
 
+#if defined(RTE_ARCH_X86_64)
 		/* B.2 copy 2 mbuf point into rx_pkts  */
 		_mm_storeu_si128((__m128i *)&rx_pkts[pos+2], mbp2);
+#endif
 
 		if (split_packet) {
 			rte_mbuf_prefetch_part2(rx_pkts[pos]);
@@ -344,7 +395,7 @@ _recv_raw_pkts_vec(struct ixgbe_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 		sterr_tmp1 = _mm_unpackhi_epi32(descs[1], descs[0]);
 
 		/* set ol_flags with vlan packet type */
-		desc_to_olflags_v(descs, vlan_flags, &rx_pkts[pos]);
+		desc_to_olflags_v(descs, mbuf_init, vlan_flags, &rx_pkts[pos]);
 
 		/* D.2 pkt 3,4 set in_port/nb_seg and remove crc */
 		pkt_mb4 = _mm_add_epi16(pkt_mb4, crc_adjust);
@@ -384,12 +435,6 @@ _recv_raw_pkts_vec(struct ixgbe_rx_queue *rxq, struct rte_mbuf **rx_pkts,
 			/* store the resulting 32-bit value */
 			*(int *)split_packet = _mm_cvtsi128_si32(eop_bits);
 			split_packet += RTE_IXGBE_DESCS_PER_LOOP;
-
-			/* zero-out next pointers */
-			rx_pkts[pos]->next = NULL;
-			rx_pkts[pos + 1]->next = NULL;
-			rx_pkts[pos + 2]->next = NULL;
-			rx_pkts[pos + 3]->next = NULL;
 		}
 
 		/* C.3 calc available number of desc */
@@ -425,7 +470,6 @@ _recv_raw_pkts_vec(struct ixgbe_rx_queue *rxq, struct rte_mbuf **rx_pkts,
  * - nb_pkts > RTE_IXGBE_MAX_RX_BURST, only scan RTE_IXGBE_MAX_RX_BURST
  *   numbers of DD bit
  * - floor align nb_pkts to a RTE_IXGBE_DESC_PER_LOOP power-of-two
- * - don't support ol_flags for rss and csum err
  */
 uint16_t
 ixgbe_recv_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
@@ -438,7 +482,6 @@ ixgbe_recv_pkts_vec(void *rx_queue, struct rte_mbuf **rx_pkts,
  * vPMD receive routine that reassembles scattered packets
  *
  * Notice:
- * - don't support ol_flags for rss and csum err
  * - nb_pkts < RTE_IXGBE_DESCS_PER_LOOP, just return no packet
  * - nb_pkts > RTE_IXGBE_MAX_RX_BURST, only scan RTE_IXGBE_MAX_RX_BURST
  *   numbers of DD bit
@@ -498,8 +541,8 @@ vtx(volatile union ixgbe_adv_tx_desc *txdp,
 }
 
 uint16_t
-ixgbe_xmit_pkts_vec(void *tx_queue, struct rte_mbuf **tx_pkts,
-		       uint16_t nb_pkts)
+ixgbe_xmit_fixed_burst_vec(void *tx_queue, struct rte_mbuf **tx_pkts,
+			   uint16_t nb_pkts)
 {
 	struct ixgbe_tx_queue *txq = (struct ixgbe_tx_queue *)tx_queue;
 	volatile union ixgbe_adv_tx_desc *txdp;

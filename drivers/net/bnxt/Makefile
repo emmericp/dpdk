@@ -59,16 +59,11 @@ SRCS-$(CONFIG_RTE_LIBRTE_BNXT_PMD) += bnxt_stats.c
 SRCS-$(CONFIG_RTE_LIBRTE_BNXT_PMD) += bnxt_txq.c
 SRCS-$(CONFIG_RTE_LIBRTE_BNXT_PMD) += bnxt_txr.c
 SRCS-$(CONFIG_RTE_LIBRTE_BNXT_PMD) += bnxt_vnic.c
+SRCS-$(CONFIG_RTE_LIBRTE_BNXT_PMD) += bnxt_irq.c
 
 #
 # Export include files
 #
 SYMLINK-y-include +=
-
-# this lib depends upon:
-DEPDIRS-$(CONFIG_RTE_LIBRTE_BNXT_PMD) += lib/librte_mbuf
-DEPDIRS-$(CONFIG_RTE_LIBRTE_BNXT_PMD) += lib/librte_mempool
-DEPDIRS-$(CONFIG_RTE_LIBRTE_BNXT_PMD) += lib/librte_ether
-DEPDIRS-$(CONFIG_RTE_LIBRTE_BNXT_PMD) += lib/librte_eal
 
 include $(RTE_SDK)/mk/rte.lib.mk

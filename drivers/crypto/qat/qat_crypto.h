@@ -37,12 +37,15 @@
 #include <rte_cryptodev_pmd.h>
 #include <rte_memzone.h>
 
+#include "qat_crypto_capabilities.h"
+
 /*
  * This macro rounds up a number to a be a multiple of
  * the alignment when the alignment is a power of 2
  */
 #define ALIGN_POW2_ROUNDUP(num, align) \
 	(((num) + (align) - 1) & ~((align) - 1))
+#define QAT_64_BTYE_ALIGN_MASK (~0x3f)
 
 /**
  * Structure associated with each queue.
@@ -68,20 +71,22 @@ struct qat_qp {
 	struct	qat_queue	tx_q;
 	struct	qat_queue	rx_q;
 	struct	rte_cryptodev_stats stats;
+	struct rte_mempool *op_cookie_pool;
+	void **op_cookies;
+	uint32_t nb_descriptors;
 } __rte_cache_aligned;
 
 /** private data structure for each QAT device */
 struct qat_pmd_private {
-	char sess_mp_name[RTE_MEMPOOL_NAMESIZE];
-	struct rte_mempool *sess_mp;
-
 	unsigned max_nb_queue_pairs;
 	/**< Max number of queue pairs supported by device */
 	unsigned max_nb_sessions;
 	/**< Max number of sessions supported by device */
+	const struct rte_cryptodev_capabilities *qat_dev_capabilities;
 };
 
-int qat_dev_config(struct rte_cryptodev *dev);
+int qat_dev_config(struct rte_cryptodev *dev,
+		struct rte_cryptodev_config *config);
 int qat_dev_start(struct rte_cryptodev *dev);
 void qat_dev_stop(struct rte_cryptodev *dev);
 int qat_dev_close(struct rte_cryptodev *dev);

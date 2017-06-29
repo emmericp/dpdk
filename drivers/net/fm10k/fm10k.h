@@ -69,6 +69,9 @@
 #define FM10K_MAX_RX_DESC  (FM10K_MAX_RX_RING_SZ / sizeof(union fm10k_rx_desc))
 #define FM10K_MAX_TX_DESC  (FM10K_MAX_TX_RING_SZ / sizeof(struct fm10k_tx_desc))
 
+#define FM10K_TX_MAX_SEG     UINT8_MAX
+#define FM10K_TX_MAX_MTU_SEG UINT8_MAX
+
 /*
  * byte aligment for HW RX data buffer
  * Datasheet requires RX buffer addresses shall either be 512-byte aligned or
@@ -356,14 +359,17 @@ fm10k_dev_rx_descriptor_done(void *rx_queue, uint16_t offset);
 uint16_t fm10k_xmit_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
 	uint16_t nb_pkts);
 
+uint16_t fm10k_prep_pkts(void *tx_queue, struct rte_mbuf **tx_pkts,
+	uint16_t nb_pkts);
+
 int fm10k_rxq_vec_setup(struct fm10k_rx_queue *rxq);
 int fm10k_rx_vec_condition_check(struct rte_eth_dev *);
 void fm10k_rx_queue_release_mbufs_vec(struct fm10k_rx_queue *rxq);
 uint16_t fm10k_recv_pkts_vec(void *, struct rte_mbuf **, uint16_t);
 uint16_t fm10k_recv_scattered_pkts_vec(void *, struct rte_mbuf **,
 					uint16_t);
-uint16_t fm10k_xmit_pkts_vec(void *tx_queue, struct rte_mbuf **tx_pkts,
-		uint16_t nb_pkts);
+uint16_t fm10k_xmit_fixed_burst_vec(void *tx_queue, struct rte_mbuf **tx_pkts,
+				    uint16_t nb_pkts);
 void fm10k_txq_vec_setup(struct fm10k_tx_queue *txq);
 int fm10k_tx_vec_condition_check(struct fm10k_tx_queue *txq);
 

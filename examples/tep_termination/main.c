@@ -49,7 +49,7 @@
 #include <rte_log.h>
 #include <rte_string_fns.h>
 #include <rte_malloc.h>
-#include <rte_virtio_net.h>
+#include <rte_vhost.h>
 
 #include "main.h"
 #include "vxlan.h"
@@ -68,7 +68,7 @@
 				(nb_switching_cores * MBUF_CACHE_SIZE))
 
 #define MBUF_CACHE_SIZE 128
-#define MBUF_SIZE (2048 + sizeof(struct rte_mbuf) + RTE_PKTMBUF_HEADROOM)
+#define MBUF_DATA_SIZE RTE_MBUF_DEFAULT_BUF_SIZE
 
 #define MAX_PKT_BURST 32	/* Max burst size for RX/TX */
 #define BURST_TX_DRAIN_US 100	/* TX drain every ~100us */
@@ -567,7 +567,7 @@ virtio_tx_route(struct vhost_dev *vdev, struct rte_mbuf *m)
 	unsigned len, ret = 0;
 	const uint16_t lcore_id = rte_lcore_id();
 
-	RTE_LOG(DEBUG, VHOST_DATA, "(%d) TX: MAC address is external\n",
+	RTE_LOG_DP(DEBUG, VHOST_DATA, "(%d) TX: MAC address is external\n",
 		vdev->vid);
 
 	/* Add packet to the port tx queue */
@@ -649,7 +649,7 @@ switch_worker(__rte_unused void *arg)
 		if (unlikely(diff_tsc > drain_tsc)) {
 
 			if (tx_q->len) {
-				RTE_LOG(DEBUG, VHOST_DATA, "TX queue drained after "
+				RTE_LOG_DP(DEBUG, VHOST_DATA, "TX queue drained after "
 					"timeout with burst size %u\n",
 					tx_q->len);
 				ret = overlay_options.tx_handle(ports[0],
@@ -1081,7 +1081,7 @@ new_device(int vid)
  * These callback allow devices to be added to the data core when configuration
  * has been fully complete.
  */
-static const struct virtio_net_device_ops virtio_net_device_ops = {
+static const struct vhost_device_ops virtio_net_device_ops = {
 	.new_device =  new_device,
 	.destroy_device = destroy_device,
 };
@@ -1151,8 +1151,7 @@ print_stats(void)
 }
 
 /**
- * Main function, does initialisation and calls the per-lcore functions. The CUSE
- * device is also registered here to handle the IOCTLs.
+ * Main function, does initialisation and calls the per-lcore functions.
  */
 int
 main(int argc, char *argv[])
@@ -1200,15 +1199,13 @@ main(int argc, char *argv[])
 			MAX_SUP_PORTS);
 	}
 	/* Create the mbuf pool. */
-	mbuf_pool = rte_mempool_create(
+	mbuf_pool = rte_pktmbuf_pool_create(
 			"MBUF_POOL",
-			NUM_MBUFS_PER_PORT
-			* valid_nb_ports,
-			MBUF_SIZE, MBUF_CACHE_SIZE,
-			sizeof(struct rte_pktmbuf_pool_private),
-			rte_pktmbuf_pool_init, NULL,
-			rte_pktmbuf_init, NULL,
-			rte_socket_id(), 0);
+			NUM_MBUFS_PER_PORT * valid_nb_ports,
+			MBUF_CACHE_SIZE,
+			0,
+			MBUF_DATA_SIZE,
+			rte_socket_id());
 	if (mbuf_pool == NULL)
 		rte_exit(EXIT_FAILURE, "Cannot create mbuf pool\n");
 
@@ -1251,17 +1248,28 @@ main(int argc, char *argv[])
 		rte_eal_remote_launch(switch_worker,
 			mbuf_pool, lcore_id);
 	}
-	rte_vhost_feature_disable(1ULL << VIRTIO_NET_F_MRG_RXBUF);
 
-	/* Register CUSE device to handle IOCTLs. */
 	ret = rte_vhost_driver_register((char *)&dev_basename, 0);
 	if (ret != 0)
-		rte_exit(EXIT_FAILURE, "CUSE device setup failure.\n");
+		rte_exit(EXIT_FAILURE, "failed to register vhost driver.\n");
 
-	rte_vhost_driver_callback_register(&virtio_net_device_ops);
+	rte_vhost_driver_disable_features(dev_basename,
+		1ULL << VIRTIO_NET_F_MRG_RXBUF);
 
-	/* Start CUSE session. */
-	rte_vhost_driver_session_start();
+	ret = rte_vhost_driver_callback_register(dev_basename,
+		&virtio_net_device_ops);
+	if (ret != 0) {
+		rte_exit(EXIT_FAILURE,
+			"failed to register vhost driver callbacks.\n");
+	}
+
+	if (rte_vhost_driver_start(dev_basename) < 0) {
+		rte_exit(EXIT_FAILURE,
+			"failed to start vhost driver.\n");
+	}
+
+	RTE_LCORE_FOREACH_SLAVE(lcore_id)
+		rte_eal_wait_lcore(lcore_id);
 
 	return 0;
 }

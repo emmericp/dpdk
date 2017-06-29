@@ -41,6 +41,12 @@ struct ecore_sb_info {
 	struct ecore_dev *p_dev;
 };
 
+struct ecore_sb_info_dbg {
+	u32 igu_prod;
+	u32 igu_cons;
+	u16 pi[PIS_PER_SB];
+};
+
 struct ecore_sb_cnt_info {
 	int sb_cnt;
 	int sb_iov_cnt;
@@ -108,7 +114,7 @@ static OSAL_INLINE void __internal_ram_wr(struct ecore_hwfn *p_hwfn,
 					  void OSAL_IOMEM *addr,
 					  int size, u32 *data)
 #else
-static OSAL_INLINE void __internal_ram_wr(void *p_hwfn,
+static OSAL_INLINE void __internal_ram_wr(__rte_unused void *p_hwfn,
 					  void OSAL_IOMEM *addr,
 					  int size, u32 *data)
 #endif
@@ -120,19 +126,37 @@ static OSAL_INLINE void __internal_ram_wr(void *p_hwfn,
 }
 
 #ifdef ECORE_CONFIG_DIRECT_HWFN
-static OSAL_INLINE void internal_ram_wr(struct ecore_hwfn *p_hwfn,
-					void OSAL_IOMEM *addr,
-					int size, u32 *data)
+static OSAL_INLINE void __internal_ram_wr_relaxed(struct ecore_hwfn *p_hwfn,
+						  void OSAL_IOMEM * addr,
+						  int size, u32 *data)
+#else
+static OSAL_INLINE void __internal_ram_wr_relaxed(__rte_unused void *p_hwfn,
+						  void OSAL_IOMEM * addr,
+						  int size, u32 *data)
+#endif
 {
-	__internal_ram_wr(p_hwfn, addr, size, data);
+	unsigned int i;
+
+	for (i = 0; i < size / sizeof(*data); i++)
+		DIRECT_REG_WR_RELAXED(p_hwfn, &((u32 OSAL_IOMEM *)addr)[i],
+				      data[i]);
+}
+
+#ifdef ECORE_CONFIG_DIRECT_HWFN
+static OSAL_INLINE void internal_ram_wr(struct ecore_hwfn *p_hwfn,
+						void OSAL_IOMEM * addr,
+						int size, u32 *data)
+{
+	__internal_ram_wr_relaxed(p_hwfn, addr, size, data);
 }
 #else
 static OSAL_INLINE void internal_ram_wr(void OSAL_IOMEM *addr,
-					int size, u32 *data)
+						int size, u32 *data)
 {
-	__internal_ram_wr(OSAL_NULL, addr, size, data);
+	__internal_ram_wr_relaxed(OSAL_NULL, addr, size, data);
 }
 #endif
+
 #endif
 
 struct ecore_hwfn;
@@ -273,5 +297,31 @@ void ecore_int_get_num_sbs(struct ecore_hwfn *p_hwfn,
  *
  */
 void ecore_int_disable_post_isr_release(struct ecore_dev *p_dev);
+
+/**
+ * @brief ecore_int_attn_clr_enable - sets whether the general behavior is
+ *        preventing attentions from being reasserted, or following the
+ *        attributes of the specific attention.
+ *
+ * @param p_dev
+ * @param clr_enable
+ *
+ */
+void ecore_int_attn_clr_enable(struct ecore_dev *p_dev, bool clr_enable);
+
+/**
+ * @brief Read debug information regarding a given SB.
+ *
+ * @param p_hwfn
+ * @param p_ptt
+ * @param p_sb - point to Status block for which we want to get info.
+ * @param p_info - pointer to struct to fill with information regarding SB.
+ *
+ * @return ECORE_SUCCESS if pointer is filled; failure otherwise.
+ */
+enum _ecore_status_t ecore_int_get_sb_dbg(struct ecore_hwfn *p_hwfn,
+					  struct ecore_ptt *p_ptt,
+					  struct ecore_sb_info *p_sb,
+					  struct ecore_sb_info_dbg *p_info);
 
 #endif

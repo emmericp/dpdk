@@ -1,6 +1,6 @@
 #   BSD LICENSE
 #
-#   Copyright(c) 2010-2015 Intel Corporation. All rights reserved.
+#   Copyright(c) 2010-2016 Intel Corporation. All rights reserved.
 #   All rights reserved.
 #
 #   Redistribution and use in source and binary forms, with or without
@@ -76,6 +76,9 @@ endif
 
 ifeq ($(shell test $(GCC_VERSION) -ge 50 && echo 1), 1)
 CFLAGS_ixgbe_common.o += -Wno-logical-not-parentheses
+ifeq ($(shell test $(GCC_VERSION) -ge 70 && echo 1), 1)
+CFLAGS_BASE_DRIVER += -Wno-implicit-fallthrough
+endif
 endif
 
 endif
@@ -100,6 +103,7 @@ SRCS-$(CONFIG_RTE_LIBRTE_IXGBE_PMD) += ixgbe_x550.c
 SRCS-$(CONFIG_RTE_LIBRTE_IXGBE_PMD) += ixgbe_phy.c
 SRCS-$(CONFIG_RTE_LIBRTE_IXGBE_PMD) += ixgbe_api.c
 SRCS-$(CONFIG_RTE_LIBRTE_IXGBE_PMD) += ixgbe_vf.c
+SRCS-$(CONFIG_RTE_LIBRTE_IXGBE_PMD) += ixgbe_hv_vf.c
 SRCS-$(CONFIG_RTE_LIBRTE_IXGBE_PMD) += ixgbe_dcb.c
 SRCS-$(CONFIG_RTE_LIBRTE_IXGBE_PMD) += ixgbe_dcb_82599.c
 SRCS-$(CONFIG_RTE_LIBRTE_IXGBE_PMD) += ixgbe_dcb_82598.c
@@ -108,6 +112,7 @@ SRCS-$(CONFIG_RTE_LIBRTE_IXGBE_PMD) += ixgbe_rxtx.c
 SRCS-$(CONFIG_RTE_LIBRTE_IXGBE_PMD) += ixgbe_ethdev.c
 SRCS-$(CONFIG_RTE_LIBRTE_IXGBE_PMD) += ixgbe_fdir.c
 SRCS-$(CONFIG_RTE_LIBRTE_IXGBE_PMD) += ixgbe_pf.c
+SRCS-$(CONFIG_RTE_LIBRTE_IXGBE_PMD) += ixgbe_flow.c
 ifeq ($(CONFIG_RTE_ARCH_ARM64),y)
 SRCS-$(CONFIG_RTE_IXGBE_INC_VECTOR) += ixgbe_rxtx_vec_neon.c
 else
@@ -118,11 +123,9 @@ ifeq ($(CONFIG_RTE_NIC_BYPASS),y)
 SRCS-$(CONFIG_RTE_LIBRTE_IXGBE_PMD) += ixgbe_bypass.c
 SRCS-$(CONFIG_RTE_LIBRTE_IXGBE_PMD) += ixgbe_82599_bypass.c
 endif
+SRCS-$(CONFIG_RTE_LIBRTE_IXGBE_PMD) += rte_pmd_ixgbe.c
 
-
-# this lib depends upon:
-DEPDIRS-$(CONFIG_RTE_LIBRTE_IXGBE_PMD) += lib/librte_eal lib/librte_ether
-DEPDIRS-$(CONFIG_RTE_LIBRTE_IXGBE_PMD) += lib/librte_mempool lib/librte_mbuf
-DEPDIRS-$(CONFIG_RTE_LIBRTE_IXGBE_PMD) += lib/librte_net
+# install this header file
+SYMLINK-$(CONFIG_RTE_LIBRTE_IXGBE_PMD)-include := rte_pmd_ixgbe.h
 
 include $(RTE_SDK)/mk/rte.lib.mk

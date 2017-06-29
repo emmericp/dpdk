@@ -38,6 +38,7 @@
 #include <inttypes.h>
 #include <sys/stat.h>
 #include <sys/mman.h>
+#include <sys/sysmacros.h>
 #include <linux/pci_regs.h>
 
 #if defined(RTE_ARCH_X86)
@@ -133,7 +134,7 @@ pci_mknod_uio_dev(const char *sysfs_uio_path, unsigned uio_num)
 	snprintf(filename, sizeof(filename), "/dev/uio%u", uio_num);
 	dev = makedev(major, minor);
 	ret = mknod(filename, S_IFCHR | S_IRUSR | S_IWUSR, dev);
-	if (f == NULL) {
+	if (ret != 0) {
 		RTE_LOG(ERR, EAL, "%s(): mknod() failed %s\n",
 			__func__, strerror(errno));
 		return -1;
@@ -230,7 +231,7 @@ pci_uio_free_resource(struct rte_pci_device *dev,
 		close(dev->intr_handle.uio_cfg_fd);
 		dev->intr_handle.uio_cfg_fd = -1;
 	}
-	if (dev->intr_handle.fd) {
+	if (dev->intr_handle.fd >= 0) {
 		close(dev->intr_handle.fd);
 		dev->intr_handle.fd = -1;
 		dev->intr_handle.type = RTE_INTR_HANDLE_UNKNOWN;

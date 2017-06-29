@@ -50,6 +50,8 @@
 #include "bnxt_vnic.h"
 #include "hsi_struct_def_dpdk.h"
 
+#include <rte_io.h>
+
 #define HWRM_CMD_TIMEOUT		2000
 
 /*
@@ -72,19 +74,19 @@ static int bnxt_hwrm_send_message_locked(struct bnxt *bp, void *msg,
 	/* Write request msg to hwrm channel */
 	for (i = 0; i < msg_len; i += 4) {
 		bar = (uint8_t *)bp->bar0 + i;
-		*(volatile uint32_t *)bar = *data;
+		rte_write32(*data, bar);
 		data++;
 	}
 
 	/* Zero the rest of the request space */
 	for (; i < bp->max_req_len; i += 4) {
 		bar = (uint8_t *)bp->bar0 + i;
-		*(volatile uint32_t *)bar = 0;
+		rte_write32(0, bar);
 	}
 
 	/* Ring channel doorbell */
 	bar = (uint8_t *)bp->bar0 + 0x100;
-	*(volatile uint32_t *)bar = 1;
+	rte_write32(1, bar);
 
 	/* Poll for the valid bit */
 	for (i = 0; i < HWRM_CMD_TIMEOUT; i++) {
@@ -288,7 +290,7 @@ int bnxt_hwrm_func_qcaps(struct bnxt *bp)
 
 		pf->fw_fid = rte_le_to_cpu_32(resp->fid);
 		pf->port_id = resp->port_id;
-		memcpy(pf->mac_addr, resp->perm_mac_address, ETHER_ADDR_LEN);
+		memcpy(pf->mac_addr, resp->mac_address, ETHER_ADDR_LEN);
 		pf->max_rsscos_ctx = rte_le_to_cpu_16(resp->max_rsscos_ctx);
 		pf->max_cp_rings = rte_le_to_cpu_16(resp->max_cmpl_rings);
 		pf->max_tx_rings = rte_le_to_cpu_16(resp->max_tx_rings);
@@ -301,7 +303,7 @@ int bnxt_hwrm_func_qcaps(struct bnxt *bp)
 		struct bnxt_vf_info *vf = &bp->vf;
 
 		vf->fw_fid = rte_le_to_cpu_32(resp->fid);
-		memcpy(vf->mac_addr, &resp->perm_mac_address, ETHER_ADDR_LEN);
+		memcpy(vf->mac_addr, &resp->mac_address, ETHER_ADDR_LEN);
 		vf->max_rsscos_ctx = rte_le_to_cpu_16(resp->max_rsscos_ctx);
 		vf->max_cp_rings = rte_le_to_cpu_16(resp->max_cmpl_rings);
 		vf->max_tx_rings = rte_le_to_cpu_16(resp->max_tx_rings);
@@ -342,12 +344,15 @@ int bnxt_hwrm_func_driver_register(struct bnxt *bp, uint32_t flags,
 
 	HWRM_PREP(req, FUNC_DRV_RGTR, -1, resp);
 	req.flags = flags;
-	req.enables = HWRM_FUNC_DRV_RGTR_INPUT_ENABLES_VER;
+	req.enables = HWRM_FUNC_DRV_RGTR_INPUT_ENABLES_VER |
+			HWRM_FUNC_DRV_RGTR_INPUT_ENABLES_ASYNC_EVENT_FWD;
 	req.ver_maj = RTE_VER_YEAR;
 	req.ver_min = RTE_VER_MONTH;
 	req.ver_upd = RTE_VER_MINOR;
 
 	memcpy(req.vf_req_fwd, vf_req_fwd, sizeof(req.vf_req_fwd));
+
+	req.async_event_fwd[0] |= rte_cpu_to_le_32(0x1);   /* TODO: Use MACRO */
 
 	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
 
@@ -386,6 +391,8 @@ int bnxt_hwrm_ver_get(struct bnxt *bp)
 		resp->hwrm_intf_maj, resp->hwrm_intf_min,
 		resp->hwrm_intf_upd,
 		resp->hwrm_fw_maj, resp->hwrm_fw_min, resp->hwrm_fw_bld);
+	RTE_LOG(INFO, PMD, "Driver HWRM version: %d.%d.%d\n",
+		HWRM_VERSION_MAJOR, HWRM_VERSION_MINOR, HWRM_VERSION_UPDATE);
 
 	my_version = HWRM_VERSION_MAJOR << 16;
 	my_version |= HWRM_VERSION_MINOR << 8;
@@ -468,49 +475,44 @@ int bnxt_hwrm_func_driver_unregister(struct bnxt *bp, uint32_t flags)
 static int bnxt_hwrm_port_phy_cfg(struct bnxt *bp, struct bnxt_link_info *conf)
 {
 	int rc = 0;
-	struct hwrm_port_phy_cfg_input req = {.req_type = 0};
+	struct hwrm_port_phy_cfg_input req = {0};
 	struct hwrm_port_phy_cfg_output *resp = bp->hwrm_cmd_resp_addr;
+	uint32_t enables = 0;
 
 	HWRM_PREP(req, PORT_PHY_CFG, -1, resp);
 
-	req.flags = conf->phy_flags;
 	if (conf->link_up) {
-		req.force_link_speed = conf->link_speed;
+		req.flags = rte_cpu_to_le_32(conf->phy_flags);
+		req.force_link_speed = rte_cpu_to_le_16(conf->link_speed);
 		/*
 		 * Note, ChiMP FW 20.2.1 and 20.2.2 return an error when we set
 		 * any auto mode, even "none".
 		 */
-		if (req.auto_mode == HWRM_PORT_PHY_CFG_INPUT_AUTO_MODE_NONE) {
-			req.flags |= HWRM_PORT_PHY_CFG_INPUT_FLAGS_FORCE;
-		} else {
-			req.auto_mode = conf->auto_mode;
-			req.enables |=
-				HWRM_PORT_PHY_CFG_INPUT_ENABLES_AUTO_MODE;
+		if (!conf->link_speed) {
+			req.auto_mode |= conf->auto_mode;
+			enables = HWRM_PORT_PHY_CFG_INPUT_ENABLES_AUTO_MODE;
 			req.auto_link_speed_mask = conf->auto_link_speed_mask;
-			req.enables |=
+			enables |=
 			   HWRM_PORT_PHY_CFG_INPUT_ENABLES_AUTO_LINK_SPEED_MASK;
-			req.auto_link_speed = conf->auto_link_speed;
-			req.enables |=
+			req.auto_link_speed = bp->link_info.auto_link_speed;
+			enables |=
 				HWRM_PORT_PHY_CFG_INPUT_ENABLES_AUTO_LINK_SPEED;
 		}
 		req.auto_duplex = conf->duplex;
-		req.enables |= HWRM_PORT_PHY_CFG_INPUT_ENABLES_AUTO_DUPLEX;
+		enables |= HWRM_PORT_PHY_CFG_INPUT_ENABLES_AUTO_DUPLEX;
 		req.auto_pause = conf->auto_pause;
-		/* Set force_pause if there is no auto or if there is a force */
-		if (req.auto_pause)
-			req.enables |=
-				HWRM_PORT_PHY_CFG_INPUT_ENABLES_AUTO_PAUSE;
-		else
-			req.enables |=
-				HWRM_PORT_PHY_CFG_INPUT_ENABLES_FORCE_PAUSE;
 		req.force_pause = conf->force_pause;
-		if (req.force_pause)
-			req.enables |=
-				HWRM_PORT_PHY_CFG_INPUT_ENABLES_FORCE_PAUSE;
+		/* Set force_pause if there is no auto or if there is a force */
+		if (req.auto_pause && !req.force_pause)
+			enables |= HWRM_PORT_PHY_CFG_INPUT_ENABLES_AUTO_PAUSE;
+		else
+			enables |= HWRM_PORT_PHY_CFG_INPUT_ENABLES_FORCE_PAUSE;
+
+		req.enables = rte_cpu_to_le_32(enables);
 	} else {
-		req.flags &= ~HWRM_PORT_PHY_CFG_INPUT_FLAGS_RESTART_AUTONEG;
-		req.flags |= HWRM_PORT_PHY_CFG_INPUT_FLAGS_FORCE_LINK_DOWN;
-		req.force_link_speed = 0;
+		req.flags =
+		rte_cpu_to_le_32(HWRM_PORT_PHY_CFG_INPUT_FLAGS_FORCE_LINK_DOWN);
+		RTE_LOG(INFO, PMD, "Force Link Down\n");
 	}
 
 	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
@@ -524,7 +526,7 @@ static int bnxt_hwrm_port_phy_qcfg(struct bnxt *bp,
 				   struct bnxt_link_info *link_info)
 {
 	int rc = 0;
-	struct hwrm_port_phy_qcfg_input req = {.req_type = 0};
+	struct hwrm_port_phy_qcfg_input req = {0};
 	struct hwrm_port_phy_qcfg_output *resp = bp->hwrm_cmd_resp_addr;
 
 	HWRM_PREP(req, PORT_PHY_QCFG, -1, resp);
@@ -534,7 +536,7 @@ static int bnxt_hwrm_port_phy_qcfg(struct bnxt *bp,
 	HWRM_CHECK_RESULT;
 
 	link_info->phy_link_status = resp->link;
-	if (link_info->phy_link_status == HWRM_PORT_PHY_QCFG_OUTPUT_LINK_LINK) {
+	if (link_info->phy_link_status != HWRM_PORT_PHY_QCFG_OUTPUT_LINK_NO_LINK) {
 		link_info->link_up = 1;
 		link_info->link_speed = rte_le_to_cpu_16(resp->link_speed);
 	} else {
@@ -606,6 +608,7 @@ int bnxt_hwrm_ring_alloc(struct bnxt *bp,
 	switch (ring_type) {
 	case HWRM_RING_ALLOC_INPUT_RING_TYPE_TX:
 		req.queue_id = bp->cos_queue[0].id;
+		/* FALLTHROUGH */
 	case HWRM_RING_ALLOC_INPUT_RING_TYPE_RX:
 		req.ring_type = ring_type;
 		req.cmpl_ring_id =
@@ -809,7 +812,7 @@ int bnxt_hwrm_stat_ctx_free(struct bnxt *bp,
 int bnxt_hwrm_vnic_alloc(struct bnxt *bp, struct bnxt_vnic_info *vnic)
 {
 	int rc = 0, i, j;
-	struct hwrm_vnic_alloc_input req = {.req_type = 0 };
+	struct hwrm_vnic_alloc_input req = { 0 };
 	struct hwrm_vnic_alloc_output *resp = bp->hwrm_cmd_resp_addr;
 
 	/* map ring groups to this vnic */
@@ -1250,42 +1253,42 @@ static uint16_t bnxt_parse_eth_link_speed(uint32_t conf_link_speed)
 {
 	uint16_t eth_link_speed = 0;
 
-	if ((conf_link_speed & ETH_LINK_SPEED_FIXED) == ETH_LINK_SPEED_AUTONEG)
+	if (conf_link_speed == ETH_LINK_SPEED_AUTONEG)
 		return ETH_LINK_SPEED_AUTONEG;
 
 	switch (conf_link_speed & ~ETH_LINK_SPEED_FIXED) {
 	case ETH_LINK_SPEED_100M:
 	case ETH_LINK_SPEED_100M_HD:
 		eth_link_speed =
-			HWRM_PORT_PHY_CFG_INPUT_AUTO_LINK_SPEED_MASK_10MB;
+			HWRM_PORT_PHY_CFG_INPUT_AUTO_LINK_SPEED_100MB;
 		break;
 	case ETH_LINK_SPEED_1G:
 		eth_link_speed =
-			HWRM_PORT_PHY_CFG_INPUT_AUTO_LINK_SPEED_MASK_1GB;
+			HWRM_PORT_PHY_CFG_INPUT_AUTO_LINK_SPEED_1GB;
 		break;
 	case ETH_LINK_SPEED_2_5G:
 		eth_link_speed =
-			HWRM_PORT_PHY_CFG_INPUT_AUTO_LINK_SPEED_MASK_2_5GB;
+			HWRM_PORT_PHY_CFG_INPUT_AUTO_LINK_SPEED_2_5GB;
 		break;
 	case ETH_LINK_SPEED_10G:
 		eth_link_speed =
-			HWRM_PORT_PHY_CFG_INPUT_AUTO_LINK_SPEED_MASK_10GB;
+			HWRM_PORT_PHY_CFG_INPUT_FORCE_LINK_SPEED_10GB;
 		break;
 	case ETH_LINK_SPEED_20G:
 		eth_link_speed =
-			HWRM_PORT_PHY_CFG_INPUT_AUTO_LINK_SPEED_MASK_20GB;
+			HWRM_PORT_PHY_CFG_INPUT_AUTO_LINK_SPEED_20GB;
 		break;
 	case ETH_LINK_SPEED_25G:
 		eth_link_speed =
-			HWRM_PORT_PHY_CFG_INPUT_AUTO_LINK_SPEED_MASK_25GB;
+			HWRM_PORT_PHY_CFG_INPUT_AUTO_LINK_SPEED_25GB;
 		break;
 	case ETH_LINK_SPEED_40G:
 		eth_link_speed =
-			HWRM_PORT_PHY_CFG_INPUT_AUTO_LINK_SPEED_MASK_40GB;
+			HWRM_PORT_PHY_CFG_INPUT_FORCE_LINK_SPEED_40GB;
 		break;
 	case ETH_LINK_SPEED_50G:
 		eth_link_speed =
-			HWRM_PORT_PHY_CFG_INPUT_AUTO_LINK_SPEED_MASK_50GB;
+			HWRM_PORT_PHY_CFG_INPUT_FORCE_LINK_SPEED_50GB;
 		break;
 	default:
 		RTE_LOG(ERR, PMD,
@@ -1452,39 +1455,80 @@ int bnxt_set_hwrm_link_config(struct bnxt *bp, bool link_up)
 	struct bnxt_link_info link_req;
 	uint16_t speed;
 
+	if (BNXT_NPAR_PF(bp) || BNXT_VF(bp))
+		return 0;
+
 	rc = bnxt_valid_link_speed(dev_conf->link_speeds,
 			bp->eth_dev->data->port_id);
 	if (rc)
 		goto error;
 
 	memset(&link_req, 0, sizeof(link_req));
-	speed = bnxt_parse_eth_link_speed(dev_conf->link_speeds);
 	link_req.link_up = link_up;
+	if (!link_up)
+		goto port_phy_cfg;
+
+	speed = bnxt_parse_eth_link_speed(dev_conf->link_speeds);
+	link_req.phy_flags = HWRM_PORT_PHY_CFG_INPUT_FLAGS_RESET_PHY;
 	if (speed == 0) {
-		link_req.phy_flags =
+		link_req.phy_flags |=
 				HWRM_PORT_PHY_CFG_INPUT_FLAGS_RESTART_AUTONEG;
 		link_req.auto_mode =
-				HWRM_PORT_PHY_CFG_INPUT_AUTO_MODE_ONE_OR_BELOW;
+				HWRM_PORT_PHY_CFG_INPUT_AUTO_MODE_SPEED_MASK;
 		link_req.auto_link_speed_mask =
 			bnxt_parse_eth_link_speed_mask(dev_conf->link_speeds);
-		link_req.auto_link_speed =
-				HWRM_PORT_PHY_CFG_INPUT_AUTO_LINK_SPEED_50GB;
 	} else {
-		link_req.auto_mode = HWRM_PORT_PHY_CFG_INPUT_AUTO_MODE_NONE;
-		link_req.phy_flags = HWRM_PORT_PHY_CFG_INPUT_FLAGS_FORCE |
-			HWRM_PORT_PHY_CFG_INPUT_FLAGS_RESET_PHY;
+		link_req.phy_flags |= HWRM_PORT_PHY_CFG_INPUT_FLAGS_FORCE;
 		link_req.link_speed = speed;
+		RTE_LOG(INFO, PMD, "Set Link Speed %x\n", speed);
 	}
 	link_req.duplex = bnxt_parse_eth_link_duplex(dev_conf->link_speeds);
 	link_req.auto_pause = bp->link_info.auto_pause;
 	link_req.force_pause = bp->link_info.force_pause;
 
+port_phy_cfg:
 	rc = bnxt_hwrm_port_phy_cfg(bp, &link_req);
 	if (rc) {
 		RTE_LOG(ERR, PMD,
 			"Set link config failed with rc %d\n", rc);
 	}
 
+	rte_delay_ms(BNXT_LINK_WAIT_INTERVAL);
 error:
+	return rc;
+}
+
+/* JIRA 22088 */
+int bnxt_hwrm_func_qcfg(struct bnxt *bp)
+{
+	struct hwrm_func_qcfg_input req = {0};
+	struct hwrm_func_qcfg_output *resp = bp->hwrm_cmd_resp_addr;
+	int rc = 0;
+
+	HWRM_PREP(req, FUNC_QCFG, -1, resp);
+	req.fid = rte_cpu_to_le_16(0xffff);
+
+	rc = bnxt_hwrm_send_message(bp, &req, sizeof(req));
+
+	HWRM_CHECK_RESULT;
+
+	if (BNXT_VF(bp)) {
+		struct bnxt_vf_info *vf = &bp->vf;
+
+		/* Hard Coded.. 0xfff VLAN ID mask */
+		vf->vlan = rte_le_to_cpu_16(resp->vlan) & 0xfff;
+	}
+
+	switch (resp->port_partition_type) {
+	case HWRM_FUNC_QCFG_OUTPUT_PORT_PARTITION_TYPE_NPAR1_0:
+	case HWRM_FUNC_QCFG_OUTPUT_PORT_PARTITION_TYPE_NPAR1_5:
+	case HWRM_FUNC_QCFG_OUTPUT_PORT_PARTITION_TYPE_NPAR2_0:
+		bp->port_partition_type = resp->port_partition_type;
+		break;
+	default:
+		bp->port_partition_type = 0;
+		break;
+	}
+
 	return rc;
 }
