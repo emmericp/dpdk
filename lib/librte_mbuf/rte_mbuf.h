@@ -373,7 +373,7 @@ extern "C" {
 /**
  * Disable CRC checksum offload
  */
-#define PKT_TX_NO_CRC_CSUM   (1ULL << 61)
+#define PKT_TX_NO_CRC_CSUM   (1ULL << 63)
 
 /**
  * Bitmask of all supported packet Tx offload features flags,
