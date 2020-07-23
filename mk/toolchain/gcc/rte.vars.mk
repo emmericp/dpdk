@@ -101,7 +101,7 @@ endif
 
 ifeq ($(shell test $(GCC_VERSION) -gt 70 && echo 1), 1)
 # Tell GCC only to error for switch fallthroughs without a suitable comment
-WERROR_FLAGS += -Wimplicit-fallthrough=2
+WERROR_FLAGS += -Wimplicit-fallthrough=0
 # Ignore errors for snprintf truncation
 WERROR_FLAGS += -Wno-format-truncation
 endif
